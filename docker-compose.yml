@@ -1,0 +1,67 @@
+# Path variables (DAGSTER_HOME, DLT_PIPELINES_DIR, DUCKDB_DATABASE_LOCATION, etc.)
+# are set in .env with local paths. The environment: overrides below remap them
+# to the container volume mount paths, taking precedence over env_file values.
+
+x-path-overrides: &path-overrides
+  DLT_PIPELINES_DIR: /data/dlt_pipelines
+  DUCKDB_DATABASE_LOCATION: /data/duckdb/danish_democracy_data.duckdb
+  DBT_PROJECT_DIRECTORY: /app/dbt
+  DBT_MODELS_DIRECTORY: /app/dbt/models
+  DBT_LOGS_DIRECTORY: /data/dbt_logs
+  DAGSTER_HOME: /data/dagster
+
+x-common: &common
+  build: .
+  image: danish-democracy-data:latest
+  env_file: .env
+  environment:
+    <<: *path-overrides
+
+services:
+  # ── Generic runner for one-off Python tasks ─────────────────────────────
+  # Usage: docker compose run --rm run <module>
+  # Examples:
+  #   docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
+  #   docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
+  #   docker compose run --rm run ddd_python.ddd_dbt.dbt_build_with_unique_logfile
+  #   docker compose run --rm run ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
+  #   docker compose run --rm run ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
+  run:
+    <<: *common
+    container_name: ddd-run
+    command: ["python", "-m"]
+    volumes:
+      - dlt_pipelines:/data/dlt_pipelines
+      - duckdb_data:/data/duckdb
+      - dbt_logs:/data/dbt_logs
+
+  # ── Dagster: webserver + daemon or one-off job execution ────────────────
+  # UI:       docker compose up dagster
+  # Full job: docker compose run --rm dagster job execute -j danish_parliament_full_pipeline_job -w workspace.yaml
+  dagster:
+    <<: *common
+    command: ["dagster", "dev", "-w", "workspace.yaml", "-h", "0.0.0.0", "-p", "3000"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - dlt_pipelines:/data/dlt_pipelines
+      - duckdb_data:/data/duckdb
+      - dbt_logs:/data/dbt_logs
+      - dagster_data:/data/dagster
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  dlt_pipelines:
+    driver: local
+  duckdb_data:
+    driver: local
+  dbt_logs:
+    driver: local
+  dagster_data:
+    driver: local

@@ -1,0 +1,1 @@
+select * from {{ ref('LKHS_source_systems') }}

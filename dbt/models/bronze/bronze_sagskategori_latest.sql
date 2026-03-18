@@ -1,0 +1,1 @@
+{{ generate_model_bronze_latest('sagskategori','DDD','danish_parliament') }}

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2560" viewBox="0 0 1600 2560" role="img" aria-labelledby="title desc">
+  <title id="title">Cover for The Modern Data Platform Handbook</title>
+  <desc id="desc">Book cover with layered geometry representing medallion architecture and the subtitle Architecture, Implementation, and Working Code in One Volume.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#efe4d3" />
+      <stop offset="55%" stop-color="#e7efe9" />
+      <stop offset="100%" stop-color="#d9e4ef" />
+    </linearGradient>
+    <style>
+      .title { font-family: Georgia, 'Times New Roman', serif; font-size: 108px; font-weight: bold; fill: #16212b; }
+      .subtitle { font-family: Georgia, 'Times New Roman', serif; font-size: 44px; fill: #22313d; }
+      .author { font-family: Georgia, 'Times New Roman', serif; font-size: 38px; fill: #22313d; letter-spacing: 3px; }
+      .imprint { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; fill: #44515c; letter-spacing: 4px; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="1600" height="2560" fill="url(#bg)" />
+  <rect x="96" y="96" width="1408" height="2368" rx="30" ry="30" fill="none" stroke="#22313d" stroke-width="5" />
+  <rect x="180" y="1280" width="1240" height="180" rx="22" ry="22" fill="#f8f4ed" opacity="0.92" />
+  <rect x="180" y="1510" width="1080" height="180" rx="22" ry="22" fill="#eef3f7" opacity="0.92" />
+  <rect x="180" y="1740" width="920" height="180" rx="22" ry="22" fill="#e8f0ea" opacity="0.92" />
+  <rect x="180" y="1970" width="760" height="180" rx="22" ry="22" fill="#f2e7d8" opacity="0.92" />
+  <line x1="1420" y1="1370" x2="1520" y2="1370" stroke="#22313d" stroke-width="5" />
+  <line x1="1260" y1="1600" x2="1520" y2="1600" stroke="#22313d" stroke-width="5" />
+  <line x1="1100" y1="1830" x2="1520" y2="1830" stroke="#22313d" stroke-width="5" />
+  <line x1="940" y1="2060" x2="1520" y2="2060" stroke="#22313d" stroke-width="5" />
+  <text class="imprint" x="180" y="220">EDWIN WEBER</text>
+  <text class="title" x="180" y="520">The Modern</text>
+  <text class="title" x="180" y="645">Data Platform</text>
+  <text class="title" x="180" y="770">Handbook</text>
+  <text class="subtitle" x="180" y="930">Architecture, Implementation, and</text>
+  <text class="subtitle" x="180" y="990">Working Code in One Volume</text>
+  <text class="author" x="180" y="2330">EDWIN WEBER</text>
+  <text class="imprint" x="180" y="2390">PUBLICATION EDITION</text>
+</svg>

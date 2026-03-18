@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2560" viewBox="0 0 1600 2560" role="img" aria-labelledby="title desc">
+  <title id="title">Builder's Edition cover</title>
+  <desc id="desc">A warmer, less formal cover for the builder's edition of The Modern Data Platform Handbook.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5ead8" />
+      <stop offset="48%" stop-color="#e6f0e5" />
+      <stop offset="100%" stop-color="#ddebf0" />
+    </linearGradient>
+    <style>
+      .title { font-family: Georgia, 'Times New Roman', serif; font-size: 98px; font-weight: bold; fill: #1b2a2f; }
+      .subtitle { font-family: Georgia, 'Times New Roman', serif; font-size: 38px; fill: #31434a; }
+      .meta { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; fill: #53646b; letter-spacing: 3px; }
+      .author { font-family: Georgia, 'Times New Roman', serif; font-size: 40px; fill: #22343a; letter-spacing: 2px; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="1600" height="2560" fill="url(#bg)" />
+  <rect x="98" y="98" width="1404" height="2364" rx="30" ry="30" fill="none" stroke="#294048" stroke-width="4" />
+  <circle cx="1240" cy="470" r="180" fill="#f1d5b8" opacity="0.55" />
+  <circle cx="320" cy="1870" r="220" fill="#cfe2d6" opacity="0.55" />
+  <rect x="180" y="1310" width="1220" height="160" rx="24" ry="24" fill="#fff8ef" opacity="0.88" />
+  <rect x="180" y="1510" width="1040" height="160" rx="24" ry="24" fill="#eef6f1" opacity="0.88" />
+  <rect x="180" y="1710" width="860" height="160" rx="24" ry="24" fill="#eef6f8" opacity="0.88" />
+  <text class="meta" x="180" y="220">BUILDER'S EDITION</text>
+  <text class="title" x="180" y="540">The Modern</text>
+  <text class="title" x="180" y="655">Data Platform</text>
+  <text class="title" x="180" y="770">Handbook</text>
+  <text class="subtitle" x="180" y="930">A working, practical, and slightly</text>
+  <text class="subtitle" x="180" y="985">experimental edition</text>
+  <text class="subtitle" x="180" y="1100">A real repo, a real project, and one</text>
+  <text class="subtitle" x="180" y="1150">possible way to build it</text>
+  <text class="author" x="180" y="2330">EDWIN WEBER</text>
+  <text class="meta" x="180" y="2390">WEBER PLATFORM BOOKS</text>
+</svg>

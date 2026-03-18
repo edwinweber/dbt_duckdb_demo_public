@@ -1,0 +1,14 @@
+# Dagster workspace configuration for the Danish Democracy Data (DDD) project.
+#
+# Usage:
+#   dagster dev -w workspace.yaml          # start UI + daemon locally
+#   dagster job launch -w workspace.yaml --job danish_parliament_incremental_job
+#
+# The working_directory must be the repository root so that the ddd_python
+# package is importable (i.e. ddd_python/__init__.py must exist relative to it).
+
+load_from:
+  - python_file:
+      relative_path: ddd_python/ddd_dagster/definitions.py
+      working_directory: .
+      attribute: defs

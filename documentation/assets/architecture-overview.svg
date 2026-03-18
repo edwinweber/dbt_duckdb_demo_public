@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">Platform reference architecture</title>
+  <desc id="desc">Source systems feed dlt extraction, which lands Bronze files, then dbt Bronze views, Silver historized tables, Gold dimensional models, Delta Lake export to OneLake, and Power BI consumption.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f4ee; }
+      .box { fill: #fffdf8; stroke: #2e3a46; stroke-width: 3; rx: 16; ry: 16; }
+      .accent { fill: #e8f1ec; }
+      .accent2 { fill: #eef0f8; }
+      .accent3 { fill: #f8eadf; }
+      .text { font-family: Georgia, 'Times New Roman', serif; font-size: 24px; fill: #1f2933; }
+      .small { font-family: Georgia, 'Times New Roman', serif; font-size: 19px; fill: #44515c; }
+      .label { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: bold; fill: #1f2933; }
+      .arrow { stroke: #2e3a46; stroke-width: 4; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2e3a46" />
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1600" height="520" />
+  <text class="label" x="800" y="56" text-anchor="middle">Reference Architecture</text>
+
+  <rect class="box accent3" x="50" y="160" width="190" height="120" />
+  <text class="text" x="145" y="208" text-anchor="middle">Source API</text>
+  <text class="small" x="145" y="240" text-anchor="middle">and raw files</text>
+
+  <rect class="box accent" x="290" y="160" width="180" height="120" />
+  <text class="text" x="380" y="208" text-anchor="middle">dlt</text>
+  <text class="small" x="380" y="240" text-anchor="middle">extraction</text>
+
+  <rect class="box accent2" x="520" y="160" width="210" height="120" />
+  <text class="text" x="625" y="204" text-anchor="middle">Bronze landing</text>
+  <text class="small" x="625" y="236" text-anchor="middle">OneLake files</text>
+
+  <rect class="box" x="780" y="160" width="210" height="120" />
+  <text class="text" x="885" y="204" text-anchor="middle">dbt Bronze</text>
+  <text class="small" x="885" y="236" text-anchor="middle">query views</text>
+
+  <rect class="box accent" x="1040" y="160" width="220" height="120" />
+  <text class="text" x="1150" y="204" text-anchor="middle">Silver</text>
+  <text class="small" x="1150" y="236" text-anchor="middle">historized tables</text>
+
+  <rect class="box accent2" x="1310" y="160" width="220" height="120" />
+  <text class="text" x="1420" y="204" text-anchor="middle">Gold</text>
+  <text class="small" x="1420" y="236" text-anchor="middle">dimensional models</text>
+
+  <rect class="box accent3" x="930" y="340" width="230" height="120" />
+  <text class="text" x="1045" y="384" text-anchor="middle">Delta Lake export</text>
+  <text class="small" x="1045" y="416" text-anchor="middle">published contracts</text>
+
+  <rect class="box accent" x="1240" y="340" width="250" height="120" />
+  <text class="text" x="1365" y="384" text-anchor="middle">Power BI and</text>
+  <text class="small" x="1365" y="416" text-anchor="middle">semantic consumers</text>
+
+  <line class="arrow" x1="240" y1="220" x2="290" y2="220" />
+  <line class="arrow" x1="470" y1="220" x2="520" y2="220" />
+  <line class="arrow" x1="730" y1="220" x2="780" y2="220" />
+  <line class="arrow" x1="990" y1="220" x2="1040" y2="220" />
+  <line class="arrow" x1="1260" y1="220" x2="1310" y2="220" />
+  <path class="arrow" d="M 1420 280 C 1420 315, 1160 300, 1080 340" />
+  <line class="arrow" x1="1160" y1="400" x2="1240" y2="400" />
+</svg>

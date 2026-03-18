@@ -1,0 +1,1 @@
+{{ generate_model_bronze_latest('aktoer','DDD','danish_parliament') }}

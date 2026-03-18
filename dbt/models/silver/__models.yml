@@ -1,0 +1,891 @@
+version: 2
+
+# ---------------------------------------------------------------------------
+# Incremental / CDC tables
+# These are the six entities that change over time and are extracted
+# incrementally from the OData API. Each has a full SCD Type 2 history with
+# hash-based CDC (I / U / D) and a companion _cv (current-version) view.
+# ---------------------------------------------------------------------------
+
+models:
+  - name: silver_afstemning
+    description: SCD Type 2 history for Afstemning (vote sessions).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: "'2000-01-01'"
+                strictly: false
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+      - name: LKHS_source_system_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['DDD']
+
+  - name: silver_aktoer
+    description: SCD Type 2 history for Aktør (actors/members).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: "'2000-01-01'"
+                strictly: false
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_moede
+    description: SCD Type 2 history for Møde (meetings).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: "'2000-01-01'"
+                strictly: false
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sag
+    description: SCD Type 2 history for Sag (cases).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: "'2000-01-01'"
+                strictly: false
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sagstrin
+    description: SCD Type 2 history for Sagstrin (case steps).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sagstrinaktoer
+    description: SCD Type 2 history for SagstrinAktør (case step actors).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_stemme
+    description: SCD Type 2 history for Stemme (individual votes).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  # ---------------------------------------------------------------------------
+  # Reference / lookup tables (full-extract, rarely change)
+  # ---------------------------------------------------------------------------
+
+  - name: silver_afstemningstype
+    description: SCD Type 2 history for Afstemningstype (vote session types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_aktoertype
+    description: SCD Type 2 history for Aktørtype (actor types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_moedestatus
+    description: SCD Type 2 history for Mødestatus (meeting statuses).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_moedetype
+    description: SCD Type 2 history for Mødetype (meeting types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_periode
+    description: SCD Type 2 history for Periode (parliamentary periods).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 200
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagskategori
+    description: SCD Type 2 history for Sagskategori (case categories).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagsstatus
+    description: SCD Type 2 history for Sagsstatus (case statuses).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstrinsstatus
+    description: SCD Type 2 history for Sagstrinsstatus (case step statuses).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstrinstype
+    description: SCD Type 2 history for Sagstrinstype (case step types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstype
+    description: SCD Type 2 history for Sagstype (case types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_stemmetype
+    description: SCD Type 2 history for Stemmetype (vote types).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 50
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  # ---------------------------------------------------------------------------
+  # Current-version (_cv) views
+  # Each view returns exactly one row per entity key — the most recent version
+  # from the SCD Type 2 history table, determined by MAX(LKHS_date_valid_from).
+  # Rows with LKHS_cdc_operation = 'D' may appear when an entity has been
+  # deleted at source; downstream consumers should filter these out if needed.
+  # ---------------------------------------------------------------------------
+
+  - name: silver_afstemning_cv
+    description: >
+      Current-version view of Afstemning (vote sessions). One row per vote
+      session — the latest CDC version. Filter WHERE LKHS_cdc_operation != 'D'
+      to exclude source-deleted records.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_aktoer_cv
+    description: >
+      Current-version view of Aktør (actors/members). One row per actor —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_moede_cv
+    description: >
+      Current-version view of Møde (meetings). One row per meeting —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sag_cv
+    description: >
+      Current-version view of Sag (cases). One row per case —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sagstrin_cv
+    description: >
+      Current-version view of Sagstrin (case steps). One row per case step —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_sagstrinaktoer_cv
+    description: >
+      Current-version view of SagstrinAktør (case step actors). One row per
+      case-step–actor combination — the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  - name: silver_stemme_cv
+    description: >
+      Current-version view of Stemme (individual votes). One row per vote
+      record — the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              arguments:
+                value: 64
+
+  # Reference table _cv views (lookup data — full-extract, rarely deleted)
+
+  - name: silver_afstemningstype_cv
+    description: Current-version view of Afstemningstype (vote session types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_aktoertype_cv
+    description: Current-version view of Aktørtype (actor types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_moedestatus_cv
+    description: Current-version view of Mødestatus (meeting statuses). One row per status.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_moedetype_cv
+    description: Current-version view of Mødetype (meeting types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_periode_cv
+    description: Current-version view of Periode (parliamentary periods). One row per period.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 200
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagskategori_cv
+    description: Current-version view of Sagskategori (case categories). One row per category.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagsstatus_cv
+    description: Current-version view of Sagsstatus (case statuses). One row per status.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstrinsstatus_cv
+    description: Current-version view of Sagstrinsstatus (case step statuses). One row per status.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstrinstype_cv
+    description: Current-version view of Sagstrinstype (case step types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_sagstype_cv
+    description: Current-version view of Sagstype (case types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 100
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+  - name: silver_stemmetype_cv
+    description: Current-version view of Stemmetype (vote types). One row per type.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 50
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['I', 'U', 'D']
+
+

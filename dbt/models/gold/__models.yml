@@ -1,0 +1,256 @@
+version: 2
+
+models:
+  # ---------------------------------------------------------------------------
+  # Dimension — Actor
+  # ---------------------------------------------------------------------------
+  - name: actor
+    description: >
+      SCD Type 2 history for actors (members, ministers, parties, …) of the
+      Danish Parliament. One row per actor per version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: LKHS_actor_id
+        description: Surrogate key — hash of source system + id + valid_from.
+        data_tests:
+          - not_null
+          - unique
+      - name: actor_bk
+        description: Business key in the form "DDD-{source_id}".
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_match_regex:
+              config:
+                enabled: false
+              arguments:
+                regex: "^DDD-[0-9]+"
+      - name: LKHS_date_valid_from
+        description: Start of the validity period for this version.
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_to
+        description: End of validity period. 9999-12-31 means the row is current.
+        data_tests:
+          - not_null
+
+  - name: actor_cv
+    description: Current-version view of actors — exactly one row per living actor.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: LKHS_actor_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: actor_type
+    description: SCD Type 2 history for actor type (member, minister, party, …).
+    columns:
+      - name: LKHS_actor_type_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: actor_type_cv
+    description: Current-version view of actor types.
+    columns:
+      - name: LKHS_actor_type_id
+        data_tests:
+          - not_null
+          - unique
+
+  # ---------------------------------------------------------------------------
+  # Dimension — Case
+  # ---------------------------------------------------------------------------
+  - name: case
+    description: Cases (bills, questions, reports, …) of the Danish Parliament.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: LKHS_case_id
+        description: Surrogate key.
+        data_tests:
+          - not_null
+          - unique
+
+  - name: case_cv
+    description: Current-version view of cases.
+    columns:
+      - name: LKHS_case_id
+        data_tests:
+          - not_null
+          - unique
+
+  # ---------------------------------------------------------------------------
+  # Dimension — Date
+  # ---------------------------------------------------------------------------
+  - name: date
+    description: >
+      Classic calendar date dimension with year/quarter/month/week offsets,
+      is_weekend flag, and Danish public holiday indicator.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 365
+    columns:
+      - name: date_day
+        description: The calendar date — primary key of this table.
+        data_tests:
+          - not_null
+          - unique
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: date
+
+  # ---------------------------------------------------------------------------
+  # Dimension — Meeting
+  # ---------------------------------------------------------------------------
+  - name: meeting
+    description: Parliament meetings — SCD Type 2 history.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: LKHS_meeting_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: meeting_cv
+    description: Current-version view of meetings.
+    columns:
+      - name: LKHS_meeting_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: meeting_status
+    description: SCD Type 2 history for meeting status lookup.
+    columns:
+      - name: LKHS_meeting_status_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: meeting_status_cv
+    description: Current-version view of meeting statuses.
+    columns:
+      - name: LKHS_meeting_status_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: meeting_type
+    description: SCD Type 2 history for meeting type lookup.
+    columns:
+      - name: LKHS_meeting_type_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: meeting_type_cv
+    description: Current-version view of meeting types.
+    columns:
+      - name: LKHS_meeting_type_id
+        data_tests:
+          - not_null
+          - unique
+
+  # ---------------------------------------------------------------------------
+  # Fact — Vote (afstemning)
+  # ---------------------------------------------------------------------------
+  - name: vote
+    description: >
+      One row per vote (afstemning). Includes whether the proposal was adopted
+      and the official conclusion text. SCD Type 2 history.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+    columns:
+      - name: LKHS_vote_id
+        description: Surrogate key.
+        data_tests:
+          - not_null
+          - unique
+      - name: approved
+        description: >
+          Whether the proposal was adopted (1) or rejected (0).
+          NULL may appear for procedural or cancelled votes.
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_in_set:
+              arguments:
+                value_set: [0, 1]
+              config:
+                where: "approved IS NOT NULL"
+
+  - name: vote_cv
+    description: Current-version view of votes.
+    columns:
+      - name: LKHS_vote_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: vote_type
+    description: >
+      Lookup table for vote types (e.g. "Endelig vedtagelse", "Ændringsforslag").
+      Also provides English translations.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1
+            max_value: 50
+    columns:
+      - name: LKHS_vote_type_id
+        data_tests:
+          - not_null
+          - unique
+      - name: vote_type_english
+        description: English translation of vote_type_danish.
+        data_tests:
+          - not_null
+
+  - name: vote_type_cv
+    description: Current-version view of vote types.
+    columns:
+      - name: LKHS_vote_type_id
+        data_tests:
+          - not_null
+          - unique
+
+  # ---------------------------------------------------------------------------
+  # Fact — Individual Votes (stemme)
+  # ---------------------------------------------------------------------------
+  - name: individual_votes
+    description: >
+      One row per individual member vote (stemme). Links actors, votes, and
+      voting position (for / against / neither). Only non-deleted rows are included.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          arguments:
+            min_value: 1

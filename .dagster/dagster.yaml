@@ -1,0 +1,25 @@
+# Persistent Dagster instance configuration.
+#
+# This file is read when DAGSTER_HOME is set to the directory containing it
+# (i.e. the .dagster/ folder at the repository root).
+#
+# Set the env var before starting the server:
+#   export DAGSTER_HOME="$(pwd)/.dagster"
+#   dagster dev -w workspace.yaml
+#
+# Or add to your .env / shell profile so it is always active.
+
+# ---------------------------------------------------------------------------
+# Run storage — keeps run history across server restarts.
+# Defaults to $DAGSTER_HOME/storage (no explicit config needed).
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Event log storage — keeps per-step event logs across restarts.
+# Defaults to $DAGSTER_HOME/storage (no explicit config needed).
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Schedule / sensor state — preserves which schedules/sensors are running.
+# Defaults to $DAGSTER_HOME/schedules (no explicit config needed).
+# ---------------------------------------------------------------------------

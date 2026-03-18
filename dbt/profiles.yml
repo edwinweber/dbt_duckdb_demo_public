@@ -1,0 +1,23 @@
+danish_democracy_data:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
+      extensions:
+        - httpfs
+        - parquet
+        - azure
+        - delta
+      settings:
+        azure_transport_option_type: 'curl'
+      secrets:
+        - type: azure
+          provider: service_principal
+          name: azure_sp
+          persistent: true
+          tenant_id: "{{ env_var('AZURE_TENANT_ID') }}"
+          client_id: "{{ env_var('AZURE_CLIENT_ID') }}"
+          client_secret: "{{ env_var('AZURE_CLIENT_SECRET') }}"
+          account_name: 'onelake'
+      external_root: 'data/curated'

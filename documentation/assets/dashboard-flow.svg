@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="520" viewBox="0 0 1500 520" role="img" aria-labelledby="title desc">
+  <title id="title">Operational dashboard flow</title>
+  <desc id="desc">Dagster logs, dbt artifacts, and dlt summaries feed observability staging models, intermediate marts, dashboard-ready facts and dimensions, and the Power BI engineering dashboard.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f4ee; }
+      .box { fill: #fffdf8; stroke: #2e3a46; stroke-width: 3; rx: 16; ry: 16; }
+      .accent { fill: #e7eef8; }
+      .accent2 { fill: #e7f2ec; }
+      .accent3 { fill: #f7e8dc; }
+      .text { font-family: Georgia, 'Times New Roman', serif; font-size: 23px; fill: #1f2933; }
+      .small { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; fill: #44515c; }
+      .label { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: bold; fill: #1f2933; }
+      .arrow { stroke: #2e3a46; stroke-width: 4; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2e3a46" />
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1500" height="520" />
+  <text class="label" x="750" y="52" text-anchor="middle">Operational Dashboard Data Flow</text>
+  <rect class="box accent3" x="40" y="140" width="200" height="100" />
+  <rect class="box accent3" x="40" y="260" width="200" height="100" />
+  <rect class="box accent3" x="40" y="380" width="200" height="100" />
+  <text class="text" x="140" y="194" text-anchor="middle">Dagster logs</text>
+  <text class="text" x="140" y="314" text-anchor="middle">dbt artifacts</text>
+  <text class="text" x="140" y="434" text-anchor="middle">dlt summaries</text>
+  <rect class="box accent" x="330" y="200" width="260" height="120" />
+  <text class="text" x="460" y="248" text-anchor="middle">Observability staging</text>
+  <text class="small" x="460" y="280" text-anchor="middle">normalized execution records</text>
+  <rect class="box accent2" x="680" y="200" width="260" height="120" />
+  <text class="text" x="810" y="248" text-anchor="middle">Intermediate marts</text>
+  <text class="small" x="810" y="280" text-anchor="middle">durations, status, lineage</text>
+  <rect class="box accent" x="1030" y="200" width="260" height="120" />
+  <text class="text" x="1160" y="248" text-anchor="middle">Dashboard facts and dims</text>
+  <text class="small" x="1160" y="280" text-anchor="middle">run and step analytics</text>
+  <rect class="box accent2" x="1340" y="200" width="120" height="120" />
+  <text class="text" x="1400" y="248" text-anchor="middle">Power BI</text>
+  <text class="small" x="1400" y="280" text-anchor="middle">dashboard</text>
+  <line class="arrow" x1="240" y1="190" x2="330" y2="235" />
+  <line class="arrow" x1="240" y1="310" x2="330" y2="260" />
+  <line class="arrow" x1="240" y1="430" x2="330" y2="285" />
+  <line class="arrow" x1="590" y1="260" x2="680" y2="260" />
+  <line class="arrow" x1="940" y1="260" x2="1030" y2="260" />
+  <line class="arrow" x1="1290" y1="260" x2="1340" y2="260" />
+</svg>

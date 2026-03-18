@@ -1,0 +1,14 @@
+# Dagster orchestration requirements for the Danish Democracy Data (DDD) project.
+#
+# Install into the existing virtual environment:
+#   pip install -r requirements_dagster.txt
+#
+# After installation, launch the Dagster UI from the repository root:
+#   dagster dev -w workspace.yaml
+#
+# Dagster version: requires >=1.7 for ConfigurableResource, build_schedule_from_partitioned_job,
+# run_status_sensor with monitored_jobs, and DefaultScheduleStatus.
+
+dagster>=1.7,<2.0
+dagster-webserver>=1.7,<2.0
+dagster-dbt>=0.28,<0.29

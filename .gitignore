@@ -1,0 +1,27 @@
+.tmp_dagster*/
+# Guard against literal {DAGSTER_HOME} being created by misconfigured dagster.yaml
+'{DAGSTER_HOME}'/
+.dagster/storage/
+.dagster/schedules/
+.dagster/history/
+.dagster/logs/
+.dagster/.telemetry/
+.dagster/.logs_queue/
+.dagster/.nux/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dlt/pipelines_dir/
+dlt/pipelines_log_dir/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+dlt/.dlt/secrets.toml
+dlt/.dlt/config.toml
+.venv/
+.env
+*.duckdb
+data/
+export_environment_variables.sh
+# dbt anonymous telemetry user IDs — personal identifiers, not for source control
+.user.yml

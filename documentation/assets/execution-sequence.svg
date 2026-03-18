@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Execution sequence</title>
+  <desc id="desc">Sequence diagram showing operator, Dagster, dlt, dbt on DuckDB, Delta export, and Fabric OneLake interactions during a pipeline run.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f4ee; }
+      .head { fill: #fffdf8; stroke: #2e3a46; stroke-width: 2.5; }
+      .line { stroke: #7a8691; stroke-width: 2; stroke-dasharray: 8 8; }
+      .msg { stroke: #2e3a46; stroke-width: 3; marker-end: url(#arrowhead); }
+      .text { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; fill: #1f2933; }
+      .label { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: bold; fill: #1f2933; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2e3a46" />
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="760" />
+  <text class="label" x="700" y="46" text-anchor="middle">Execution Sequence</text>
+  <g>
+    <rect class="head" x="60" y="80" width="150" height="54" rx="12" ry="12" />
+    <rect class="head" x="280" y="80" width="150" height="54" rx="12" ry="12" />
+    <rect class="head" x="500" y="80" width="150" height="54" rx="12" ry="12" />
+    <rect class="head" x="720" y="80" width="180" height="54" rx="12" ry="12" />
+    <rect class="head" x="980" y="80" width="180" height="54" rx="12" ry="12" />
+    <rect class="head" x="1220" y="80" width="140" height="54" rx="12" ry="12" />
+    <text class="text" x="135" y="114" text-anchor="middle">Operator</text>
+    <text class="text" x="355" y="114" text-anchor="middle">Dagster</text>
+    <text class="text" x="575" y="114" text-anchor="middle">dlt</text>
+    <text class="text" x="810" y="114" text-anchor="middle">dbt on DuckDB</text>
+    <text class="text" x="1070" y="114" text-anchor="middle">Delta export</text>
+    <text class="text" x="1290" y="114" text-anchor="middle">OneLake</text>
+  </g>
+  <g>
+    <line class="line" x1="135" y1="134" x2="135" y2="700" />
+    <line class="line" x1="355" y1="134" x2="355" y2="700" />
+    <line class="line" x1="575" y1="134" x2="575" y2="700" />
+    <line class="line" x1="810" y1="134" x2="810" y2="700" />
+    <line class="line" x1="1070" y1="134" x2="1070" y2="700" />
+    <line class="line" x1="1290" y1="134" x2="1290" y2="700" />
+  </g>
+  <g>
+    <line class="msg" x1="135" y1="180" x2="355" y2="180" />
+    <text class="text" x="245" y="168" text-anchor="middle">Launch job or schedule fires</text>
+    <line class="msg" x1="355" y1="250" x2="575" y2="250" />
+    <text class="text" x="465" y="238" text-anchor="middle">Run extraction assets</text>
+    <line class="msg" x1="575" y1="320" x2="1290" y2="320" />
+    <text class="text" x="932" y="308" text-anchor="middle">Write Bronze files</text>
+    <line class="msg" x1="355" y1="390" x2="810" y2="390" />
+    <text class="text" x="582" y="378" text-anchor="middle">Run Bronze and Silver models</text>
+    <line class="msg" x1="810" y1="460" x2="810" y2="460" />
+    <text class="text" x="810" y="448" text-anchor="middle">Materialize local transformation state</text>
+    <line class="msg" x1="355" y1="530" x2="810" y2="530" />
+    <text class="text" x="582" y="518" text-anchor="middle">Run Gold models</text>
+    <line class="msg" x1="355" y1="600" x2="1070" y2="600" />
+    <text class="text" x="712" y="588" text-anchor="middle">Run Silver and Gold export assets</text>
+    <line class="msg" x1="1070" y1="670" x2="1290" y2="670" />
+    <text class="text" x="1180" y="658" text-anchor="middle">Publish Delta tables and run logs</text>
+  </g>
+</svg>

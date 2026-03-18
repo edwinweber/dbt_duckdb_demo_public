@@ -1,0 +1,1 @@
+{{ generate_model_bronze(this.name,'DDD','danish_parliament') }}
