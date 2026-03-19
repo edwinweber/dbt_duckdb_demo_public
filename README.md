@@ -162,8 +162,8 @@ individual pipeline steps, volume management, and troubleshooting.
 ### 2. Clone and create a virtual environment
 
 ```bash
-git clone https://github.com/edwinweber/dbt_duckdb_demo.git
-cd dbt_duckdb_demo
+git clone https://github.com/edwinweber/dbt_duckdb_demo_public.git
+cd dbt_duckdb_demo_public
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dagster,dev]"
