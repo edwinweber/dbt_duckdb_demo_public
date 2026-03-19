@@ -1,0 +1,241 @@
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+
+  @top-left {
+    content: string(chapter, first);
+    font-family: "EB Garamond", Georgia, serif;
+    font-size: 9pt;
+    color: #5d6670;
+  }
+
+  @top-right {
+    content: "Edwin Weber";
+    font-family: "EB Garamond", Georgia, serif;
+    font-size: 9pt;
+    color: #5d6670;
+    letter-spacing: 0.06em;
+  }
+
+  @bottom-center {
+    content: counter(page);
+    font-family: "EB Garamond", Georgia, serif;
+    font-size: 10pt;
+    color: #33414d;
+  }
+}
+
+@page :first {
+  margin: 0;
+
+  @top-left {
+    content: none;
+  }
+
+  @top-right {
+    content: none;
+  }
+
+  @bottom-center {
+    content: none;
+  }
+}
+
+@page cover {
+  margin: 0;
+
+  @top-left {
+    content: none;
+  }
+
+  @top-right {
+    content: none;
+  }
+
+  @bottom-center {
+    content: none;
+  }
+}
+
+@media print {
+  html {
+    font-size: 11pt;
+  }
+
+  body {
+    font-family: "EB Garamond", Georgia, "Times New Roman", serif;
+    color: #1b232b;
+    background: #fff;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    line-height: 1.42;
+    -webkit-print-color-adjust: exact;
+    orphans: 3;
+    widows: 3;
+  }
+
+  .cover-art {
+    page: cover;
+    break-after: page;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  .cover-art img {
+    width: 100%;
+    margin: 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    color: #16212b;
+    break-after: avoid;
+  }
+
+  h1 {
+    string-set: chapter content(text);
+    font-size: 24pt;
+    margin: 0 0 0.55rem 0;
+    padding-bottom: 0.25rem;
+    border-bottom: 1.4pt solid #c6b59a;
+    break-before: page;
+  }
+
+  h2 {
+    font-size: 17pt;
+    margin: 1.2rem 0 0.45rem 0;
+  }
+
+  h3 {
+    font-size: 13pt;
+    margin: 0.95rem 0 0.35rem 0;
+  }
+
+  p,
+  li,
+  td,
+  th {
+    font-size: 10.8pt;
+  }
+
+  p {
+    margin: 0 0 0.5rem 0;
+    text-align: justify;
+    hyphens: auto;
+  }
+
+  ul,
+  ol {
+    margin-top: 0.3rem;
+    margin-bottom: 0.6rem;
+    padding-left: 1.1rem;
+  }
+
+  li {
+    margin-bottom: 0.18rem;
+  }
+
+  nav#TOC {
+    break-before: page;
+    break-after: page;
+    border: 1pt solid #d6c8b3;
+    padding: 0.9rem 1rem;
+    background: #fbf8f2;
+  }
+
+  nav#TOC ul {
+    list-style: none;
+    padding-left: 0;
+  }
+
+  nav#TOC li {
+    margin-bottom: 0.15rem;
+  }
+
+  hr {
+    break-after: page;
+    border: none;
+    margin: 0;
+  }
+
+  pre,
+  code,
+  .sourceCode {
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", Consolas, monospace;
+  }
+
+  pre,
+  div.sourceCode {
+    background: #f5efe5 !important;
+    border: 0.8pt solid #d9ccb8;
+    border-radius: 4px;
+    padding: 0.75rem;
+    margin: 0.7rem 0 0.9rem 0;
+    break-inside: avoid;
+    font-size: 8.8pt;
+    line-height: 1.35;
+    overflow: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  table {
+    font-size: 9.2pt;
+    break-inside: avoid;
+  }
+
+  th {
+    background: #efe6d8 !important;
+  }
+
+  img,
+  figure {
+    break-inside: avoid;
+  }
+
+  figure {
+    margin: 0.9rem 0 1rem 0;
+  }
+
+  figcaption {
+    font-size: 8.8pt;
+    color: #5d6670;
+    text-align: center;
+    margin-top: 0.25rem;
+    font-style: italic;
+  }
+
+  #title-page,
+  #copyright,
+  #preface-to-the-publication-edition,
+  #about-this-edition,
+  #bibliographic-note {
+    break-before: page;
+  }
+
+  #title-page {
+    margin-top: 60mm;
+    text-align: center;
+    border-bottom: none;
+  }
+
+  #title-page + h2,
+  #title-page + h2 + h3,
+  #title-page + h2 + h3 + p,
+  #title-page + h2 + h3 + p + p,
+  #title-page + h2 + h3 + p + p + p,
+  #title-page + h2 + h3 + p + p + p + p {
+    text-align: center;
+  }
+
+  blockquote {
+    border-left: 2.5pt solid #b98a56;
+    padding-left: 0.8rem;
+    margin-left: 0;
+    color: #44515c;
+  }
+}

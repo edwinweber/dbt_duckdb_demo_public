@@ -84,10 +84,15 @@ _mod.DLT_PIPELINE_RUN_LOG_FILE = os.getenv("DLT_PIPELINE_RUN_LOG_FILE")  # type:
 _mod.AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")  # type: ignore[attr-defined]
 _mod.AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")  # type: ignore[attr-defined]
 
+# ── Storage target (optional — eager) ───────────────────────────────────
+# Set STORAGE_TARGET=local to write to a Docker volume instead of Fabric OneLake.
+# Set LOCAL_STORAGE_PATH to override the default local base path.
+_mod.STORAGE_TARGET = os.getenv("STORAGE_TARGET", "onelake")  # type: ignore[attr-defined]
+_mod.LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "/data")  # type: ignore[attr-defined]
+
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
 _mod.DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")  # type: ignore[attr-defined]
-# DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD is defined in configuration_variables.py
-# as the single source of truth (int, not string).
+_mod.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = int(os.getenv("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", "31"))  # type: ignore[attr-defined]
 _mod.DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")  # type: ignore[attr-defined]
 _mod.DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")  # type: ignore[attr-defined]
 

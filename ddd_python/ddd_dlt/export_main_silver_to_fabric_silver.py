@@ -18,12 +18,13 @@ Usage::
 
 import argparse
 import logging
+import os
 
 import duckdb
 from deltalake import DeltaTable
 from deltalake.writer import write_deltalake
 
-from ddd_python.ddd_utils import get_variables_from_env, get_fabric_onelake_clients, configuration_variables
+from ddd_python.ddd_utils import get_variables_from_env, configuration_variables
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,19 @@ def export_single_silver_table(connection: duckdb.DuckDBPyConnection, table: str
     Returns:
         Number of rows written.
     """
-    token = get_fabric_onelake_clients.get_fabric_token()
-    target_table_path = (
-        f"abfss://{get_variables_from_env.FABRIC_WORKSPACE}"
-        f"@{get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT}"
-        f".dfs.fabric.microsoft.com/{get_variables_from_env.FABRIC_ONELAKE_FOLDER_SILVER}/{table}/"
-    )
-    storage_options = {"bearer_token": token, "use_fabric_endpoint": "true"}
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        target_table_path = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/Files/Silver/{table}/"
+        os.makedirs(target_table_path, exist_ok=True)
+        storage_options = {}
+    else:
+        from ddd_python.ddd_utils import get_fabric_onelake_clients
+        token = get_fabric_onelake_clients.get_fabric_token()
+        target_table_path = (
+            f"abfss://{get_variables_from_env.FABRIC_WORKSPACE}"
+            f"@{get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT}"
+            f".dfs.fabric.microsoft.com/{get_variables_from_env.FABRIC_ONELAKE_FOLDER_SILVER}/{table}/"
+        )
+        storage_options = {"bearer_token": token, "use_fabric_endpoint": "true"}
 
     if DeltaTable.is_deltatable(target_table_path, storage_options=storage_options):
         target_table = DeltaTable(target_table_path, storage_options=storage_options)

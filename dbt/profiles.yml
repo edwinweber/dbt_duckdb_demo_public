@@ -1,7 +1,19 @@
 danish_democracy_data:
-  target: dev
+  # STORAGE_TARGET controls which output is used:
+  #   local   — reads JSON from local filesystem, no Azure credentials needed
+  #   onelake — reads JSON from Fabric OneLake via abfss://, requires Azure service principal
+  target: "{{ env_var('STORAGE_TARGET', 'onelake') }}"
   outputs:
-    dev:
+    local:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
+      extensions:
+        - httpfs
+        - parquet
+        - delta
+      external_root: 'data/curated'
+
+    onelake:
       type: duckdb
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:

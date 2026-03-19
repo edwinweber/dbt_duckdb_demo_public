@@ -34,8 +34,7 @@ def run_extraction_pipelines_danish_parliament_data(
     Args:
         date_to_load_from: Starting date for data extraction in 'YYYY-MM-DD'
             format. Defaults to today minus
-            ``configuration_variables.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD``
-            days.
+            ``DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD`` days (env var, default 31).
         file_names_to_retrieve: API resource names to retrieve. Defaults to
             ``configuration_variables.DANISH_DEMOCRACY_FILE_NAMES``.
 
@@ -48,7 +47,7 @@ def run_extraction_pipelines_danish_parliament_data(
 
     # Resolve date_to_load_from
     if date_to_load_from is None:
-        default_days = configuration_variables.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD
+        default_days = get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD
         date_to_load_from = f"{start_time - timedelta(days=default_days):%Y-%m-%d}"
     else:
         try:
@@ -73,6 +72,10 @@ def run_extraction_pipelines_danish_parliament_data(
         future_to_name: dict[concurrent.futures.Future, str] = {}
 
         for file_name in file_names_to_retrieve:
+            # Incremental entities use an opdateringsdato date filter so only
+            # new/changed records are fetched.  The remaining entities also
+            # support opdateringsdato, but they are small tables and a full
+            # extract on every run keeps delete detection simple.
             api_filter = (
                 f"$filter=opdateringsdato ge DateTime'{date_to_load_from}'&$orderby=id"
                 if file_name in incremental_set
@@ -85,6 +88,15 @@ def run_extraction_pipelines_danish_parliament_data(
             )
             destination_file_name = f"{base_file_name_lower}_{start_time:%Y%m%d_%H%M%S}.json"
 
+            if get_variables_from_env.STORAGE_TARGET == "local":
+                # Relative to LOCAL_STORAGE_PATH; dlt filesystem prepends it.
+                dest_dir = f"Files/Bronze/{SOURCE_SYSTEM_CODE}/{base_file_name_lower}"
+            else:
+                dest_dir = (
+                    f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
+                    f"/{SOURCE_SYSTEM_CODE}/{base_file_name_lower}"
+                )
+
             future = executor.submit(
                 dpef.execute_pipeline,
                 pipeline_type=PIPELINE_TYPE,
@@ -94,10 +106,7 @@ def run_extraction_pipelines_danish_parliament_data(
                 source_api_resource=file_name,
                 source_api_filter=api_filter,
                 source_api_date_to_load_from=date_to_load_from,
-                destination_directory_path=(
-                    f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
-                    f"/{SOURCE_SYSTEM_CODE}/{base_file_name_lower}"
-                ),
+                destination_directory_path=dest_dir,
                 destination_file_name=destination_file_name,
             )
             future_to_name[future] = file_name
@@ -140,7 +149,10 @@ def run_extraction_pipelines_danish_parliament_data(
         ensure_ascii=False,
     ) + "\n"
 
-    log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{SOURCE_SYSTEM_CODE}"
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{SOURCE_SYSTEM_CODE}"
+    else:
+        log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{SOURCE_SYSTEM_CODE}"
     log_file = f"{SCRIPT_NAME}_log.ndjson"
     try:
         dpef.write_log_to_onelake(log_record, log_dir, log_file)

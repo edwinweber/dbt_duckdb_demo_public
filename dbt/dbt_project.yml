@@ -26,7 +26,6 @@ clean-targets:         # directories to be removed by `dbt clean`
 
 # Project variables
 vars:
-  danish_democracy_data_source: "abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD"
   bronze_columns_to_exclude_in_silver_hash: "'LKHS_date_inserted','LKHS_pipeline_execution_inserted','LKHS_filename'"
   hash_null_replacement: "'<NULL>'"
   hash_delimiter: "']##['"

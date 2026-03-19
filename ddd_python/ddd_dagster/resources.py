@@ -129,10 +129,10 @@ class DltOneLakeResource(ConfigurableResource):
             + "\n"
         )
 
-        log_dir = (
-            f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}"
-            f"/{self.source_system_code}"
-        )
+        if get_variables_from_env.STORAGE_TARGET == "local":
+            log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{self.source_system_code}"
+        else:
+            log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{self.source_system_code}"
         log_file = f"{job_name}_run_log.ndjson"
 
         dpef.write_log_to_onelake(record, log_dir, log_file)

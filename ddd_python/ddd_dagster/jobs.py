@@ -75,9 +75,10 @@ danish_parliament_full_extract_job = define_asset_job(
     selection=AssetSelection.groups("ingestion_DDD_full_extract"),
     executor_def=_concurrent_executor,
     description=(
-        "Full extraction of the 12 Danish Parliament reference/lookup resources "
-        "that do not support incremental OData filtering.  Fetches all records "
-        "on every run.  Runs weekly on Mondays."
+        "Full extraction of the 12 Danish Parliament resources that are always "
+        "fetched in full on every run.  These tables support opdateringsdato "
+        "filtering but are small enough that a full extract is simpler and "
+        "makes delete detection straightforward.  Runs weekly on Mondays."
     ),
     tags={
         "team": "data-engineering",

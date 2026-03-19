@@ -13,7 +13,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from ddd_python.ddd_utils import get_fabric_onelake_clients, get_variables_from_env
+from ddd_python.ddd_utils import get_variables_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> i
 
 
 def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
+    from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC, log_file_name,
     )
@@ -63,12 +64,13 @@ def main(models_to_select: str | None = None) -> None:
     return_code = run_dbt_build(log_file_local, models_to_select)
     logger.info("dbt build logs saved locally at: %s", log_file_local)
 
-    upload_log_to_azure(log_file_local, log_file_name)
-    logger.info(
-        "dbt build logs uploaded to Azure at %s/%s",
-        get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC,
-        log_file_name,
-    )
+    if get_variables_from_env.STORAGE_TARGET != "local":
+        upload_log_to_azure(log_file_local, log_file_name)
+        logger.info(
+            "dbt build logs uploaded to Azure at %s/%s",
+            get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC,
+            log_file_name,
+        )
 
     if return_code != 0:
         raise RuntimeError(f"dbt build failed with exit code {return_code} — see {log_file_local}")

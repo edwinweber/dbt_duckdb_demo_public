@@ -9,6 +9,7 @@ x-path-overrides: &path-overrides
   DBT_MODELS_DIRECTORY: /app/dbt/models
   DBT_LOGS_DIRECTORY: /data/dbt_logs
   DAGSTER_HOME: /data/dagster
+  LOCAL_STORAGE_PATH: /data/local
 
 x-common: &common
   build: .
@@ -34,6 +35,7 @@ services:
       - dlt_pipelines:/data/dlt_pipelines
       - duckdb_data:/data/duckdb
       - dbt_logs:/data/dbt_logs
+      - local_storage:/data/local
 
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
@@ -48,6 +50,7 @@ services:
       - duckdb_data:/data/duckdb
       - dbt_logs:/data/dbt_logs
       - dagster_data:/data/dagster
+      - local_storage:/data/local
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
@@ -64,4 +67,6 @@ volumes:
   dbt_logs:
     driver: local
   dagster_data:
+    driver: local
+  local_storage:
     driver: local

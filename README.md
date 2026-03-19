@@ -15,50 +15,64 @@ it describes does run daily against real data, but this repo is shared as a
 reference for the patterns, not as a turnkey deployment.
 
 The pipeline follows a **medallion architecture** (Bronze → Silver → Gold),
-orchestrated by Dagster, and exports the final tables to Microsoft Fabric
-OneLake as Delta Lake tables for downstream BI consumption.
+orchestrated by Dagster. It supports two storage backends controlled by a
+single environment variable:
+
+| Mode | Storage | Requires |
+| --- | --- | --- |
+| `local` | `data/` directory in the repo (Docker volume) | Nothing — runs fully offline |
+| `onelake` | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) | Azure service principal |
 
 ---
 
 ## Architecture overview
 
 ```text
-┌─────────────────────────────────────────────────────────────────────┐
-│  Schedule  (06:00 UTC daily, disabled by default)                   │
-│  └── danish_parliament_full_pipeline_job                            │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │ triggers
-┌─────────────────────────────▼───────────────────────────────────────┐
-│  Layer 1 — Extraction  (dlt + Dagster assets)                       │
-│  18 OData resources  →  NDJSON files on OneLake Bronze              │
-│  ├── Incremental (6): Aktør, Møde, Sag, Sagstrin,                  │
-│  │                    SagstrinAktør, Stemme                         │
-│  └── Full-extract (12): reference / lookup tables                   │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────────────┐
-│  Layer 2 — Bronze  (dbt views)                                      │
-│  DuckDB read_json_auto over OneLake NDJSON                          │
-│  One view per entity — no transformations, raw data preserved       │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────────────┐
-│  Layer 3 — Silver  (dbt incremental tables)                         │
-│  Hash-based CDC → SCD Type 2 history per entity                     │
-│  Companion _cv (current-version) views per entity                   │
-└──────────────┬──────────────────────────────────┬───────────────────┘
-               │                                  │
-┌──────────────▼──────────────┐   ┌───────────────▼───────────────────┐
-│  Silver export (Delta Lake) │   │  Layer 4 — Gold  (dbt views)      │
-│  DuckDB Silver → OneLake    │   │  Star-schema: actor, vote, case,   │
-│  Incremental append         │   │  meeting, individual_votes + CVs   │
-└─────────────────────────────┘   └───────────────┬───────────────────┘
-                                                  │
-                                  ┌───────────────▼───────────────────┐
-                                  │  Gold export   (Delta Lake)       │
-                                  │  DuckDB Gold → OneLake            │
-                                  │  Full overwrite                   │
-                                  └───────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Dagster  (schedule 06:00 UTC daily · disabled by default)           │
+  │  └── danish_parliament_full_pipeline_job                             │
+  └──────────────────────────────┬───────────────────────────────────────┘
+                                 │ orchestrates
+  ┌──────────────────────────────▼───────────────────────────────────────┐
+  │  Layer 1 — Extraction  (dlt · 18 OData entities)                     │
+  │  ├── Incremental (6):  Aktør, Møde, Sag, Sagstrin, SagstrinAktør,    │
+  │  │                     Stemme                                         │
+  │  └── Full-extract (12): small tables, always fully extracted          │
+  └─────────────────┬────────────────────────────────┬────────────────────┘
+                    │                                │
+       STORAGE_TARGET=local             STORAGE_TARGET=onelake
+                    │                                │
+    ┌───────────────▼──────────────┐  ┌──────────────▼──────────────────┐
+    │  data/Files/Bronze/DDD/      │  │  <Lakehouse>/Files/Bronze/DDD/  │
+    │  {entity}/{entity}_TS.json   │  │  {entity}/{entity}_TS.json      │
+    └───────────────┬──────────────┘  └──────────────┬──────────────────┘
+                    └──────────────────┬──────────────┘
+                          DANISH_DEMOCRACY_DATA_SOURCE (env var)
+  ┌───────────────────────────────────▼──────────────────────────────────┐
+  │  Layer 2 — Bronze  (dbt views · code-generated)                      │
+  │  DuckDB read_json_auto(DANISH_DEMOCRACY_DATA_SOURCE/{entity}/*.json)  │
+  │  Works identically for local paths and abfss:// URLs                 │
+  │  One view per entity · no transformations · raw data preserved       │
+  └───────────────────────────────────┬──────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼──────────────────────────────────┐
+  │  Layer 3 — Silver  (dbt incremental tables · DuckDB)                 │
+  │  Hash-based CDC → SCD Type 2 history per entity                      │
+  │  Companion _cv (current-version) view per entity                     │
+  └──────────────────────┬────────────────────────────┬───────────────────┘
+                         │                            │
+    ┌────────────────────▼──────────────┐  ┌──────────▼──────────────────┐
+    │  Silver export  (Delta Lake)      │  │  Layer 4 — Gold (dbt views) │
+    │  Incremental append               │  │  Star schema: actor, vote,  │
+    │  local:   data/Files/Silver/      │  │  case, meeting + _cv views  │
+    │  onelake: <Lh>/Files/Silver/      │  └──────────┬──────────────────┘
+    └───────────────────────────────────┘             │
+                                           ┌──────────▼──────────────────┐
+                                           │  Gold export  (Delta Lake)  │
+                                           │  Full overwrite every run   │
+                                           │  local:   data/Files/Gold/  │
+                                           │  onelake: <Lh>/Files/Gold/  │
+                                           └─────────────────────────────┘
 ```
 
 ### Tech stack
@@ -68,8 +82,8 @@ OneLake as Delta Lake tables for downstream BI consumption.
 | Orchestration | Dagster (software-defined assets, schedules, sensors) |
 | Extraction | dlt (Data Load Tool) |
 | Transformation | dbt-core + dbt-duckdb |
-| Local storage | DuckDB |
-| Cloud storage | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
+| Query engine / local storage | DuckDB |
+| Cloud storage (optional) | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
 | Data quality | dbt built-in tests + dbt-expectations |
 | Language | Python 3.12+ |
 
@@ -99,9 +113,14 @@ individual pipeline steps, volume management, and troubleshooting.
 
 ```text
 .
+├── data/                       Local storage (git-ignored) — mirrors Fabric OneLake layout
+│   └── Files/
+│       ├── Bronze/DDD/         NDJSON files per entity (written by dlt in local mode)
+│       ├── Silver/             Delta Lake tables per Silver entity
+│       └── Gold/               Delta Lake tables per Gold model
 ├── dbt/                        dbt project
 │   ├── models/
-│   │   ├── bronze/             Views over raw OneLake NDJSON (read_json_auto)
+│   │   ├── bronze/             Views over Bronze NDJSON (read_json_auto)
 │   │   ├── silver/             SCD Type 2 incremental tables + _cv views
 │   │   └── gold/               Star-schema views + _cv (current-version) views
 │   ├── macros/                 Code-generation macros for Bronze, Silver & Gold
@@ -114,7 +133,7 @@ individual pipeline steps, volume management, and troubleshooting.
 ├── tests/                      pytest unit + integration tests
 ├── .dagster/                   Dagster home directory (set via DAGSTER_HOME)
 │   └── dagster.yaml            SQLite run/event/schedule storage config
-├── .env.example                Template — copy to .env and fill in credentials
+├── .env.example                Template — copy to .env and fill in values
 ├── workspace.yaml              Dagster workspace entry-point
 ├── Dockerfile                  Container image definition
 ├── docker-compose.yml          Service definitions (run, dagster)
@@ -128,7 +147,13 @@ individual pipeline steps, volume management, and troubleshooting.
 
 ### 1. Prerequisites
 
+**All modes:**
+
 - Python 3.12+
+- The Danish Parliament OData API (`https://oda.ft.dk/api`) is public — no API key required
+
+**OneLake mode only (optional):**
+
 - Access to a Microsoft Fabric workspace with OneLake enabled
 - An Azure AD service principal with **Storage Blob Data Contributor** on the
   OneLake storage account
@@ -148,25 +173,40 @@ pip install -e ".[dagster,dev]"
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in all required values
+# Edit .env — for local mode only a handful of variables are needed
 ```
 
-Key variables:
+#### Local mode (no Fabric required)
+
+| Variable | Example value | Description |
+| --- | --- | --- |
+| `STORAGE_TARGET` | `local` | Selects local filesystem storage |
+| `LOCAL_STORAGE_PATH` | `/home/you/dbt_duckdb_demo/data` | Base path for Bronze / Silver / Gold files |
+| `DANISH_DEMOCRACY_DATA_SOURCE` | `<LOCAL_STORAGE_PATH>/Files/Bronze/DDD` | Bronze root that dbt reads from |
+| `DAGSTER_HOME` | `/home/you/dbt_duckdb_demo/.dagster` | Dagster run / schedule state |
+| `DUCKDB_DATABASE_LOCATION` | `/home/you/dbt_duckdb_demo/duckdb/danish_democracy_data.duckdb` | DuckDB file path |
+| `DUCKDB_DATABASE` | `danish_democracy_data` | DuckDB database name |
+| `DBT_PROJECT_DIRECTORY` | `/home/you/dbt_duckdb_demo/dbt` | Path to the `dbt/` folder |
+| `DBT_MODELS_DIRECTORY` | `/home/you/dbt_duckdb_demo/dbt/models` | Path to `dbt/models/` |
+| `DLT_PIPELINES_DIR` | `/home/you/dbt_duckdb_demo/dlt/pipelines_dir` | dlt state directory |
+| `DANISH_DEMOCRACY_BASE_URL` | `https://oda.ft.dk/api` | Parliament OData API root |
+
+Azure / Fabric variables are **not required** in local mode and can be left unset.
+
+#### OneLake mode (Fabric + Azure service principal)
+
+All local mode variables above, plus:
 
 | Variable | Description |
 | --- | --- |
-| `DAGSTER_HOME` | Path to `.dagster/` at repo root — Dagster stores run history and schedule state here |
-| `DUCKDB_DATABASE_LOCATION` | Absolute path to the local DuckDB file |
-| `DUCKDB_DATABASE` | DuckDB database name (without path) |
-| `DBT_DANISH_DEMOCRACY_DATA_SOURCE` | `abfss://` path to Bronze NDJSON root on OneLake |
-| `DBT_PROJECT_DIRECTORY` | Absolute path to the `dbt/` folder |
-| `DBT_MODELS_DIRECTORY` | Absolute path to `dbt/models/` |
-| `DLT_PIPELINES_DIR` | Local directory for dlt pipeline state |
+| `STORAGE_TARGET` | `onelake` |
+| `DANISH_DEMOCRACY_DATA_SOURCE` | `abfss://onelake.dfs.fabric.microsoft.com/<workspace>/<lakehouse>.Lakehouse/Files/Bronze/DDD` |
 | `FABRIC_WORKSPACE` | Fabric workspace name |
 | `FABRIC_ONELAKE_STORAGE_ACCOUNT` | Usually `onelake` |
-| `FABRIC_ONELAKE_FOLDER_BRONZE` | `<Workspace>.Lakehouse/Files/Bronze` |
-| `FABRIC_ONELAKE_FOLDER_SILVER` | `<Workspace>.Lakehouse/Files/Silver` |
-| `FABRIC_ONELAKE_FOLDER_GOLD` | `<Workspace>.Lakehouse/Files/Gold` |
+| `FABRIC_ONELAKE_FOLDER_BRONZE` | `<Lakehouse>.Lakehouse/Files/Bronze` |
+| `FABRIC_ONELAKE_FOLDER_SILVER` | `<Lakehouse>.Lakehouse/Files/Silver` |
+| `FABRIC_ONELAKE_FOLDER_GOLD` | `<Lakehouse>.Lakehouse/Files/Gold` |
+| `DLT_PIPELINE_RUN_LOG_DIR` | OneLake path for pipeline run logs |
 | `AZURE_TENANT_ID` | Azure AD tenant ID |
 | `AZURE_CLIENT_ID` | Service principal client ID |
 | `AZURE_CLIENT_SECRET` | Service principal secret |
@@ -232,7 +272,7 @@ dagster job launch -w workspace.yaml --job danish_parliament_all_job
 dagster job launch -w workspace.yaml --job dbt_silver_job
 dagster job launch -w workspace.yaml --job dbt_gold_job
 
-# 3. Export to OneLake Delta Lake
+# 3. Export Silver and Gold as Delta Lake tables
 dagster job launch -w workspace.yaml --job export_silver_job
 dagster job launch -w workspace.yaml --job export_gold_job
 ```
@@ -255,9 +295,11 @@ For a manual incremental run (the 6 date-filterable entities only):
 dagster job launch -w workspace.yaml --job danish_parliament_incremental_job
 ```
 
-### Reference table refresh
+### Full-extract refresh
 
-The 12 lookup entities that don't support date filtering are fetched in full by:
+The 12 entities that are always fully extracted on every run (they support
+`opdateringsdato` filtering but are small enough that a full extract keeps
+delete detection simple):
 
 ```bash
 dagster job launch -w workspace.yaml --job danish_parliament_full_extract_job
@@ -277,14 +319,56 @@ dagster job launch -w workspace.yaml --job export_gold_job
 
 ---
 
+## Local storage layout
+
+When `STORAGE_TARGET=local`, all data lands under `LOCAL_STORAGE_PATH` in a
+directory structure that intentionally mirrors the Fabric OneLake layout so
+that paths are directly comparable:
+
+```text
+LOCAL_STORAGE_PATH/          (e.g. /home/you/dbt_duckdb_demo/data  or  /data/local in Docker)
+└── Files/
+    ├── Bronze/
+    │   └── DDD/
+    │       ├── aktoer/          aktoer_YYYYMMDD_HHMMSS.json
+    │       ├── aktoertype/      aktoertype_YYYYMMDD_HHMMSS.json
+    │       ├── afstemning/      …
+    │       └── … (18 entities total)
+    ├── Silver/
+    │   ├── silver_aktoer/       Delta Lake table (incremental append)
+    │   ├── silver_aktoertype/   Delta Lake table
+    │   └── … (18 Silver tables)
+    └── Gold/
+        ├── actor/               Delta Lake table (full overwrite)
+        ├── vote/
+        └── … (Gold models)
+```
+
+Compare with OneLake (`STORAGE_TARGET=onelake`):
+
+```text
+<Workspace>/
+└── <Lakehouse>.Lakehouse/Files/
+    ├── Bronze/DDD/{entity}/     — NDJSON files
+    ├── Silver/{table}/          — Delta Lake tables
+    └── Gold/{table}/            — Delta Lake tables
+```
+
+The `DANISH_DEMOCRACY_DATA_SOURCE` variable is what dbt's Bronze layer uses to
+locate the NDJSON files via DuckDB's `read_json_auto()`. Set it to either an
+`abfss://` URL (OneLake) or an absolute local path — the Bronze models work
+identically in both cases.
+
+---
+
 ## Data model
 
 ### Entities (18)
 
 | Category | Entities |
 | --- | --- |
-| **Incremental** | Aktør, Møde, Sag, Sagstrin, SagstrinAktør, Stemme |
-| **Full-extract** | Afstemning, Afstemningstype, Aktørtype, Mødestatus, Mødetype, Periode, Sagskategori, Sagsstatus, Sagstrinsstatus, Sagstrinstype, Sagstype, Stemmetype |
+| **Incremental** (date-filtered) | Aktør, Møde, Sag, Sagstrin, SagstrinAktør, Stemme |
+| **Full-extract** (always fully fetched — small tables, easy delete detection) | Afstemning, Afstemningstype, Aktørtype, Mødestatus, Mødetype, Periode, Sagskategori, Sagsstatus, Sagstrinsstatus, Sagstrinstype, Sagstype, Stemmetype |
 
 ### Silver layer — SCD Type 2
 
@@ -417,13 +501,6 @@ export DAGSTER_HOME="$(pwd)/.dagster"
   the upstream fix is released.  `fetch_arrow_table()` (deprecated in 1.5) is
   used accordingly.
 
-- **`danish_democracy_data_source` is hardcoded in `dbt_project.yml`** — dbt
-  does not recursively render Jinja inside project variable values, so
-  `env_var()` cannot be nested inside `var()`.  To point Bronze sources at a
-  different OneLake path, either edit the variable directly in
-  `dbt_project.yml` or pass `--vars '{danish_democracy_data_source: "abfss://..."}'`
-  on the CLI.
-
 ---
 
 ## Troubleshooting
@@ -436,7 +513,10 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 | `INTERNAL Error: Failed to bind column reference "id"` in Silver `_cv` tests | DuckDB >=1.5.0 QUALIFY + GROUP BY bug | Downgrade: `pip install "duckdb>=1.1,<1.5"` (pinned in `pyproject.toml`) |
 | `write_deltalake() unexpected keyword argument` | `deltalake` version mismatch | `pip install -e ".[dagster,dev]"` to restore pinned versions |
 | `FileNotFoundError` on DuckDB path | `DUCKDB_DATABASE_LOCATION` not set | Check `.env` and ensure the directory exists |
-| Bronze models read no rows | `DBT_DANISH_DEMOCRACY_DATA_SOURCE` missing or wrong | Set the correct `abfss://` path pointing to the Bronze NDJSON root on OneLake |
+| Bronze models return no rows (local mode) | `DANISH_DEMOCRACY_DATA_SOURCE` points to empty or wrong directory | Verify files exist under `LOCAL_STORAGE_PATH/Files/Bronze/DDD/{entity}/` |
+| Bronze models return no rows (OneLake mode) | `DANISH_DEMOCRACY_DATA_SOURCE` missing or wrong `abfss://` path | Set the correct path pointing to the Bronze NDJSON root on OneLake |
+| dbt uses wrong output profile | `STORAGE_TARGET` mismatch | `dbt/profiles.yml` selects the `local` or `onelake` output based on `STORAGE_TARGET` — ensure `.env` is set correctly |
+| Azure credential errors in local mode | `STORAGE_TARGET=onelake` set accidentally | Set `STORAGE_TARGET=local` in `.env`; no Azure vars are needed |
 | dbt models missing (empty `models/` dir) | Model generation not run | Run `python -m ddd_python.ddd_dbt.generate_dbt_models` |
 
 ---

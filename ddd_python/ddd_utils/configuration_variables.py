@@ -1,8 +1,8 @@
 # Danish Democracy settings
-# Base URL is defined in .env (via get_variables_from_env.DANISH_DEMOCRACY_BASE_URL).
-DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = 31
+# DANISH_DEMOCRACY_BASE_URL and DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD are
+# defined in .env and loaded via get_variables_from_env.
 
-# Define the API entity names to retrieve data from
+# All 18 API entity names to retrieve data from.
 DANISH_DEMOCRACY_FILE_NAMES = [
     "Afstemning",
     "Afstemningstype",
@@ -24,6 +24,10 @@ DANISH_DEMOCRACY_FILE_NAMES = [
     "Stemmetype",
 ]
 
+# Entities extracted incrementally using an opdateringsdato date filter.
+# The remaining 12 entities also support opdateringsdato but are always
+# extracted in full — they are small tables and a full extract keeps
+# delete detection simple (no cursor state to manage).
 DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL = [
     "Aktør",
     "Møde",

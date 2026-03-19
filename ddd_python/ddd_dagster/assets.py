@@ -9,8 +9,10 @@ single Dagster ``@asset``.  Assets are split into two groups:
   ``date_to_load_from`` run-config field (defaults to
   ``today - DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD`` days).
 
-* **ingestion/DDD** — lookup/reference resources without date support.
-  These always fetch all records; no date config is applied.
+* **ingestion/DDD** — resources that are always fully extracted on every run.
+  The API does support ``opdateringsdato`` filtering for these entities, but
+  they are small tables and a full extraction on every run keeps delete
+  detection simple — no date config is applied.
 
 Design notes
 ------------
@@ -109,7 +111,9 @@ def _base_name(api_resource: str) -> str:
 
 
 def _destination_path(base: str) -> str:
-    """Build the OneLake Bronze directory path for a given normalised resource name."""
+    """Build the Bronze directory path for a given normalised resource name."""
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        return f"Files/Bronze/{_SOURCE_SYSTEM_CODE}/{base}"
     return (
         f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
         f"/{_SOURCE_SYSTEM_CODE}/{base}"
@@ -173,7 +177,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         if config.date_to_load_from is not None:
             date_from = config.date_to_load_from
         else:
-            default_days = configuration_variables.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD
+            default_days = get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD
             date_from = f"{datetime.now(timezone.utc) - timedelta(days=default_days):%Y-%m-%d}"
 
         logger.info(
@@ -225,9 +229,10 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
 def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
     """Return a non-partitioned ``@asset`` for a full-extract OData resource.
 
-    Every run fetches all records (``$inlinecount=allpages``).  These resources
-    are reference/lookup tables that do not publish an ``opdateringsdato`` field
-    suitable for incremental filtering.
+    Every run fetches all records (``$inlinecount=allpages``).  The API does
+    support ``opdateringsdato`` filtering for these entities, but they are small
+    tables so a full extraction is simpler and makes delete detection
+    straightforward — no cursor state to manage.
 
     Args:
         api_resource: Exact OData entity name (e.g. ``"Afstemning"``).
@@ -244,8 +249,9 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{api_resource}** from the Danish Parliament "
-            "OData API into OneLake Bronze.  "
-            "Fetches all records on every run (no date filter)."
+            "OData API into Bronze storage.  "
+            "Fetches all records on every run — the table is small and a full "
+            "extract keeps delete detection simple."
         ),
         metadata={
             "api_resource": MetadataValue.text(api_resource),

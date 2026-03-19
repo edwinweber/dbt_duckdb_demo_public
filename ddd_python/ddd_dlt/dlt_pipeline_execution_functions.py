@@ -68,7 +68,7 @@ from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
 
-from ddd_python.ddd_utils import get_fabric_onelake_clients, get_variables_from_env
+from ddd_python.ddd_utils import get_variables_from_env
 
 # Ensure the dlt state directory exists — critical when running in Docker with a
 # freshly-mounted volume where the path does not yet exist in the container FS.
@@ -121,64 +121,46 @@ def _json_default(obj: Any) -> str:
 
 
 def _upload_to_onelake(data: bytes | str, directory_path: str, file_name: str) -> None:
-    """Upload data to a Fabric OneLake file, overwriting any existing content.
-
-    Authentication is handled transparently by the ``ClientSecretCredential``
-    constructed in :mod:`ddd_python.ddd_utils.get_fabric_onelake_clients` using
-    the ``AZURE_TENANT_ID``, ``AZURE_CLIENT_ID``, and
-    ``AZURE_CLIENT_SECRET`` environment variables.
-
-    Args:
-        data: Raw bytes or a UTF-8 string to write.
-        directory_path: OneLake directory path relative to the default workspace
-            (e.g. ``"<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
-        file_name: Target file name including extension (e.g. ``"data.json"``).
-
-    Raises:
-        Exception: Any error raised by the underlying ADLS Gen2 file client,
-            such as authentication failures or quota errors.
-    """
+    """Upload data to a Fabric OneLake file, overwriting any existing content."""
+    from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         directory_path, file_name
     )
     file_client.upload_data(data, overwrite=True, timeout=300)
 
 
+def _upload_to_local(data: bytes | str, directory_path: str, file_name: str) -> None:
+    """Write data to a local file, overwriting any existing content."""
+    os.makedirs(directory_path, exist_ok=True)
+    file_path = os.path.join(directory_path, file_name)
+    mode = "wb" if isinstance(data, bytes) else "w"
+    with open(file_path, mode) as f:
+        f.write(data)
 
-def _make_onelake_destination(
+
+def _upload(data: bytes | str, directory_path: str, file_name: str) -> None:
+    """Upload data to local or OneLake storage, based on STORAGE_TARGET."""
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        _upload_to_local(data, directory_path, file_name)
+    else:
+        _upload_to_onelake(data, directory_path, file_name)
+
+
+
+def _make_destination(
     directory_path: str,
     file_name: str,
     data_table_name: str,
 ) -> tuple[dlt_filesystem, str]:
-    """Build a dlt filesystem destination that writes directly to OneLake.
+    """Build a dlt filesystem destination for either OneLake or local storage.
 
-    Uses dlt's built-in ``filesystem`` destination with Azure ADLS Gen2
-    credentials to write files to OneLake.  A custom ``layout`` via
-    ``extra_placeholders`` ensures the data table is written with the exact
-    caller-supplied *file_name* inside a ``{table_name}/`` subdirectory.
-
-    dlt-internal tables (``_dlt_loads``, ``_dlt_version``, etc.) are written
-    alongside the data under the dataset path in the same Bronze directory.
-
-    The dlt resource **must** use *data_table_name* as its ``name`` so that
-    ``{table_name}`` in the layout resolves to the last segment of
-    *directory_path* and the file lands in the correct OneLake folder.
-
-    Args:
-        directory_path: Full OneLake directory path including the entity
-            subdirectory (e.g.
-            ``"<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
-            The last segment must match *data_table_name* so that
-            ``{table_name}`` in the layout produces the correct directory.
-        file_name: Target file name including extension
-            (e.g. ``"afstemning_20240101_120000.json"``).
-        data_table_name: dlt resource/table name.  Must match the last
-            segment of *directory_path*.
+    When ``STORAGE_TARGET=local``, *directory_path* is treated as a path
+    relative to ``LOCAL_STORAGE_PATH`` (e.g. ``"bronze/DDD/afstemning"``).
+    When ``STORAGE_TARGET=onelake`` (default), *directory_path* is the full
+    OneLake path (e.g. ``"<LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
 
     Returns:
-        A tuple of ``(destination, dataset_name)`` — pass *dataset_name* to
-        ``dlt.pipeline(dataset_name=...)`` so that dlt prepends the parent
-        path and the data file lands at the correct OneLake location.
+        A tuple of ``(destination, dataset_name)`` to pass to ``dlt.pipeline``.
     """
     parent_path = directory_path.rsplit("/", 1)[0]
 
@@ -191,21 +173,27 @@ def _make_onelake_destination(
     ) -> str:
         if table_name == data_table_name:
             return file_name
-        # dlt internal tables: keep default naming; cleaned up post-run.
         return f"{table_name}.{file_id}.{ext}"
 
-    destination = dlt_filesystem(
-        bucket_url=f"az://{get_variables_from_env.FABRIC_WORKSPACE}",
-        layout="{table_name}/{_resolve_path}",
-        extra_placeholders={"_resolve_path": _resolve_path},
-        credentials={
-            "azure_storage_account_name": get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT,
-            "azure_account_host": "onelake.blob.fabric.microsoft.com",
-            "azure_client_id": get_variables_from_env.AZURE_CLIENT_ID,
-            "azure_client_secret": get_variables_from_env.AZURE_CLIENT_SECRET,
-            "azure_tenant_id": get_variables_from_env.AZURE_TENANT_ID,
-        },
-    )
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        destination = dlt_filesystem(
+            bucket_url=f"file://{get_variables_from_env.LOCAL_STORAGE_PATH}",
+            layout="{table_name}/{_resolve_path}",
+            extra_placeholders={"_resolve_path": _resolve_path},
+        )
+    else:
+        destination = dlt_filesystem(
+            bucket_url=f"az://{get_variables_from_env.FABRIC_WORKSPACE}",
+            layout="{table_name}/{_resolve_path}",
+            extra_placeholders={"_resolve_path": _resolve_path},
+            credentials={
+                "azure_storage_account_name": get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT,
+                "azure_account_host": "onelake.blob.fabric.microsoft.com",
+                "azure_client_id": get_variables_from_env.AZURE_CLIENT_ID,
+                "azure_client_secret": get_variables_from_env.AZURE_CLIENT_SECRET,
+                "azure_tenant_id": get_variables_from_env.AZURE_TENANT_ID,
+            },
+        )
     return destination, parent_path
 
 
@@ -258,23 +246,19 @@ def write_log_to_onelake(
     destination_directory_path: str,
     destination_file_name: str,
 ) -> None:
-    """Append a log entry to an NDJSON log file in Fabric OneLake.
+    """Append a log entry to an NDJSON log file in Fabric OneLake or local storage.
 
-    Creates the log file if it does not yet exist, then appends *data* at the
-    current end-of-file offset.  Each call is intended to write one complete
-    NDJSON line, so *data* should end with ``"\\n"``.
-
-    Args:
-        data: UTF-8 string to append — typically a JSON-serialised log record
-            followed by a newline character.
-        destination_directory_path: OneLake directory that contains the log file
-            (e.g. ``"logs/parliament/afstemning"``).
-        destination_file_name: Name of the log file
-            (e.g. ``"afstemning_log.ndjson"``).
-
-    Raises:
-        Exception: Propagates any error from the OneLake file client.
+    When ``STORAGE_TARGET=local``, the log is written to a local file under
+    *destination_directory_path*.  Otherwise it is appended to OneLake.
     """
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        os.makedirs(destination_directory_path, exist_ok=True)
+        file_path = os.path.join(destination_directory_path, destination_file_name)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(data)
+        return
+
+    from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         destination_directory_path, destination_file_name
     )
@@ -406,7 +390,7 @@ def run_api_to_file_pipeline(
                 yield from records                      # individual records — dlt sees real schema
                 api_url = body.get("odata.nextLink")    # follow OData pagination
 
-    destination, dataset_name = _make_onelake_destination(
+    destination, dataset_name = _make_destination(
         destination_directory_path, destination_file_name, data_table_name=pipeline_name,
     )
 
@@ -496,7 +480,7 @@ def run_sql_to_file_pipeline(
                     num_rows += 1
                     yield dict(zip(columns, row))   # individual rows — dlt sees real schema
 
-    destination, dataset_name = _make_onelake_destination(
+    destination, dataset_name = _make_destination(
         destination_directory_path, destination_file_name, data_table_name=pipeline_name,
     )
 
@@ -550,7 +534,7 @@ def run_file_to_file_pipeline(
     with open(source_file_path, "rb") as f:
         file_bytes = f.read()
 
-    _upload_to_onelake(file_bytes, destination_directory_path, destination_file_name)
+    _upload(file_bytes, destination_directory_path, destination_file_name)
 
     return {"status": "success", "bytes_written": len(file_bytes), "trace": {}}
 
@@ -611,7 +595,10 @@ def execute_pipeline(pipeline_type: str, **kwargs) -> dict:
             entry has been written.
     """
     start_timestamp = time.time()
-    log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{kwargs['source_system_code']}/{kwargs['pipeline_name']}"
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{kwargs['source_system_code']}/{kwargs['pipeline_name']}"
+    else:
+        log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{kwargs['source_system_code']}/{kwargs['pipeline_name']}"
     log_file = f"{kwargs['pipeline_name']}_log.ndjson"
 
     result = {"status": "failure"}
