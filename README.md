@@ -1,5 +1,7 @@
 # Danish Democracy Data — dbt + DuckDB Demo
 
+[![CI](https://github.com/edwinweber/dbt_duckdb_demo_public/actions/workflows/ci.yml/badge.svg)](https://github.com/edwinweber/dbt_duckdb_demo_public/actions/workflows/ci.yml)
+
 A demo project that ingests, transforms, and publishes open data from the
 Danish Parliament (Folketing) OData API.
 
