@@ -523,9 +523,50 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ## Contributing
 
-This is a learning and reference project. Issues, suggestions, and pull requests
-are welcome. For larger changes, please open an issue first so we can discuss
-the approach.
+Contributions are welcome! This is a learning and reference project, so the bar
+for participation is low — whether you spotted a typo, want to add an entity, or
+have ideas for improving the pipeline design.
+
+### How to contribute
+
+1. **Fork** the repository and create a branch from `main`:
+
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Set up your environment** by following the [Walkthrough](#walkthrough)
+   section. The `local` storage mode requires no cloud credentials.
+
+3. **Make your changes.** Keep commits focused and descriptive.
+
+4. **Run the tests** to make sure nothing is broken:
+
+   ```bash
+   pytest tests/ -v
+   ```
+
+5. **Open a pull request** against `main`. Include a short description of what
+   you changed and why.
+
+### Guidelines
+
+- For **bug fixes and small improvements**, open a PR directly.
+- For **larger changes** (new pipeline stages, schema changes, new dependencies),
+  please open an issue first so we can discuss the approach before you invest
+  time in the implementation.
+- Keep changes scoped — one feature or fix per PR makes review easier.
+- Do not commit credentials or `.env` files (the repo's `.gitignore` already
+  excludes them, but double-check before pushing).
+
+### Reporting issues
+
+Use the [GitHub Issues](https://github.com/edwinweber/dbt_duckdb_demo/issues)
+tab to report bugs or suggest features. Please include:
+
+- What you expected to happen
+- What actually happened (error message, traceback)
+- Your OS, Python version, and `STORAGE_TARGET` setting
 
 ---
 
