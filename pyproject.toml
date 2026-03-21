@@ -41,6 +41,7 @@ dagster = [
 dev = [
     "pytest>=8.0",
     "sqlfluff>=3.0",
+    "pandas>=2.0",
 ]
 
 [tool.setuptools.packages.find]
