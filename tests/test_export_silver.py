@@ -41,8 +41,17 @@ def silver_connection():
 
 
 def _patch_env():
-    """Patch env vars on the already-imported module."""
-    return patch.multiple(silver_mod.get_variables_from_env, **_ENV_PATCHES)
+    """Patch env vars on the already-imported module.
+
+    Uses patch.dict on __dict__ to bypass __getattr__ (which would call
+    _require() and raise for lazy-required vars like FABRIC_WORKSPACE
+    when no .env file is present, e.g. in CI).
+    """
+    return patch.dict(
+        "ddd_python.ddd_dlt.export_main_silver_to_fabric_silver.get_variables_from_env.__dict__",
+        _ENV_PATCHES,
+        clear=False,
+    )
 
 
 def test_incremental_append_finds_new_rows(silver_connection, mock_fabric_clients):
