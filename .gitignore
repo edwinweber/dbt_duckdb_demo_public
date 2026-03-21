@@ -26,3 +26,7 @@ export_environment_variables.sh
 # dbt anonymous telemetry user IDs — personal identifiers, not for source control
 .user.yml
 .vscode/
+.pytest_cache/
+*.egg-info/
+.ruff_cache/
+.mypy_cache/

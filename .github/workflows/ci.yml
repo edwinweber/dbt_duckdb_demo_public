@@ -12,11 +12,6 @@ jobs:
       matrix:
         python-version: ["3.12"]
 
-    env:
-      # Override Docker-default paths (/data/...) which are not writable in CI
-      DLT_PIPELINES_DIR: /tmp/dlt_pipelines
-      LOCAL_STORAGE_PATH: /tmp/data
-
     steps:
       - uses: actions/checkout@v4
 

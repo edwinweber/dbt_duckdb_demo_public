@@ -15,6 +15,7 @@ import ddd_python.ddd_dlt.export_main_silver_to_fabric_silver as silver_mod
 
 
 _ENV_PATCHES = {
+    "STORAGE_TARGET": "onelake",
     "FABRIC_WORKSPACE": "test-workspace",
     "FABRIC_ONELAKE_STORAGE_ACCOUNT": "testaccount",
     "FABRIC_ONELAKE_FOLDER_SILVER": "Lakehouse/Files/Silver",
@@ -44,7 +45,7 @@ def _patch_env():
     return patch.multiple(silver_mod.get_variables_from_env, **_ENV_PATCHES)
 
 
-def test_incremental_append_finds_new_rows(silver_connection):
+def test_incremental_append_finds_new_rows(silver_connection, mock_fabric_clients):
     """When an existing Delta table has rows 1 and 2, only row 3 should be appended."""
     existing = pa.table({
         "id": [1, 2],
@@ -54,7 +55,6 @@ def test_incremental_append_finds_new_rows(silver_connection):
 
     with (
         _patch_env(),
-        patch.object(silver_mod.get_fabric_onelake_clients, "get_fabric_token", return_value="tok"),
         patch.object(silver_mod, "DeltaTable") as mock_dt,
         patch.object(silver_mod, "write_deltalake") as mock_write,
     ):
@@ -67,7 +67,7 @@ def test_incremental_append_finds_new_rows(silver_connection):
     assert mock_write.call_args.kwargs.get("mode") == "append"
 
 
-def test_incremental_no_new_rows_skips_write(silver_connection):
+def test_incremental_no_new_rows_skips_write(silver_connection, mock_fabric_clients):
     """When all rows already exist, write_deltalake should NOT be called."""
     existing = pa.table({
         "id": [1, 2, 3],
@@ -79,7 +79,6 @@ def test_incremental_no_new_rows_skips_write(silver_connection):
 
     with (
         _patch_env(),
-        patch.object(silver_mod.get_fabric_onelake_clients, "get_fabric_token", return_value="tok"),
         patch.object(silver_mod, "DeltaTable") as mock_dt,
         patch.object(silver_mod, "write_deltalake") as mock_write,
     ):
@@ -91,11 +90,10 @@ def test_incremental_no_new_rows_skips_write(silver_connection):
     mock_write.assert_not_called()
 
 
-def test_first_load_creates_table(silver_connection):
+def test_first_load_creates_table(silver_connection, mock_fabric_clients):
     """When is_deltatable returns False, it should create with overwrite."""
     with (
         _patch_env(),
-        patch.object(silver_mod.get_fabric_onelake_clients, "get_fabric_token", return_value="tok"),
         patch.object(silver_mod, "DeltaTable") as mock_dt,
         patch.object(silver_mod, "write_deltalake") as mock_write,
     ):
@@ -107,11 +105,10 @@ def test_first_load_creates_table(silver_connection):
     assert mock_write.call_args.kwargs.get("mode") == "overwrite"
 
 
-def test_unexpected_error_is_raised(silver_connection):
+def test_unexpected_error_is_raised(silver_connection, mock_fabric_clients):
     """Exceptions from is_deltatable should propagate."""
     with (
         _patch_env(),
-        patch.object(silver_mod.get_fabric_onelake_clients, "get_fabric_token", return_value="tok"),
         patch.object(silver_mod, "DeltaTable") as mock_dt,
     ):
         mock_dt.is_deltatable.side_effect = ConnectionError("network unreachable")

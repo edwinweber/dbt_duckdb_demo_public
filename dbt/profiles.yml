@@ -2,7 +2,7 @@ danish_democracy_data:
   # STORAGE_TARGET controls which output is used:
   #   local   — reads JSON from local filesystem, no Azure credentials needed
   #   onelake — reads JSON from Fabric OneLake via abfss://, requires Azure service principal
-  target: "{{ env_var('STORAGE_TARGET', 'onelake') }}"
+  target: "{{ env_var('STORAGE_TARGET', 'local') }}"
   outputs:
     local:
       type: duckdb

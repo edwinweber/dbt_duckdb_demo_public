@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import patch
 
 _ENV_PATCHES = {
+    "STORAGE_TARGET": "onelake",
     "FABRIC_WORKSPACE": "test-workspace",
     "FABRIC_ONELAKE_STORAGE_ACCOUNT": "testaccount",
     "FABRIC_ONELAKE_FOLDER_GOLD": "Lakehouse/Files/Gold",
@@ -32,13 +33,10 @@ def gold_connection():
 
 
 @patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_fabric_onelake_clients")
 @patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_overwrites(mock_write, mock_clients, gold_connection):
+def test_gold_export_overwrites(mock_write, gold_connection, mock_fabric_clients):
     """Gold export should always use mode='overwrite'."""
     from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-    mock_clients.get_fabric_token.return_value = "fake-token"
 
     rows = export_single_gold_table(gold_connection, "actor")
 
@@ -49,26 +47,20 @@ def test_gold_export_overwrites(mock_write, mock_clients, gold_connection):
 
 
 @patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_fabric_onelake_clients")
 @patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_returns_row_count(mock_write, mock_clients, gold_connection):
+def test_gold_export_returns_row_count(mock_write, gold_connection, mock_fabric_clients):
     """Return value should be the number of rows in the table."""
     from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-    mock_clients.get_fabric_token.return_value = "fake-token"
 
     rows = export_single_gold_table(gold_connection, "actor")
     assert rows == 2
 
 
 @patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_fabric_onelake_clients")
 @patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_correct_target_path(mock_write, mock_clients, gold_connection):
+def test_gold_export_correct_target_path(mock_write, gold_connection, mock_fabric_clients):
     """The target path should follow the expected pattern."""
     from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-    mock_clients.get_fabric_token.return_value = "fake-token"
 
     export_single_gold_table(gold_connection, "actor")
 
