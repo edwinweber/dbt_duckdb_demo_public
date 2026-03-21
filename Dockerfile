@@ -30,23 +30,26 @@ RUN pip install --no-cache-dir --no-deps ".[dagster]"
 # Use build arg for temp duckdb path so it doesn't leak into final ENV
 ARG DBT_PARSE_DB=/tmp/dbt_parse.duckdb
 RUN DUCKDB_DATABASE_LOCATION=${DBT_PARSE_DB} \
-    AZURE_TENANT_ID=placeholder \
-    AZURE_CLIENT_ID=placeholder \
-    AZURE_CLIENT_SECRET=placeholder \
+    STORAGE_TARGET=local \
+    DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
     sh -c 'cd dbt && dbt deps && dbt parse' && \
     rm -f ${DBT_PARSE_DB}
 
 # Create volume mount directories
-RUN mkdir -p /data/dlt_pipelines /data/duckdb /data/dbt_logs /data/dagster
+RUN mkdir -p /data/dlt_pipelines /data/duckdb /data/dbt_logs /data/dagster /data/local
 
 # Default environment variables pointing to persistent volume paths
-ENV DLT_PIPELINES_DIR=/data/dlt_pipelines \
+ENV STORAGE_TARGET=local \
+    LOCAL_STORAGE_PATH=/data/local \
+    DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
+    DLT_PIPELINES_DIR=/data/dlt_pipelines \
     DUCKDB_DATABASE_LOCATION=/data/duckdb/danish_democracy_data.duckdb \
     DUCKDB_DATABASE=danish_democracy_data \
     DBT_PROJECT_DIRECTORY=/app/dbt \
     DBT_MODELS_DIRECTORY=/app/dbt/models \
     DBT_LOGS_DIRECTORY=/data/dbt_logs \
-    DAGSTER_HOME=/data/dagster
+    DAGSTER_HOME=/data/dagster \
+    DANISH_DEMOCRACY_BASE_URL=https://oda.ft.dk/api
 
 # Auto-configure every DuckDB CLI session with CA certs and Azure transport
 RUN printf '%s\n' \

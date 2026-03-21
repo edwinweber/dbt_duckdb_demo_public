@@ -14,73 +14,73 @@ sources:
     - name: bronze_afstemning
       description: One record per party vote in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/afstemning/afstemning_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/afstemning/afstemning_*.json*', filename=True, union_by_name = true)"
     - name: bronze_afstemningstype
       description: One record per voting type in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/afstemningstype/afstemningstype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/afstemningstype/afstemningstype_*.json*', filename=True, union_by_name = true)"
     - name: bronze_aktoer
       description: One record per member in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/aktoer/aktoer_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/aktoer/aktoer_*.json*', filename=True, union_by_name = true)"
     - name: bronze_aktoertype
       description: One record per member type in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/aktoertype/aktoertype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/aktoertype/aktoertype_*.json*', filename=True, union_by_name = true)"
     - name: bronze_moede
       description: One record per meeting in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/moede/moede_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/moede/moede_*.json*', filename=True, union_by_name = true)"
     - name: bronze_moedestatus
       description: One record per meeting in the danish parliament status
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/moedestatus/moedestatus_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/moedestatus/moedestatus_*.json*', filename=True, union_by_name = true)"
     - name: bronze_moedetype
       description: One record per meeting type
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/moedetype/moedetype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/moedetype/moedetype_*.json*', filename=True, union_by_name = true)"
     - name: bronze_periode
       description: One record per period in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/periode/periode_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/periode/periode_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sag
       description: One record per case in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sag/sag_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sag/sag_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagskategori
       description: One record per case category in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagskategori/sagskategori_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagskategori/sagskategori_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagstrin
       description: One record per case step in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagstrin/sagstrin_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagstrin/sagstrin_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagstrinaktoer
       description: One record per case aktor interaction in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagstrinaktoer/sagstrinaktoer_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagstrinaktoer/sagstrinaktoer_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagsstatus
       description: One record per case status in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagsstatus/sagsstatus_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagsstatus/sagsstatus_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagstrinsstatus
       description: One record per case step status in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagstrinsstatus/sagstrinsstatus_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagstrinsstatus/sagstrinsstatus_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagstrinstype
       description: One record per case step type in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagstrinstype/sagstrinstype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagstrinstype/sagstrinstype_*.json*', filename=True, union_by_name = true)"
     - name: bronze_sagstype
       description: One record per case type in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/sagstype/sagstype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/sagstype/sagstype_*.json*', filename=True, union_by_name = true)"
     - name: bronze_stemme
       description: One record per individual vote in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/stemme/stemme_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/stemme/stemme_*.json*', filename=True, union_by_name = true)"
     - name: bronze_stemmetype
       description: One record per individual voting type in the danish parliament
       meta:
-        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/stemmetype/stemmetype_*.json*', filename=True, union_by_name = true)"
+        external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'data/Files/Bronze/DDD') }}/stemmetype/stemmetype_*.json*', filename=True, union_by_name = true)"
 
