@@ -1,10 +1,13 @@
-# Path variables (DAGSTER_HOME, DLT_PIPELINES_DIR, DUCKDB_DATABASE_LOCATION, etc.)
-# are set in .env with local paths. The environment: overrides below remap them
-# to the container volume mount paths, taking precedence over env_file values.
+# Works out of the box in local storage mode — no .env file required.
+# For OneLake mode, copy .env.example to .env and fill in Azure credentials.
 
 x-path-overrides: &path-overrides
+  STORAGE_TARGET: local
+  DANISH_DEMOCRACY_BASE_URL: "https://oda.ft.dk/api"
+  DANISH_DEMOCRACY_DATA_SOURCE: /data/local/Files/Bronze/DDD
   DLT_PIPELINES_DIR: /data/dlt_pipelines
   DUCKDB_DATABASE_LOCATION: /data/duckdb/danish_democracy_data.duckdb
+  DUCKDB_DATABASE: danish_democracy_data
   DBT_PROJECT_DIRECTORY: /app/dbt
   DBT_MODELS_DIRECTORY: /app/dbt/models
   DBT_LOGS_DIRECTORY: /data/dbt_logs
@@ -14,7 +17,9 @@ x-path-overrides: &path-overrides
 x-common: &common
   build: .
   image: danish-democracy-data:latest
-  env_file: .env
+  env_file:
+    - path: .env
+      required: false
   environment:
     <<: *path-overrides
 
