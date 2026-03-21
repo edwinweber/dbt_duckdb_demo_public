@@ -1,11 +1,8 @@
 name: Docker
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*.*.*"]
+  workflow_dispatch:
 
-# Only one Docker build runs at a time per branch; cancel superseded runs.
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
@@ -14,11 +11,9 @@ jobs:
   build-and-push:
     name: Build & push image
     runs-on: ubuntu-latest
-    # Gate on CI passing when triggered by a branch push (not a tag push).
-    needs: []
     permissions:
       contents: read
-      packages: write   # required to push to GHCR
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +25,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Derive image tags from branch name / semver tag:
-      #   main push  → ghcr.io/<owner>/<repo>:main, :sha-<short>
-      #   v1.2.3 tag → ghcr.io/<owner>/<repo>:1.2.3, :latest
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -54,6 +46,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Re-use layer cache from the registry to speed up repeated builds.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
