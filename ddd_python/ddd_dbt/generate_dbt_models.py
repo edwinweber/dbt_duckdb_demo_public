@@ -113,8 +113,8 @@ def generate_dbt_models_gold_cv(table_names: list[str]) -> None:
     target_dir = os.path.join(get_variables_from_env.DBT_MODELS_DIRECTORY, "gold")
     os.makedirs(target_dir, exist_ok=True)
 
-    # The 'date' table is manually developed — skip it.
-    tables = [t for t in table_names if t != "date"]
+    # 'date' and 'individual_votes' are handcrafted — skip them.
+    tables = [t for t in table_names if t not in {"date", "individual_votes"}]
 
     for table_name in tables:
         model_name = table_name.lower()
