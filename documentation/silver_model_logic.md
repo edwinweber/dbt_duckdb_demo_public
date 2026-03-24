@@ -1,6 +1,14 @@
 # Silver Model Logic — SCD Type 2 via CDC
 
-This document explains the two silver model macros used in this project. Both implement **Slowly Changing Dimension Type 2** (SCD2) by detecting Insert, Update, and Delete operations through Change Data Capture (CDC) logic. The key difference is how they detect **deletes**, because the two bronze extraction patterns provide different information.
+Last updated: March 2026
+
+This document explains the two Silver model macros used in this project. Both implement **Slowly Changing Dimension Type 2** (SCD Type 2) by detecting Insert, Update, and Delete operations through **Change Data Capture** (CDC) logic. The key difference is how they detect **deletes**, because the two Bronze extraction patterns provide different information.
+
+> **Critical operational rule:** Bronze files must never be deleted arbitrarily.
+> The Silver CDC logic depends on an append-only Bronze file history. Deleting
+> files breaks the `LAG()`/LEFT JOIN chain and causes duplicate Inserts. See
+> [Never Delete Bronze Files](#warning-never-delete-bronze-files) for details
+> and safe deletion rules.
 
 ## Overview
 
@@ -11,7 +19,7 @@ This document explains the two silver model macros used in this project. Both im
 | Bronze data | Every extraction contains **all** records | Each extraction contains only **changed** records (filtered by `opdateringsdato`) |
 | Insert detection | Record exists in file N but not in file N-1 | First occurrence of a record (no previous hash) |
 | Update detection | Hash changed between file N-1 and file N | Hash changed between consecutive files for same id |
-| Delete detection | Record exists in file N but **not** in file N+1 | Only on `--full-refresh`: compare current version against latest bronze file |
+| Delete detection | Record exists in file N but **not** in file N+1 | Only on `--full-refresh`: compare current version against latest Bronze file |
 
 ## Shared Components
 
@@ -36,11 +44,11 @@ On the next run, the main query uses `LKHS_filename_previous` as the starting po
 
 ### CTE_BRONZE
 
-Reads all records from the bronze view, computes a SHA-256 hash over all business columns (excluding metadata columns), and captures the earliest `opdateringsdato` per entity as `LKHS_date_inserted_src`.
+Reads all records from the Bronze view, computes a SHA-256 hash over all business columns (excluding metadata columns), and captures the earliest `opdateringsdato` per entity as `LKHS_date_inserted_src`.
 
 ### CTE_FILES
 
-Lists all bronze JSON files on storage (via `read_text` glob), extracts the timestamp from each filename, and uses `LAG()`/`LEAD()` window functions to identify the previous and next file in chronological order.
+Lists all Bronze JSON files on storage (via `read_text` glob), extracts the timestamp from each filename, and uses `LAG()`/`LEAD()` window functions to identify the previous and next file in chronological order.
 
 ### Deduplication Guard
 
@@ -71,21 +79,21 @@ QUALIFY ROW_NUMBER() OVER (
 
 ## Full Bronze Refresh (`generate_model_silver_full_extraction`)
 
-**Used for:** 12 entities where every bronze extraction contains the complete dataset (e.g., aktoertype, moedestatus, periode, sagskategori).
+**Used for:** 12 entities where every Bronze extraction contains the complete dataset (e.g., aktoertype, moedestatus, periode, sagskategori).
 
-### How it works
+### How It Works
 
-Since every bronze file is a **full snapshot**, the macro can compare consecutive snapshots to detect all three CDC operations:
+Since every Bronze file is a **full snapshot**, the macro can compare consecutive snapshots to detect all three CDC operations:
 
-#### Insert detection
+#### Insert Detection
 
 A LEFT JOIN from file N to file N-1 on `id`. If the record doesn't exist in file N-1 (`LKHS_primary_key_previous IS NULL`), it's an Insert.
 
-#### Update detection
+#### Update Detection
 
 Same LEFT JOIN. If the record exists in both files but the hash differs (`LKHS_hash_value != LKHS_hash_value_previous`), it's an Update.
 
-#### Delete detection
+#### Delete Detection
 
 A LEFT JOIN from file N to file N+1 on `id`. If the record exists in file N but **not** in file N+1 (`CTE_BRONZE_INCL_LAG_NEXT.id IS NULL`), and file N+1 exists (`LKHS_filename_next IS NOT NULL`), it's a Delete. The delete record is timestamped with the **next** file's date.
 
@@ -116,7 +124,7 @@ Result: a row for id=13 with LKHS_cdc_operation='D',
         timestamped with file N+1's date
 ```
 
-### Data flow diagram
+### Data Flow Diagram
 
 ```text
 Bronze file N-1    Bronze file N    Bronze file N+1
@@ -142,27 +150,35 @@ Bronze file N-1    Bronze file N    Bronze file N+1
 
 **Used for:** 6 entities where bronze extractions contain only **changed** records since the last extraction (e.g., aktoer, moede, sag, sagstrin, sagstrinaktoer, stemme).
 
-### How it works — incremental
+### How It Works — Incremental
 
-Since each bronze file only contains records that were modified, comparing consecutive files by LEFT JOIN (as in the full macro) would incorrectly flag all records in file N as "new" — because most of them won't exist in file N-1 (they simply weren't modified then). Instead, this macro uses `LAG()` over the hash **partitioned by id** across all files.
+Since each Bronze file only contains records that were modified, comparing consecutive files by LEFT JOIN (as in the full macro) would incorrectly flag all records in file N as "new" — because most of them won't exist in file N-1 (they simply weren't modified then). Instead, this macro uses `LAG()` over the hash **partitioned by id** across all files.
 
-#### Insert detection — incremental
+#### Insert Detection — Incremental
 
 `LAG(LKHS_hash_value) OVER (PARTITION BY id ORDER BY LKHS_filename)` returns NULL for the first occurrence of any id → Insert.
 
-#### Update detection — incremental
+#### Update Detection — Incremental
 
 Same `LAG()`. If the hash differs from the previous hash for the same id → Update.
 
-#### Delete detection — only on `--full-refresh`
+#### Delete Detection — Only on `--full-refresh`
 
 Incremental bronze files **cannot** detect deletes during normal runs — if a record is deleted at the source, it simply stops appearing in the incremental extractions. There's no "absence" signal.
 
 Deletes are only detected during a `--full-refresh` run, which triggers the following logic:
 
-1. **Pre-hook** (`generate_pre_hook_silver_full_refresh`): Before the table is rebuilt, the current silver table is saved to a temp table (`_current_temp`), keeping only the latest version of each record.
+> **Prerequisite:** The latest Bronze file **must contain all rows currently present
+> in the source system** — not just the rows that changed. Delete detection works by
+> comparing the current Silver state against this latest Bronze file. If the file only
+> contains a partial extract (e.g., an incremental snapshot), any record missing from
+> it will be incorrectly flagged as deleted. Before running `--full-refresh` on an
+> incremental entity, always run a **full extraction** first to ensure the latest
+> Bronze file is a complete snapshot.
 
-2. **Main query** (full-refresh branch): After computing all Inserts and Updates from the full bronze history, it adds two UNION ALL branches:
+1. **Pre-hook** (`generate_pre_hook_silver_full_refresh`): Before the table is rebuilt, the current Silver table is saved to a temp table (`_current_temp`), keeping only the latest version of each record.
+
+2. **Main query** (full-refresh branch): After computing all Inserts and Updates from the full Bronze history, it adds two UNION ALL branches:
    - **Carry forward existing deletes**: Any rows in `_current_temp` that already have `LKHS_cdc_operation = 'D'` are preserved.
    - **Detect new deletes**: Records in `_current_temp` (non-deleted) that do NOT exist in `bronze_<entity>_latest` are marked as Delete, timestamped with the latest file's date.
 
@@ -197,7 +213,7 @@ For each record in the file:
 3. Post-hook drops _current_temp
 ```
 
-### Example timeline for aktoer id=10 (Grønlandsudvalget)
+### Example Timeline for aktoer id=10 (Grønlandsudvalget)
 
 ```text
 ┌─────────────────────────────────┬──────────────────────────────────┬────────────────────┐
@@ -223,7 +239,7 @@ Row 2: opdateringsdato changed → hash differs → UPDATE
 | **When deletes are detected** | Every run (between consecutive file pairs) | Only on `--full-refresh` |
 | **Delete timestamp** | File N+1's date | Latest file's date |
 
-The fundamental reason: **full extractions** always contain every record, so a missing record in the next file is a reliable delete signal. **Incremental extractions** only contain changed records, so a record missing from the next file simply means it wasn't modified — not that it was deleted. The only way to detect deletes in incremental entities is to compare the current silver state against a full snapshot (the latest bronze file, which does contain all records from the source API).
+The fundamental reason: **full extractions** always contain every record, so a missing record in the next file is a reliable delete signal. **Incremental extractions** only contain changed records, so a record missing from the next file simply means it wasn't modified — not that it was deleted. The only way to detect deletes in incremental entities is to compare the current Silver state against a full snapshot (the latest Bronze file, which does contain all records from the source API).
 
 ---
 
@@ -241,9 +257,9 @@ The bronze models (`bronze_<entity>` and `bronze_<entity>_latest`) are materiali
 
 - Bronze views always reflect the **current state** of files on storage — there is no cached/stale data.
 - Running `dbt run --select bronze_*` only (re)creates the view definitions, it does not load data.
-- When the silver model runs, it queries the bronze view, which in turn reads all JSON files live from OneLake.
+- When the Silver model runs, it queries the Bronze view, which in turn reads all JSON files live from OneLake.
 
-Because they are views, new files added by ingestion are automatically visible to the silver models without re-running bronze. However, the bronze models are still included in the production job because the view definitions themselves could change (e.g., if the generation macro is modified). Re-running bronze ensures the latest view definition is always deployed before silver processes the data.
+Because they are views, new files added by ingestion are automatically visible to the Silver models without re-running bronze. However, the Bronze models are still included in the production job because the view definitions themselves could change (e.g., if the generation macro is modified). Re-running bronze ensures the latest view definition is always deployed before silver processes the data.
 
 ### Batch vs. Sequential Processing
 
@@ -257,7 +273,7 @@ You can run extractions and silver refreshes in any combination — **the histor
 
 This is a deliberate design property. The pipeline never requires you to silver-refresh after every single extraction. You can let extractions accumulate across an entire day and process them all in one silver run at the end — the result in the historized table is identical to having processed each file immediately after it was extracted.
 
-#### Why this works — Full Bronze Refresh entities
+#### Why This Works — Full Bronze Refresh Entities
 
 For the 12 full-snapshot entities (aktoertype, moedestatus, etc.), the macro compares **every consecutive file pair** (F_N−1 → F_N) using a LEFT JOIN in `CTE_BRONZE_INCL_LAG`. Each pair is evaluated independently and self-contained — it does not matter whether those pairs were created hours or days apart, or how many files accumulated before silver ran.
 
@@ -289,7 +305,7 @@ Silver run 4 (after F4): F4 vs F3   → I/U/D
 
 Each file-pair transition is captured exactly once, in order, regardless of when silver runs.
 
-#### Why this works — Incremental Bronze Refresh entities
+#### Why This Works — Incremental Bronze Refresh Entities
 
 For the 6 incremental entities (aktoer, moede, sag, etc.), the macro uses `LAG(LKHS_hash_value) OVER (PARTITION BY id ORDER BY LKHS_filename)` to detect changes across all files simultaneously. Since the `LAG()` window function operates over the full file history in a single pass, it naturally processes all accumulated files — whether there are 2 or 20 of them — and produces the same I/U rows as if each file had been processed one at a time.
 
@@ -313,17 +329,17 @@ Sequential (silver after each file):
 
 The `NOT EXISTS` deduplication guard ensures that on each incremental silver run, rows already present in the silver table (from prior runs) are never re-inserted — even if the `LAG()` logic would re-derive them from the file history.
 
-#### The two safeguards that make this work
+#### The Two Safeguards That Make This Work
 
-1. **`_last_file` bookmark** — On each incremental run, the silver query only processes files from `LKHS_filename_previous` onward (it reprocesses the second-to-last already-processed file to ensure no cross-file transitions are missed). This makes sequential runs efficient: only new files are touched, not the full history.
+1. **`_last_file` bookmark** — On each incremental run, the Silver query only processes files from `LKHS_filename_previous` onward (it reprocesses the second-to-last already-processed file to ensure no cross-file transitions are missed). This makes sequential runs efficient: only new files are touched, not the full history.
 
-2. **`NOT EXISTS` deduplication guard** — Prevents any row (identified by `id` + `LKHS_date_valid_from`) from being inserted twice, even if the same file pair is re-evaluated. This makes the silver refresh **idempotent**: running it twice in a row produces no additional rows.
+2. **`NOT EXISTS` deduplication guard** — Prevents any row (identified by `id` + `LKHS_date_valid_from`) from being inserted twice, even if the same file pair is re-evaluated. This makes the Silver refresh **idempotent**: running it twice in a row produces no additional rows.
 
 Together these two mechanisms guarantee that regardless of how you interleave extractions and silver refreshes, every file transition is captured exactly once and in the correct chronological order.
 
 ### WARNING: Never Delete Bronze Files
 
-The silver CDC logic assumes the bronze file history is **append-only**. Deleting extracted files from OneLake breaks the `LAG()`/LEFT JOIN chain and causes **duplicate Inserts** in silver.
+The silver CDC logic assumes the Bronze file history is **append-only**. Deleting extracted files from OneLake breaks the `LAG()`/LEFT JOIN chain and causes **duplicate Inserts** in silver.
 
 **Why it happens:** The `CTE_FILES` CTE builds the file timeline using `LAG()` and `LEAD()` window functions over all files currently on storage. When a file is removed, the chain is recalculated — a file that previously had a predecessor now has `LAG() = NULL`, making every record in that file look like a first-time Insert.
 
@@ -355,7 +371,7 @@ F4: Insert (id=7 not in F1 → treated as new!)   ← DUPLICATE INSERT
 
 **Safe deletion rule:** You can safely delete bronze files that are **older than** the `LKHS_filename_previous` value in the `_last_file` table. These files will never be reprocessed on an incremental run. Keep all files from `LKHS_filename_previous` onward — there may be multiple unprocessed files if several ingestions ran before the last silver refresh.
 
-**WARNING: Silver becomes the only full history.** Once you delete old bronze files, the silver tables are the **sole record** of all historical changes (Inserts, Updates, Deletes) that occurred in those files. If the silver tables are lost or corrupted after bronze files have been deleted, that history cannot be reconstructed. Treat silver tables with extra care — ensure they are backed up or replicated before deleting any bronze files.
+**WARNING: Silver becomes the only full history.** Once you delete old bronze files, the Silver tables are the **sole record** of all historical changes (Inserts, Updates, Deletes) that occurred in those files. If the Silver tables are lost or corrupted after bronze files have been deleted, that history cannot be reconstructed. Treat silver tables with extra care — ensure they are backed up or replicated before deleting any bronze files.
 
 If you need a `--full-refresh` after deleting old files, this still works correctly:
 
@@ -368,9 +384,10 @@ Since the latest file contains all records from the source, the `LAG()` chain on
 
 ## Appendix: Compiled SQL Examples
 
-The following are the actual SQL statements executed by DuckDB after dbt compiles the Jinja macros. These examples show incremental runs (table already exists).
+The following are the actual SQL statements executed by DuckDB after dbt compiles the Jinja macros. These examples show incremental runs (table already exists). Storage paths (`abfss://...`) are abbreviated for readability.
 
-### Full Bronze Refresh — `silver_aktoertype` (incremental run)
+<details>
+<summary><strong>Full Bronze Refresh — <code>silver_aktoertype</code> (incremental run)</strong></summary>
 
 **Pre-hook:** Creates the `_last_file` bookmark table if it doesn't exist (empty, via `WHERE 1 = 0`):
 
@@ -391,7 +408,7 @@ WHERE 1 = 0
 ) processed_files
 ```
 
-**Main query:** Compares each bronze file to its predecessor via LEFT JOIN, detects I/U/D, filters by `_last_file` bookmark, and deduplicates against existing silver rows:
+**Main query:** Compares each Bronze file to its predecessor via LEFT JOIN, detects I/U/D, filters by `_last_file` bookmark, and deduplicates against existing silver rows:
 
 ```sql
 WITH CTE_BRONZE AS (
@@ -492,6 +509,11 @@ QUALIFY ROW_NUMBER() OVER (ORDER BY files.LKHS_filename DESC) = 1
 ) processed_files
 ```
 
+</details>
+
+<details>
+<summary><strong>Incremental Bronze Refresh — <code>silver_aktoer</code> (incremental run)</strong></summary>
+
 ### Incremental Bronze Refresh — `silver_aktoer` (incremental run)
 
 **Pre-hook:** Same as above — creates `_last_file` bookmark if it doesn't exist.
@@ -573,28 +595,8 @@ AND NOT EXISTS (
 
 **Post-hook:** Same as the full extraction — drops and recreates `_last_file` with the latest file as bookmark.
 
----
+</details>
 
-## Dagster Concurrency & DuckDB Single-Writer Constraint
-
-DuckDB only allows **one writer at a time** — concurrent write transactions will fail with a lock error. This has implications for how the pipeline is orchestrated in Dagster.
-
-### Current Configuration (`ddd_python/ddd_dagster/jobs.py`)
-
-| Job type                           | Executor                  | Concurrency                  |
-| ---------------------------------- | ------------------------- | ---------------------------- |
-| Extraction jobs (API → OneLake)    | `multiprocess_executor`   | max 4 concurrent             |
-| Export jobs (MotherDuck → OneLake) | `multiprocess_executor`   | max 4 concurrent             |
-| **dbt jobs (bronze/silver/gold)**  | **`in_process_executor`** | **Sequential (1 at a time)** |
-
-The dbt jobs use `in_process_executor` specifically because of DuckDB's single-writer constraint. This means:
-
-- Silver models are materialized **one at a time**, never in parallel
-- No risk of concurrent write conflicts during dbt runs
-- The full pipeline job (`danish_parliament_full_pipeline_job`) uses `multiprocess_executor` (max 4 concurrent) so that extraction and export assets can run in parallel — they write to OneLake, not DuckDB. The dbt assets within the pipeline still run sequentially because: (1) asset dependencies enforce layer ordering (extraction → bronze → silver → gold → export), and (2) dbt is configured with `threads: 1`, so only one model writes to DuckDB at a time
-
-The extraction and export jobs can safely run in parallel because they don't write to DuckDB — extractions write JSON to OneLake, and exports read from MotherDuck and write Delta tables to OneLake.
-
-### dbt Concurrency Setting
-
-The dbt profile (`profiles.yml`) is configured with `threads: 1`, which reinforces sequential execution even if dbt were invoked outside of Dagster. This ensures only one model writes to DuckDB at any given time.
+> **Note:** For details on Dagster executor configuration and the DuckDB single-writer
+> constraint, see the [Executor Concurrency Model](../README.md#executor-concurrency-model)
+> section in the main README.

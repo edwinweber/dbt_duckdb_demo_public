@@ -9,7 +9,7 @@ SELECT LKHS_filename
 ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
 ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
 FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
-        FROM read_text('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE', 'abfss://onelake.dfs.fabric.microsoft.com/<YOUR_WORKSPACE>/<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD') }}/{{ file_name }}/{{ file_name }}_*.json')
+        FROM read_text('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/{{ file_name }}/{{ file_name }}_*.json')
         ) files
 WHERE 1 = 0
 ) processed_files

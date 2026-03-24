@@ -426,7 +426,7 @@ The three layers have distinct materialization strategies:
 
 ### Hash-Based Change Detection
 
-The platform uses SHA-256 hashing for change detection. A dynamic macro builds the hash expression by querying `information_schema.columns` — no manual column lists required:
+The platform uses SHA-256 hashing for change detection (stored in the `LKHS_hash_value` column). A dynamic macro builds the hash expression by querying `information_schema.columns` — no manual column lists required:
 
 ```sql
 -- dbt/macros/generate_base_for_hash.sql
@@ -563,7 +563,7 @@ The Silver layer preserves the full change history of every record using an inse
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| `LKHS_hash_value` | VARCHAR | SHA-256 of all non-key business columns |
+| `LKHS_hash_value` | VARCHAR | SHA-256 of all non-key business columns (used for CDC, not surrogate keys) |
 | `LKHS_date_valid_from` | DATETIME | When this version was observed (from filename timestamp) |
 | `LKHS_date_inserted_src` | DATETIME | Earliest source date for this key |
 | `LKHS_date_inserted` | DATETIME | When dbt loaded this row |
@@ -787,7 +787,7 @@ The Gold layer builds a classic star schema from Silver current-version views. D
 
 ### Surrogate Key Generation
 
-Power BI does not accept DuckDB's unsigned 64-bit integer (`UBIGINT`). This macro maps it to a signed `BIGINT`:
+Gold surrogate keys use DuckDB's built-in `hash()` function, which produces a 64-bit unsigned integer (`UBIGINT`). Power BI does not accept `UBIGINT`, so this macro maps it to a signed `BIGINT` by folding values above `BIGINT_MAX` into the negative range:
 
 ```sql
 -- dbt/macros/cast_hash_to_bigint.sql
@@ -1239,7 +1239,7 @@ let Result = fnGoldTable("vote") in Result
 
 ### Power BI Compatibility
 
-The `cast_hash_to_bigint` macro exists specifically for Power BI — it converts DuckDB's unsigned 64-bit hash to a signed `BIGINT` that Power BI accepts. Without this, surrogate keys would fail to import.
+The `cast_hash_to_bigint` macro exists specifically for Power BI — it converts DuckDB's `hash()` output (an unsigned 64-bit integer) to a signed `BIGINT` that Power BI accepts. Note: this is DuckDB's built-in `hash()` function, not SHA-256. SHA-256 is used separately in the Silver layer for change detection (`LKHS_hash_value`).
 
 ---
 
@@ -1432,7 +1432,7 @@ All technical metadata columns use the `LKHS_` prefix (Lakehouse) — providing 
 | `LKHS_date_inserted` | Silver | When dbt loaded this row |
 | `LKHS_date_valid_from` | Silver+ | SCD2 valid-from (from filename timestamp) |
 | `LKHS_date_valid_to` | Gold | SCD2 valid-to (via LEAD window function) |
-| `LKHS_hash_value` | Silver | SHA-256 of all non-key business columns |
+| `LKHS_hash_value` | Silver | SHA-256 of all non-key business columns (used for CDC, not surrogate keys) |
 | `LKHS_cdc_operation` | Silver | CDC operation: `'I'`/`'U'`/`'D'` |
 | `LKHS_row_version` | Gold | Row version number for SCD2 |
 | `LKHS_deleted_ind` | Bronze latest | `'N'` (not deleted) — for delete detection |

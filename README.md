@@ -1,20 +1,19 @@
 # Danish Democracy Data — dbt + DuckDB Demo
 
-[![CI](https://github.com/edwinweber/dbt_duckdb_demo_public/actions/workflows/ci.yml/badge.svg)](https://github.com/edwinweber/dbt_duckdb_demo_public/actions/workflows/ci.yml)
-
 A demo project that ingests, transforms, and publishes open data from the
 Danish Parliament (Folketing) OData API.
 
-> **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data) —
-> a great starting point for working with Folketing open data. This repo extends
-> that foundation with a full medallion pipeline, SCD Type 2 history,
-> Dagster orchestration, and Microsoft Fabric / OneLake export.
+> **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data),
+> which provides the initial foundation for working with Folketing open data.
+> This repository extends that foundation with a full medallion pipeline,
+> SCD Type 2 history, Dagster orchestration, and Microsoft Fabric / OneLake export.
 
-The goal is to show how far you can get with a **low-cost, open-source stack**
-(DuckDB + dbt + dlt + Dagster) before needing anything heavier. This is a
-learning and reference project, not a hardened production system. The pipeline
-it describes does run daily against real data, but this repo is shared as a
-reference for the patterns, not as a turnkey deployment.
+The goal is to demonstrate the capabilities achievable with a **low-cost,
+open-source stack** (DuckDB + dbt + dlt + Dagster) before requiring
+enterprise-grade commercial tooling. This is a learning and reference project,
+not a production-hardened system. The pipeline runs daily against real data,
+but this repository is shared as a reference for the patterns it implements,
+not as a turnkey deployment.
 
 The pipeline follows a **medallion architecture** (Bronze → Silver → Gold),
 orchestrated by Dagster. It supports two storage backends controlled by a
@@ -27,7 +26,7 @@ single environment variable:
 
 ---
 
-## Architecture overview
+## Architecture Overview
 
 ```text
   ┌──────────────────────────────────────────────────────────────────────┐
@@ -77,7 +76,7 @@ single environment variable:
                                            └─────────────────────────────┘
 ```
 
-### Tech stack
+### Tech Stack
 
 | Concern | Tool |
 | --- | --- |
@@ -91,9 +90,9 @@ single environment variable:
 
 ---
 
-## Running with Docker
+## Running With Docker
 
-The easiest way to try the pipeline is via Docker — no local Python setup needed.
+The recommended way to run the pipeline is via Docker — no local Python setup required.
 
 ```bash
 # Build the image
@@ -111,7 +110,7 @@ individual pipeline steps, volume management, and troubleshooting.
 
 ---
 
-## Project layout
+## Project Layout
 
 ```text
 .
@@ -164,8 +163,8 @@ individual pipeline steps, volume management, and troubleshooting.
 ### 2. Clone and create a virtual environment
 
 ```bash
-git clone https://github.com/edwinweber/dbt_duckdb_demo_public.git
-cd dbt_duckdb_demo_public
+git clone https://github.com/edwinweber/dbt_duckdb_demo.git
+cd dbt_duckdb_demo
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dagster,dev]"
@@ -178,40 +177,29 @@ cp .env.example .env
 # Edit .env — for local mode only a handful of variables are needed
 ```
 
-#### Local mode (no Fabric required)
+#### Environment Variable Reference
 
-| Variable | Example value | Description |
+| Variable | Required | Example / Description |
 | --- | --- | --- |
-| `STORAGE_TARGET` | `local` | Selects local filesystem storage |
-| `LOCAL_STORAGE_PATH` | `/home/you/dbt_duckdb_demo/data` | Base path for Bronze / Silver / Gold files |
-| `DANISH_DEMOCRACY_DATA_SOURCE` | `<LOCAL_STORAGE_PATH>/Files/Bronze/DDD` | Bronze root that dbt reads from |
-| `DAGSTER_HOME` | `/home/you/dbt_duckdb_demo/.dagster` | Dagster run / schedule state |
-| `DUCKDB_DATABASE_LOCATION` | `/home/you/dbt_duckdb_demo/duckdb/danish_democracy_data.duckdb` | DuckDB file path |
-| `DUCKDB_DATABASE` | `danish_democracy_data` | DuckDB database name |
-| `DBT_PROJECT_DIRECTORY` | `/home/you/dbt_duckdb_demo/dbt` | Path to the `dbt/` folder |
-| `DBT_MODELS_DIRECTORY` | `/home/you/dbt_duckdb_demo/dbt/models` | Path to `dbt/models/` |
-| `DLT_PIPELINES_DIR` | `/home/you/dbt_duckdb_demo/dlt/pipelines_dir` | dlt state directory |
-| `DANISH_DEMOCRACY_BASE_URL` | `https://oda.ft.dk/api` | Parliament OData API root |
-
-Azure / Fabric variables are **not required** in local mode and can be left unset.
-
-#### OneLake mode (Fabric + Azure service principal)
-
-All local mode variables above, plus:
-
-| Variable | Description |
-| --- | --- |
-| `STORAGE_TARGET` | `onelake` |
-| `DANISH_DEMOCRACY_DATA_SOURCE` | `abfss://onelake.dfs.fabric.microsoft.com/<workspace>/<lakehouse>.Lakehouse/Files/Bronze/DDD` |
-| `FABRIC_WORKSPACE` | Fabric workspace name |
-| `FABRIC_ONELAKE_STORAGE_ACCOUNT` | Usually `onelake` |
-| `FABRIC_ONELAKE_FOLDER_BRONZE` | `<Lakehouse>.Lakehouse/Files/Bronze` |
-| `FABRIC_ONELAKE_FOLDER_SILVER` | `<Lakehouse>.Lakehouse/Files/Silver` |
-| `FABRIC_ONELAKE_FOLDER_GOLD` | `<Lakehouse>.Lakehouse/Files/Gold` |
-| `DLT_PIPELINE_RUN_LOG_DIR` | OneLake path for pipeline run logs |
-| `AZURE_TENANT_ID` | Azure AD tenant ID |
-| `AZURE_CLIENT_ID` | Service principal client ID |
-| `AZURE_CLIENT_SECRET` | Service principal secret |
+| `STORAGE_TARGET` | All | `local` or `onelake` — selects the storage backend |
+| `LOCAL_STORAGE_PATH` | All | `/home/you/dbt_duckdb_demo/data` — base path for Bronze / Silver / Gold files |
+| `DANISH_DEMOCRACY_DATA_SOURCE` | All | Local: `<LOCAL_STORAGE_PATH>/Files/Bronze/DDD`; OneLake: `abfss://.../<lakehouse>.Lakehouse/Files/Bronze/DDD` |
+| `DAGSTER_HOME` | All | `/home/you/dbt_duckdb_demo/.dagster` — Dagster run and schedule state |
+| `DUCKDB_DATABASE_LOCATION` | All | `/home/you/dbt_duckdb_demo/duckdb/danish_democracy_data.duckdb` — DuckDB file path |
+| `DUCKDB_DATABASE` | All | `danish_democracy_data` — DuckDB database name |
+| `DBT_PROJECT_DIRECTORY` | All | `/home/you/dbt_duckdb_demo/dbt` — path to the `dbt/` folder |
+| `DBT_MODELS_DIRECTORY` | All | `/home/you/dbt_duckdb_demo/dbt/models` — path to `dbt/models/` |
+| `DLT_PIPELINES_DIR` | All | `/home/you/dbt_duckdb_demo/dlt/pipelines_dir` — dlt state directory |
+| `DANISH_DEMOCRACY_BASE_URL` | All | `https://oda.ft.dk/api` — Parliament OData API root |
+| `FABRIC_WORKSPACE` | OneLake | Fabric workspace name |
+| `FABRIC_ONELAKE_STORAGE_ACCOUNT` | OneLake | Usually `onelake` |
+| `FABRIC_ONELAKE_FOLDER_BRONZE` | OneLake | `<Lakehouse>.Lakehouse/Files/Bronze` |
+| `FABRIC_ONELAKE_FOLDER_SILVER` | OneLake | `<Lakehouse>.Lakehouse/Files/Silver` |
+| `FABRIC_ONELAKE_FOLDER_GOLD` | OneLake | `<Lakehouse>.Lakehouse/Files/Gold` |
+| `DLT_PIPELINE_RUN_LOG_DIR` | OneLake | OneLake path for pipeline run logs |
+| `AZURE_TENANT_ID` | OneLake | Azure AD tenant ID |
+| `AZURE_CLIENT_ID` | OneLake | Service principal client ID |
+| `AZURE_CLIENT_SECRET` | OneLake | Service principal secret |
 
 > **Security note:** `.env` is git-ignored. Never commit credentials.
 
@@ -260,9 +248,9 @@ Open **<http://localhost:3000>** to access the Dagster UI.
 
 ---
 
-## Running the pipeline
+## Running the Pipeline
 
-### First run — end-to-end
+### First Run — End-to-End
 
 For a first-time **full load**, run in this order:
 
@@ -279,13 +267,13 @@ dagster job launch -w workspace.yaml --job export_silver_job
 dagster job launch -w workspace.yaml --job export_gold_job
 ```
 
-Or run everything in one shot:
+Or run the complete pipeline in a single command:
 
 ```bash
 dagster job launch -w workspace.yaml --job danish_parliament_full_pipeline_job
 ```
 
-### Daily incremental runs
+### Daily Incremental Runs
 
 The schedule `danish_parliament_full_pipeline_schedule` fires at **06:00 UTC**
 daily. It is **disabled by default** — enable it in the Dagster UI under
@@ -297,11 +285,11 @@ For a manual incremental run (the 6 date-filterable entities only):
 dagster job launch -w workspace.yaml --job danish_parliament_incremental_job
 ```
 
-### Full-extract refresh
+### Full-Extract Refresh
 
-The 12 entities that are always fully extracted on every run (they support
-`opdateringsdato` filtering but are small enough that a full extract keeps
-delete detection simple):
+The 12 reference entities are always fully extracted on every run. Although they
+support `opdateringsdato` filtering, a full extract is preferred because the
+tables are small and it simplifies delete detection.
 
 ```bash
 dagster job launch -w workspace.yaml --job danish_parliament_full_extract_job
@@ -309,7 +297,7 @@ dagster job launch -w workspace.yaml --job danish_parliament_full_extract_job
 
 This also runs as part of `danish_parliament_full_pipeline_job`.
 
-### Individual layers (CLI)
+### Individual Layers (CLI)
 
 ```bash
 dagster job launch -w workspace.yaml --job dbt_bronze_job
@@ -321,7 +309,7 @@ dagster job launch -w workspace.yaml --job export_gold_job
 
 ---
 
-## Local storage layout
+## Local Storage Layout
 
 When `STORAGE_TARGET=local`, all data lands under `LOCAL_STORAGE_PATH` in a
 directory structure that intentionally mirrors the Fabric OneLake layout so
@@ -363,7 +351,7 @@ identically in both cases.
 
 ---
 
-## Data model
+## Data Model
 
 ### Entities (18)
 
@@ -372,7 +360,7 @@ identically in both cases.
 | **Incremental** (date-filtered) | Aktør, Møde, Sag, Sagstrin, SagstrinAktør, Stemme |
 | **Full-extract** (always fully fetched — small tables, easy delete detection) | Afstemning, Afstemningstype, Aktørtype, Mødestatus, Mødetype, Periode, Sagskategori, Sagsstatus, Sagstrinsstatus, Sagstrinstype, Sagstype, Stemmetype |
 
-### Silver layer — SCD Type 2
+### Silver Layer — SCD Type 2
 
 One incremental DuckDB table per entity. Each row carries standard `LKHS_`
 lakehouse metadata columns:
@@ -381,14 +369,17 @@ lakehouse metadata columns:
 | --- | --- |
 | `LKHS_source_system_code` | Always `DDD` |
 | `LKHS_date_valid_from` | Point-in-time when this version was first observed |
-| `LKHS_hash_value` | SHA-256 of all business columns (64 hex chars) |
+| `LKHS_hash_value` | SHA-256 of all business columns (64 hex chars) — used for change detection |
 | `LKHS_cdc_operation` | `I` insert · `U` update · `D` delete |
-| `LKHS_updated_at` | Pipeline run timestamp |
+| `LKHS_date_inserted` | Pipeline run timestamp (when dbt loaded this row) |
 
 A companion `_cv` (current-version) view sits alongside each table and returns
-the **latest non-deleted row** per entity key using `ROW_NUMBER() OVER (PARTITION BY id ORDER BY LKHS_date_valid_from DESC)`.
+the **latest row** per entity key using `ROW_NUMBER() OVER (PARTITION BY id ORDER BY LKHS_date_valid_from DESC)`.
+Note: `_cv` views include rows with `LKHS_cdc_operation = 'D'` (source-deleted
+records). Downstream consumers should filter `WHERE LKHS_cdc_operation != 'D'`
+if deleted records should be excluded.
 
-### Gold layer — star schema
+### Gold Layer — Star Schema
 
 Clean English-named views built on top of Silver `_cv` views:
 
@@ -403,12 +394,13 @@ Clean English-named views built on top of Silver `_cv` views:
 | `vote_type` | Vote category lookup |
 | `date` | Date dimension (from seed) |
 
-Surrogate keys are SHA-256 hashes cast to BIGINT via the `cast_hash_to_bigint`
-macro. Each Gold table also has a `_cv` view.
+Surrogate keys are generated using DuckDB's built-in `hash()` function (64-bit),
+mapped from unsigned to signed `BIGINT` via the `cast_hash_to_bigint` macro for
+Power BI compatibility. Each Gold table also has a `_cv` view.
 
 ---
 
-## dbt commands reference
+## dbt Commands Reference
 
 All dbt commands must be run from the `dbt/` directory:
 
@@ -431,7 +423,7 @@ dbt docs generate --profiles-dir . && dbt docs serve   # lineage browser on :808
 
 ---
 
-## Running tests (pytest)
+## Running Tests (pytest)
 
 No cloud credentials required — tests use in-memory DuckDB and mocked clients.
 
@@ -452,24 +444,25 @@ pytest tests/ -v
 
 ---
 
-## CDC / SCD Type 2 design
+## CDC / SCD Type 2 Design
 
-Silver models implement hash-based change capture across Bronze snapshot files:
+Silver models implement hash-based Change Data Capture (CDC) across Bronze snapshot files:
 
 1. Every Bronze file is read in full on each dbt run.
-2. A SHA-256 hash of all business columns is computed per row per file.
+2. A SHA-256 hash of all business columns is computed per row per file (for change detection).
 3. Rows are compared to the previous file via `LAG()`.
 4. Only inserts (`I`) and updates (`U`) are appended to the incremental table.
 5. Deletes (`D`) are detected during a `--full-refresh` by comparing the
    current-version view against the latest Bronze snapshot.
-6. The `_cv` view always returns the latest non-deleted row per entity key.
+6. The `_cv` view returns the latest row per entity key (including deleted rows;
+   filter `WHERE LKHS_cdc_operation != 'D'` to exclude them).
 
 See [documentation/silver_model_logic.md](documentation/silver_model_logic.md)
 for a detailed walkthrough with compiled SQL examples.
 
 ---
 
-## Executor concurrency model
+## Executor Concurrency Model
 
 | Job type | Executor | Reason |
 | --- | --- | --- |
@@ -479,7 +472,7 @@ for a detailed walkthrough with compiled SQL examples.
 
 ---
 
-## Dagster home directory
+## Dagster Home Directory
 
 Dagster stores run history, event logs, and schedule state under `DAGSTER_HOME`.
 This project uses `.dagster/` at the repository root, configured with SQLite
@@ -494,14 +487,15 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ---
 
-## Known limitations
+## Known Limitations
 
-- **DuckDB pinned below 1.5** — DuckDB 1.5.0 introduced an internal
-  column-binding bug that crashes `GROUP BY` queries against views using
-  `QUALIFY ROW_NUMBER()`.  This breaks dbt's auto-generated `unique` tests on
-  all Silver `_cv` views.  The project is pinned to `duckdb>=1.1,<1.5` until
-  the upstream fix is released.  `fetch_arrow_table()` (deprecated in 1.5) is
-  used accordingly.
+- **DuckDB pinned below 1.5** (as of March 2026) — DuckDB 1.5.0 introduced an
+  internal column-binding bug that crashes `GROUP BY` queries against views
+  using `QUALIFY ROW_NUMBER()`. This breaks dbt's auto-generated `unique` tests
+  on all Silver `_cv` views. The project is pinned to `duckdb>=1.1,<1.5` until
+  the upstream fix is released. `fetch_arrow_table()` (deprecated in 1.5) is
+  used accordingly. Track the upstream issue at
+  [duckdb/duckdb#16407](https://github.com/duckdb/duckdb/issues/16407).
 
 ---
 
@@ -525,11 +519,10 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ## Contributing
 
-Contributions are welcome! This is a learning and reference project, so the bar
-for participation is low — whether you spotted a typo, want to add an entity, or
-have ideas for improving the pipeline design.
+Contributions of all sizes are welcome — whether you spotted a typo, want to add
+an entity, or have ideas for improving the pipeline design.
 
-### How to contribute
+### How to Contribute
 
 1. **Fork** the repository and create a branch from `main`:
 
@@ -561,7 +554,7 @@ have ideas for improving the pipeline design.
 - Do not commit credentials or `.env` files (the repo's `.gitignore` already
   excludes them, but double-check before pushing).
 
-### Reporting issues
+### Reporting Issues
 
 Use the [GitHub Issues](https://github.com/edwinweber/dbt_duckdb_demo/issues)
 tab to report bugs or suggest features. Please include:
@@ -572,6 +565,18 @@ tab to report bugs or suggest features. Please include:
 
 ---
 
-## Environment variable reference
+## Glossary
 
-See [.env.example](.env.example) for the full list with inline descriptions.
+| Abbreviation | Definition |
+| --- | --- |
+| **ADLS** | Azure Data Lake Storage (Gen2) |
+| **CDC** | Change Data Capture — detecting inserts, updates, and deletes between data snapshots |
+| **SCD Type 2** | Slowly Changing Dimension Type 2 — preserving full history by adding new rows for each change |
+| **NDJSON** | Newline-Delimited JSON — one JSON object per line |
+| **OData** | Open Data Protocol — a REST-based data access standard |
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

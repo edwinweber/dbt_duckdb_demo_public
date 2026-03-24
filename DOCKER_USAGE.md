@@ -1,17 +1,21 @@
 # Docker Usage
 
+Last updated: March 2026
+
 ## Prerequisites
 
-1. Copy `.env.example` to `.env` and fill in your values.
-2. Docker and Docker Compose installed.
+1. **Docker Engine 24+** and **Docker Compose v2+** installed.
+2. Copy `.env.example` to `.env` and fill in your values. See the
+   [environment variable reference](README.md#environment-variable-reference)
+   for required values per storage mode.
 
-## Build the image
+## Build the Image
 
 ```bash
 docker compose build
 ```
 
-## Seed volumes with local state (optional, one-time)
+## Seed Volumes With Local State (Optional, One-Time)
 
 Copies your existing dlt pipeline state, Dagster run history, and dbt logs
 into the Docker volumes so containers start with your current state:
@@ -20,32 +24,38 @@ into the Docker volumes so containers start with your current state:
 ./docker-seed-volumes.sh
 ```
 
-## Running services
+## Running Services
 
-Three services cover all use cases: `run` (generic Python runner), `duckdb-init`, and `dagster`.
+Three services cover all use cases:
 
-### Pipeline steps (via `run`)
+| Service | Purpose |
+| --- | --- |
+| `run` | Generic Python runner for one-off pipeline steps |
+| `duckdb-init` | Installs DuckDB extensions and creates a persistent Azure secret |
+| `dagster` | Dagster webserver + daemon, or one-off job execution |
 
-All Python modules are executed with the same `run` service — just pass the module name:
+### Pipeline Steps (via `run`)
+
+All Python modules are executed with the same `run` service — pass the module name:
 
 ```bash
-# 1. Extract data from Danish Parliament API to OneLake Bronze
+# 1. Extract data from Danish Parliament API to Bronze storage
 docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
 
 # 2. Generate dbt model SQL files (only needed once or after entity changes)
 docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
 
-# 3. Run dbt build (Bronze -> Silver -> Gold transformations)
+# 3. Run dbt build (Bronze → Silver → Gold transformations)
 docker compose run --rm run ddd_python.ddd_dbt.dbt_build_with_unique_logfile
 
-# 4. Export Silver tables to Fabric Delta Lake
+# 4. Export Silver tables to Delta Lake
 docker compose run --rm run ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
 
-# 5. Export Gold tables to Fabric Delta Lake
+# 5. Export Gold tables to Delta Lake
 docker compose run --rm run ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
 ```
 
-### Initialize DuckDB (optional)
+### Initialize DuckDB (via `duckdb-init`)
 
 Installs DuckDB extensions (httpfs, azure, delta) and creates a persistent Azure
 service principal secret via the DuckDB CLI. Use this **only** if you need the
@@ -57,7 +67,7 @@ secret before running dbt (e.g., for ad-hoc CLI queries). Otherwise, the first
 docker compose run --rm duckdb-init
 ```
 
-### Full pipeline via Dagster (single command)
+### Full Pipeline via Dagster (Single Command)
 
 Runs the complete end-to-end pipeline as a single Dagster job:
 
@@ -65,7 +75,7 @@ Runs the complete end-to-end pipeline as a single Dagster job:
 docker compose run --rm dagster job execute -j danish_parliament_full_pipeline_job -w workspace.yaml
 ```
 
-### Dagster orchestration UI
+### Dagster Orchestration UI
 
 ```bash
 # Start Dagster webserver on http://localhost:3000
@@ -81,38 +91,57 @@ docker compose logs -f dagster
 docker compose down
 ```
 
-## Persistent volumes
+## Environment Variables in Docker
 
-Four named volumes keep state across container runs:
+Environment variables are handled in two layers:
+
+1. **`env_file: .env`** — loads all variables from your `.env` file.
+2. **`environment:` overrides** — the `docker-compose.yml` remaps path variables
+   (e.g., `DUCKDB_DATABASE_LOCATION`, `DAGSTER_HOME`) to container volume mount
+   paths, taking precedence over `.env` values.
+
+Variables like `STORAGE_TARGET`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` are
+passed through from `.env` without modification.
+
+## Persistent Volumes
+
+Five named volumes keep state across container runs:
 
 | Volume | Contents |
-|--------|----------|
+| --- | --- |
 | `dlt_pipelines` | dlt pipeline state (incremental load tracking) |
 | `duckdb_data` | DuckDB database file |
 | `dbt_logs` | dbt build log files |
 | `dagster_data` | Dagster run history, schedules, storage |
+| `local_storage` | Bronze / Silver / Gold data files (local storage mode) |
 
-### Inspect volume contents
+### Inspect Volume Contents
 
 ```bash
 docker volume ls | grep dbt_duckdb_demo
 docker run --rm -v dbt_duckdb_demo_duckdb_data:/data alpine ls -la /data
 ```
 
-### Reset all data (start fresh)
+### Reset All Data (Start Fresh)
 
 ```bash
 docker compose down -v
 ```
 
-### Reset a single volume
+### Reset a Single Volume
 
 ```bash
 docker compose down
 docker volume rm dbt_duckdb_demo_dlt_pipelines
 ```
 
-## Rebuilding after code changes
+## Resource Requirements
+
+A full pipeline run (18 entities, Bronze → Silver → Gold → export) typically
+requires approximately 2 GB of RAM and 1 GB of disk space for the DuckDB
+database and Delta Lake tables.
+
+## Rebuilding After Code Changes
 
 ```bash
 docker compose build
@@ -120,7 +149,7 @@ docker compose build
 
 ## Troubleshooting
 
-### Run a shell inside the container
+### Run a Shell Inside the Container
 
 ```bash
 docker compose run --rm --entrypoint bash run

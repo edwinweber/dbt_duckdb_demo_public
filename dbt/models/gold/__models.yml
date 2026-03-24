@@ -121,7 +121,7 @@ models:
   # Dimension — Meeting
   # ---------------------------------------------------------------------------
   - name: meeting
-    description: Parliament meetings — SCD Type 2 history.
+    description: Parliament meetings — current version only (filtered to LKHS_date_valid_to = 9999-12-31).
     data_tests:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:

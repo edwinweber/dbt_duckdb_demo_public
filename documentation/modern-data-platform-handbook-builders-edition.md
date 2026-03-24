@@ -3067,10 +3067,10 @@ A platform-generated key used to stabilize joins and analytical semantics indepe
 
 ## Repository-Internal Reference Files
 
-- Main manuscript: [documentation/modern-data-platform-handbook-complete.md](./documentation/modern-data-platform-handbook-complete.md)
-- Original architecture handbook: [documentation/modern-data-platform-handbook-v9.3.md](./documentation/modern-data-platform-handbook-v9.3.md)
-- Illustrated variant: [documentation/modern-data-platform-handbook-illustrated.md](./documentation/modern-data-platform-handbook-illustrated.md)
-- Project overview: [README.md](./README.md)
+- Main manuscript: [documentation/modern-data-platform-handbook-complete.md](/home/edwin/source/repos/dbt_duckdb_demo/documentation/modern-data-platform-handbook-complete.md)
+- Original architecture handbook: [documentation/modern-data-platform-handbook-v9.3.md](/home/edwin/source/repos/dbt_duckdb_demo/documentation/modern-data-platform-handbook-v9.3.md)
+- Illustrated variant: [documentation/modern-data-platform-handbook-illustrated.md](/home/edwin/source/repos/dbt_duckdb_demo/documentation/modern-data-platform-handbook-illustrated.md)
+- Project overview: [README.md](/home/edwin/source/repos/dbt_duckdb_demo/README.md)
 
 ## Suggested Further Reading Topics
 
