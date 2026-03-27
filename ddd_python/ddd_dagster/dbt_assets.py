@@ -102,10 +102,16 @@ class DddDbtTranslator(DagsterDbtTranslator):
         resource_type = dbt_resource_props.get("resource_type")
 
         if resource_type == "source":
-            # source name is e.g. "bronze_afstemning" → map to dlt asset key
+            # Map dbt source names to their upstream dlt extraction asset keys.
+            # DDD sources:  "bronze_ddd_afstemning"   → ["ingestion", "DDD",  "afstemning"]
+            # Rfam sources: "bronze_rfam_family"     → ["ingestion", "RFAM", "family"]
             source_name: str = dbt_resource_props["name"]
-            dlt_key = source_name.removeprefix("bronze_")
-            return AssetKey(["ingestion", "DDD", dlt_key])
+            bare = source_name.removeprefix("bronze_")
+            if bare.startswith("rfam_"):
+                return AssetKey(["ingestion", "RFAM", bare.removeprefix("rfam_")])
+            if bare.startswith("ddd_"):
+                return AssetKey(["ingestion", "DDD", bare.removeprefix("ddd_")])
+            return AssetKey(["ingestion", "DDD", bare])
 
         if resource_type == "seed":
             seed_name: str = dbt_resource_props["name"]

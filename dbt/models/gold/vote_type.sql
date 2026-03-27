@@ -3,7 +3,7 @@ WITH CTE_SRC AS
 ,       src.*
 ,       LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,       ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_afstemningstype') }} src
+FROM {{ ref('silver_ddd_afstemningstype') }} src
 )
 SELECT  CTE_SRC.LKHS_vote_type_id
 ,       CONCAT(CTE_SRC.LKHS_source_system_code

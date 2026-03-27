@@ -1,0 +1,314 @@
+version: 2
+
+# ---------------------------------------------------------------------------
+# Incremental / CDC tables
+# These are the two Rfam tables that change over time and are extracted
+# incrementally using the `updated` timestamp column. Each has a full
+# SCD Type 2 history with hash-based CDC (I / U / D) and a companion
+# _cv (current-version) view.
+# ---------------------------------------------------------------------------
+
+models:
+  - name: silver_rfam_family
+    description: SCD Type 2 history for Rfam family (RNA families).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              value: 64
+      - name: LKHS_source_system_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['RFAM']
+
+  - name: silver_rfam_genome
+    description: SCD Type 2 history for Rfam genome (genome entries).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+    columns:
+      - name: upid
+        data_tests:
+          - not_null
+      - name: LKHS_date_valid_from
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              value: 64
+
+  # ---------------------------------------------------------------------------
+  # Reference / lookup tables (full-extract, rarely change)
+  # ---------------------------------------------------------------------------
+
+  - name: silver_rfam_clan
+    description: SCD Type 2 history for Rfam clan (RNA clans).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: clan_acc
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_clan_membership
+    description: SCD Type 2 history for Rfam clan_membership (family-to-clan assignments).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 50000
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_author
+    description: SCD Type 2 history for Rfam author (publication authors).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: author_id
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_literature_reference
+    description: SCD Type 2 history for Rfam literature_reference (cited publications).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 50000
+    columns:
+      - name: pmid
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_dead_family
+    description: SCD Type 2 history for Rfam dead_family (retired RNA families).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  # ---------------------------------------------------------------------------
+  # Current-version (_cv) views
+  # Each view returns exactly one row per entity key — the most recent version
+  # from the SCD Type 2 history table, determined by MAX(LKHS_date_valid_from).
+  # Rows with LKHS_cdc_operation = 'D' may appear when an entity has been
+  # deleted at source; downstream consumers should filter these out if needed.
+  # ---------------------------------------------------------------------------
+
+  - name: silver_rfam_family_cv
+    description: >
+      Current-version view of Rfam family. One row per RNA family —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              value: 64
+
+  - name: silver_rfam_genome_cv
+    description: >
+      Current-version view of Rfam genome. One row per genome entry —
+      the latest CDC version.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+    columns:
+      - name: upid
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+      - name: LKHS_hash_value
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_value_lengths_to_equal:
+              value: 64
+
+  # Reference table _cv views (lookup data — full-extract, rarely deleted)
+
+  - name: silver_rfam_clan_cv
+    description: Current-version view of Rfam clan. One row per clan.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: clan_acc
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_clan_membership_cv
+    description: Current-version view of Rfam clan_membership. One row per family-to-clan assignment.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 50000
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_author_cv
+    description: Current-version view of Rfam author. One row per author.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: author_id
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_literature_reference_cv
+    description: Current-version view of Rfam literature_reference. One row per publication.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 50000
+    columns:
+      - name: pmid
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']
+
+  - name: silver_rfam_dead_family_cv
+    description: Current-version view of Rfam dead_family. One row per retired family.
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          config:
+            enabled: false
+          min_value: 1
+          max_value: 10000
+    columns:
+      - name: rfam_acc
+        data_tests:
+          - not_null
+          - unique
+      - name: LKHS_cdc_operation
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['I', 'U', 'D']

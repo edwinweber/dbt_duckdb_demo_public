@@ -38,6 +38,11 @@ RUN DUCKDB_DATABASE_LOCATION=${DBT_PARSE_DB} \
 # Create volume mount directories
 RUN mkdir -p /data/dlt_pipelines /data/duckdb /data/dbt_logs /data/dagster /data/local
 
+# Create non-root user for runtime security
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --create-home appuser && \
+    chown -R appuser:appuser /data /app
+
 # Default environment variables pointing to persistent volume paths
 ENV STORAGE_TARGET=local \
     LOCAL_STORAGE_PATH=/data/local \
@@ -55,9 +60,13 @@ ENV STORAGE_TARGET=local \
 RUN printf '%s\n' \
     "SET ca_cert_file='/etc/ssl/certs/ca-certificates.crt';" \
     "SET azure_transport_option_type='curl';" \
-    > /root/.duckdbrc
+    > /home/appuser/.duckdbrc && \
+    chown appuser:appuser /home/appuser/.duckdbrc
 
 # Entrypoint wrapper: ensures DuckDB Azure secret exists on every container start
 RUN chmod +x docker-entrypoint.sh
+
+USER appuser
+
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["python", "-m"]

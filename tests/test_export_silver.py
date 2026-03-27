@@ -123,3 +123,60 @@ def test_unexpected_error_is_raised(silver_connection, mock_fabric_clients):
         mock_dt.is_deltatable.side_effect = ConnectionError("network unreachable")
         with pytest.raises(ConnectionError, match="network unreachable"):
             silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+
+
+# ── Rfam-specific tests (non-id primary key) ─────────────────────────
+
+
+@pytest.fixture
+def rfam_silver_connection():
+    """Create an in-memory DuckDB with a sample Rfam Silver table (PK=rfam_acc)."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+    conn.execute("""
+        CREATE TABLE main_silver.silver_rfam_family AS
+        SELECT 'RF00001' AS rfam_acc, '2024-01-01'::TIMESTAMP AS LKHS_date_valid_from, 'family_a' AS rfam_id
+        UNION ALL
+        SELECT 'RF00002', '2024-01-02'::TIMESTAMP, 'family_b'
+        UNION ALL
+        SELECT 'RF00003', '2024-01-03'::TIMESTAMP, 'family_c'
+    """)
+    yield conn
+    conn.close()
+
+
+def test_rfam_incremental_append_uses_real_pk(rfam_silver_connection, mock_fabric_clients):
+    """Rfam tables use rfam_acc (not id) — only rows with new PK+date should be appended."""
+    existing = pa.table({
+        "rfam_acc": ["RF00001", "RF00002"],
+        "LKHS_date_valid_from": pa.array(pd.to_datetime(["2024-01-01", "2024-01-02"])),
+        "rfam_id": ["family_a", "family_b"],
+    })
+
+    with (
+        _patch_env(),
+        patch.object(silver_mod, "DeltaTable") as mock_dt,
+        patch.object(silver_mod, "write_deltalake") as mock_write,
+    ):
+        mock_dt.is_deltatable.return_value = True
+        mock_dt.return_value.to_pyarrow_table.return_value = existing
+        rows = silver_mod.export_single_silver_table(rfam_silver_connection, "silver_rfam_family")
+
+    assert rows == 1  # only RF00003 is new
+    mock_write.assert_called_once()
+    assert mock_write.call_args.kwargs.get("mode") == "append"
+
+
+def test_rfam_first_load_creates_table(rfam_silver_connection, mock_fabric_clients):
+    """When no Delta table exists, all Rfam rows are written with overwrite."""
+    with (
+        _patch_env(),
+        patch.object(silver_mod, "DeltaTable") as mock_dt,
+        patch.object(silver_mod, "write_deltalake") as mock_write,
+    ):
+        mock_dt.is_deltatable.return_value = False
+        rows = silver_mod.export_single_silver_table(rfam_silver_connection, "silver_rfam_family")
+
+    assert rows == 3
+    mock_write.assert_called_once()
+    assert mock_write.call_args.kwargs.get("mode") == "overwrite"

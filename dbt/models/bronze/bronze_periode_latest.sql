@@ -1,1 +1,0 @@
-{{ generate_model_bronze_latest('periode','DDD','danish_parliament') }}

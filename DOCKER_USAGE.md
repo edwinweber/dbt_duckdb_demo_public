@@ -42,6 +42,9 @@ All Python modules are executed with the same `run` service — pass the module 
 # 1. Extract data from Danish Parliament API to Bronze storage
 docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
 
+# 1b. Extract data from Rfam MySQL database to Bronze storage
+docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam
+
 # 2. Generate dbt model SQL files (only needed once or after entity changes)
 docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
 
@@ -72,7 +75,7 @@ docker compose run --rm duckdb-init
 Runs the complete end-to-end pipeline as a single Dagster job:
 
 ```bash
-docker compose run --rm dagster job execute -j danish_parliament_full_pipeline_job -w workspace.yaml
+docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
 ```
 
 ### Dagster Orchestration UI

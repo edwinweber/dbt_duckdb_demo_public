@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import traceback
+import warnings
 from datetime import datetime, timedelta, timezone
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
@@ -156,8 +157,12 @@ def run_extraction_pipelines_danish_parliament_data(
     log_file = f"{SCRIPT_NAME}_log.ndjson"
     try:
         dpef.write_log_to_onelake(log_record, log_dir, log_file)
-    except Exception:
-        pass  # log write failure must not mask pipeline errors
+    except Exception as log_exc:
+        warnings.warn(
+            f"Failed to write script-level run log: {log_exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     if failed:
         raise RuntimeError(f"The following pipelines failed: {', '.join(failed)}")

@@ -74,7 +74,7 @@ class DltOneLakeResource(ConfigurableResource):
         """
         return dpef.execute_pipeline(
             pipeline_type=pipeline_type,
-            source_system_code=self.source_system_code,
+            source_system_code=kwargs.pop("source_system_code", self.source_system_code),
             **kwargs,
         )
 

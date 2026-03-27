@@ -1,0 +1,41 @@
+
+version: 2
+
+sources:
+  - name: rfam
+    schema: rfam
+    description: Data from the Rfam public MySQL database (RNA families)
+    loaded_at_field: LKHS_date_inserted
+    freshness:
+      warn_after: {count: "{{ env_var('DBT_FRESHNESS_WARN_AFTER_DAYS', '2') | int }}", period: day}
+      error_after: {count: "{{ env_var('DBT_FRESHNESS_ERROR_AFTER_DAYS', '7') | int }}", period: day}
+
+    tables:
+    - name: bronze_rfam_family
+      description: One record per RNA family in Rfam
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/family/family_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_genome
+      description: One record per genome assembly in Rfam
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/genome/genome_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_clan
+      description: One record per RNA clan (group of families)
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/clan/clan_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_clan_membership
+      description: One record per clan-to-family membership
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/clan_membership/clan_membership_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_author
+      description: One record per Rfam author
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/author/author_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_literature_reference
+      description: One record per literature reference
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/literature_reference/literature_reference_*.json*', filename=True, union_by_name = true)"
+    - name: bronze_rfam_dead_family
+      description: One record per retired RNA family
+      meta:
+        external_location: "read_json_auto('{{ env_var('RFAM_DATA_SOURCE') }}/dead_family/dead_family_*.json*', filename=True, union_by_name = true)"

@@ -1,6 +1,6 @@
-{%- macro generate_model_silver_incr_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash) -%}
-{{ config( materialized='incremental',incremental_strategy='append',on_schema_change='append_new_columns',unique_key=['id','LKHS_date_valid_from']
-,pre_hook  = "{{ generate_pre_hook_silver_full_refresh() }}"
+{%- macro generate_model_silver_incr_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
+{{ config( materialized='incremental',incremental_strategy='append',on_schema_change='append_new_columns',unique_key=[primary_key_columns,'LKHS_date_valid_from']
+,pre_hook  = "{{ generate_pre_hook_silver_full_refresh(primary_key_columns='" ~ primary_key_columns ~ "') }}"
 ,post_hook = "DROP TABLE IF EXISTS {{ this.schema }}.{{ this.name }}_current_temp;"
 ) }}
 WITH CTE_BRONZE AS (
@@ -12,13 +12,13 @@ FROM {{ ref(bronze_table_name) }} src
 )
 ,CTE_FILES AS   (
                 SELECT LKHS_filename
-                ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S') AS LKHS_date_valid_from
+                ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S') AS LKHS_date_valid_from
                 ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
                 ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
-                ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-                ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
+                ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
+                ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
                 FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
-                        FROM read_text('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/{{ file_name }}/{{ file_name }}_*.json')
+                        FROM read_text('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*')
                         ) files
                 )
 ,CTE_FILE_LATEST AS (
@@ -64,9 +64,9 @@ SELECT  cv.* EXCLUDE (LKHS_date_inserted,LKHS_cdc_operation,LKHS_date_valid_from
 FROM      {{ this.schema }}.{{ this.name }}_current_temp cv
 CROSS JOIN CTE_FILE_LATEST
 LEFT JOIN {{ ref(bronze_latest_version) }} bronze_latest
-ON        cv.id = bronze_latest.id
+ON        cv.{{ primary_key_columns }} = bronze_latest.{{ primary_key_columns }}
 WHERE     cv.LKHS_cdc_operation != 'D'
-AND       bronze_latest.id IS NULL
+AND       bronze_latest.{{ primary_key_columns }} IS NULL
 {%- endif -%}
 {%- endif -%}
 )
@@ -76,6 +76,6 @@ WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ thi
         OR (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file) IS NULL
        )
 {% if is_incremental() %}
-AND NOT EXISTS (SELECT id FROM {{ this }} WHERE id = CTE_ALL_ROWS.id AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+AND NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
 {%- endif -%}
 {%- endmacro -%}

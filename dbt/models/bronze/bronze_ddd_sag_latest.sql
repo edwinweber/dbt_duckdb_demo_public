@@ -1,0 +1,2 @@
+{{ config(tags=['ddd']) }}
+{{ generate_model_bronze_latest('sag','DDD','danish_parliament') }}

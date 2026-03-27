@@ -232,7 +232,7 @@ def _serialize_trace(trace: Any) -> dict:
         "destination_name": load_info.destination_name if load_info else None,
         "loads_ids": load_info.loads_ids if load_info else None,
         "has_failed_jobs": load_info.has_failed_jobs if load_info else None,
-        "is_empty": load_info.is_empty if load_info else None,
+        "is_empty": getattr(load_info, "is_empty", None) if load_info else None,
     }
 
 
@@ -262,10 +262,11 @@ def write_log_to_onelake(
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         destination_directory_path, destination_file_name
     )
+    from azure.core.exceptions import ResourceNotFoundError
     encoded = data.encode("utf-8")
     try:
         offset = file_client.get_file_properties().size
-    except Exception:  # file does not exist yet
+    except ResourceNotFoundError:
         file_client.create_file()
         offset = 0
     file_client.append_data(io.BytesIO(encoded), offset=offset, length=len(encoded))
@@ -373,6 +374,10 @@ def run_api_to_file_pipeline(
                 response = session.get(api_url, timeout=30)
                 response.raise_for_status()
                 body = response.json()
+                if "value" not in body:
+                    raise ValueError(
+                        f"API response missing 'value' key; got keys: {sorted(body.keys())}"
+                    )
                 records = body.get("value", [])
                 num_rows += len(records)
                 yield from records                      # individual records — dlt sees real schema
@@ -385,6 +390,10 @@ def run_api_to_file_pipeline(
                 response = session.get(api_url, timeout=30)
                 response.raise_for_status()
                 body = response.json()
+                if "value" not in body:
+                    raise ValueError(
+                        f"API response missing 'value' key; got keys: {sorted(body.keys())}"
+                    )
                 records = body.get("value", [])
                 num_rows += len(records)
                 yield from records                      # individual records — dlt sees real schema
@@ -426,6 +435,7 @@ def run_sql_to_file_pipeline(
     destination_file_name: str,
     chunk_size: int = 100_000,
     parquet_compression: str = "snappy",
+    loader_file_format: str = "parquet",
 ) -> dict:
     """Execute a SQL query and write the result as a Parquet file to OneLake.
 
@@ -451,6 +461,10 @@ def run_sql_to_file_pipeline(
             the destination still receives all rows in one batch.
         parquet_compression: Parquet codec.  Accepted values: ``"snappy"``
             (default), ``"gzip"``, ``"brotli"``, ``"zstd"``, ``"none"``.
+            Only applies when *loader_file_format* is ``"parquet"``.
+        loader_file_format: Output file format.  ``"parquet"`` (default)
+            or ``"jsonl"``.  When ``"jsonl"`` the output is NDJSON, compatible
+            with the Bronze layer's ``read_json_auto()`` views.
 
     Returns:
         A dictionary with:
@@ -468,17 +482,23 @@ def run_sql_to_file_pipeline(
     @dlt.resource(name=pipeline_name, write_disposition="append")
     def get_sql_data(connection_string: str, sql_query: str):
         nonlocal num_rows
-        engine = create_engine(connection_string)
-        with engine.connect() as conn:
-            result = conn.execute(text(sql_query))
-            columns = list(result.keys())
-            while True:
-                rows = result.fetchmany(chunk_size)
-                if not rows:
-                    break
-                for row in rows:
-                    num_rows += 1
-                    yield dict(zip(columns, row))   # individual rows — dlt sees real schema
+        engine = create_engine(
+            connection_string,
+            connect_args={"connect_timeout": 30},
+        )
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(sql_query))
+                columns = list(result.keys())
+                while True:
+                    rows = result.fetchmany(chunk_size)
+                    if not rows:
+                        break
+                    for row in rows:
+                        num_rows += 1
+                        yield dict(zip(columns, row))   # individual rows — dlt sees real schema
+        finally:
+            engine.dispose()
 
     destination, dataset_name = _make_destination(
         destination_directory_path, destination_file_name, data_table_name=pipeline_name,
@@ -492,7 +512,7 @@ def run_sql_to_file_pipeline(
         restore_from_destination=True,
     )
 
-    pipeline.run(get_sql_data(source_connection_string, source_sql_query), loader_file_format="parquet")
+    pipeline.run(get_sql_data(source_connection_string, source_sql_query), loader_file_format=loader_file_format)
 
     return {"status": "success", "records_written": num_rows, "trace": _serialize_trace(pipeline.last_trace)}
 
@@ -626,6 +646,7 @@ def execute_pipeline(pipeline_type: str, **kwargs) -> dict:
                 destination_file_name=kwargs["destination_file_name"],
                 chunk_size=kwargs.get("chunk_size", 100_000),
                 parquet_compression=kwargs.get("parquet_compression", "snappy"),
+                loader_file_format=kwargs.get("loader_file_format", "parquet"),
             )
         elif pipeline_type == "file_to_file":
             result = run_file_to_file_pipeline(

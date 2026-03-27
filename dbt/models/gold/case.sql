@@ -4,35 +4,35 @@ case_step_type AS
 SELECT src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagstrinstype_cv') }} src
+FROM {{ ref('silver_ddd_sagstrinstype_cv') }} src
 ),
 case_step_status AS
 (
 SELECT src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagstrinsstatus_cv') }} src
+FROM {{ ref('silver_ddd_sagstrinsstatus_cv') }} src
 ),
 case_type AS
 (
 SELECT src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagstype_cv') }} src
+FROM {{ ref('silver_ddd_sagstype_cv') }} src
 ),
 case_status AS
 (
 SELECT src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagsstatus_cv') }} src
+FROM {{ ref('silver_ddd_sagsstatus_cv') }} src
 ),
 case_category AS
 (
 SELECT src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagskategori_cv') }} src
+FROM {{ ref('silver_ddd_sagskategori_cv') }} src
 ),
 case_src AS
 (
@@ -40,7 +40,7 @@ SELECT {{ cast_hash_to_bigint('src.LKHS_source_system_code,src.id,src.LKHS_date_
 ,      src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sag_cv') }} src
+FROM {{ ref('silver_ddd_sag_cv') }} src
 ),
 case_step AS
 (
@@ -48,7 +48,7 @@ SELECT {{ cast_hash_to_bigint('src.LKHS_source_system_code,src.id,src.LKHS_date_
 ,      src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_sagstrin_cv') }} src
+FROM {{ ref('silver_ddd_sagstrin_cv') }} src
 )
 select  case_step.LKHS_case_id
 ,       CONCAT(case_src.LKHS_source_system_code

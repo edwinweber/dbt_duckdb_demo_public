@@ -42,7 +42,7 @@ services:
 
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
-  # Full job: docker compose run --rm dagster job execute -j danish_parliament_full_pipeline_job -w workspace.yaml
+  # Full job: docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
   dagster:
     <<: *common
     command: ["dagster", "dev", "-w", "workspace.yaml", "-h", "0.0.0.0", "-p", "3000"]

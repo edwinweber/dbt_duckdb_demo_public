@@ -12,8 +12,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1
     columns:
       - name: LKHS_actor_id
         description: Surrogate key — hash of source system + id + valid_from.
@@ -27,8 +26,7 @@ models:
           - dbt_expectations.expect_column_values_to_match_regex:
               config:
                 enabled: false
-              arguments:
-                regex: "^DDD-[0-9]+"
+              regex: "^DDD-[0-9]+"
       - name: LKHS_date_valid_from
         description: Start of the validity period for this version.
         data_tests:
@@ -44,8 +42,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1
     columns:
       - name: LKHS_actor_id
         data_tests:
@@ -77,8 +74,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1
     columns:
       - name: LKHS_case_id
         description: Surrogate key.
@@ -105,8 +101,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 365
+          min_value: 365
     columns:
       - name: date_day
         description: The calendar date — primary key of this table.
@@ -114,8 +109,7 @@ models:
           - not_null
           - unique
           - dbt_expectations.expect_column_values_to_be_of_type:
-              arguments:
-                column_type: date
+              column_type: date
 
   # ---------------------------------------------------------------------------
   # Dimension — Meeting
@@ -126,8 +120,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1
     columns:
       - name: LKHS_meeting_id
         data_tests:
@@ -185,8 +178,7 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1
     columns:
       - name: LKHS_vote_id
         description: Surrogate key.
@@ -199,8 +191,7 @@ models:
           NULL may appear for procedural or cancelled votes.
         data_tests:
           - dbt_expectations.expect_column_values_to_be_in_set:
-              arguments:
-                value_set: [0, 1]
+              value_set: [0, 1]
               config:
                 where: "approved IS NOT NULL"
 
@@ -220,9 +211,8 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
-            max_value: 50
+          min_value: 1
+          max_value: 50
     columns:
       - name: LKHS_vote_type_id
         data_tests:
@@ -252,5 +242,4 @@ models:
       - dbt_expectations.expect_table_row_count_to_be_between:
           config:
             enabled: false
-          arguments:
-            min_value: 1
+          min_value: 1

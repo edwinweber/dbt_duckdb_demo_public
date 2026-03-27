@@ -1,7 +1,7 @@
 # Danish Democracy Data — dbt + DuckDB Demo
 
 A demo project that ingests, transforms, and publishes open data from the
-Danish Parliament (Folketing) OData API.
+Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
 
 > **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data),
 > which provides the initial foundation for working with Folketing open data.
@@ -10,10 +10,11 @@ Danish Parliament (Folketing) OData API.
 
 The goal is to demonstrate the capabilities achievable with a **low-cost,
 open-source stack** (DuckDB + dbt + dlt + Dagster) before requiring
-enterprise-grade commercial tooling. This is a learning and reference project,
-not a production-hardened system. The pipeline runs daily against real data,
-but this repository is shared as a reference for the patterns it implements,
-not as a turnkey deployment.
+enterprise-grade commercial tooling. This is a learning and reference project
+demonstrating production-quality data engineering patterns. The pipeline runs
+daily against real data, and the codebase includes production-hardening measures
+(SQL injection defense, connection safety, non-root Docker, API response
+validation).
 
 The pipeline follows a **medallion architecture** (Bronze → Silver → Gold),
 orchestrated by Dagster. It supports two storage backends controlled by a
@@ -31,29 +32,35 @@ single environment variable:
 ```text
   ┌──────────────────────────────────────────────────────────────────────┐
   │  Dagster  (schedule 06:00 UTC daily · disabled by default)           │
-  │  └── danish_parliament_full_pipeline_job                             │
+   │  └── full_pipeline_job                                              │
   └──────────────────────────────┬───────────────────────────────────────┘
                                  │ orchestrates
   ┌──────────────────────────────▼───────────────────────────────────────┐
-  │  Layer 1 — Extraction  (dlt · 18 OData entities)                     │
-  │  ├── Incremental (6):  Aktør, Møde, Sag, Sagstrin, SagstrinAktør,    │
-  │  │                     Stemme                                         │
-  │  └── Full-extract (12): small tables, always fully extracted          │
-  └─────────────────┬────────────────────────────────┬────────────────────┘
+  │  Layer 1 — Extraction  (dlt)                                        │
+  │  ┌─ DDD: 18 OData entities from Danish Parliament API                │
+  │  │  ├── Incremental (6): Aktør, Møde, Sag, Sagstrin, SagstrinAktør, │
+  │  │  │                    Stemme                                       │
+  │  │  └── Full-extract (12): small lookup tables                      │
+  │  └─ RFAM: 7 MySQL tables from Rfam public database                  │
+  │     ├── Incremental (2): family, genome                             │
+  │     └── Full-extract (5): clan, clan_membership, author,            │
+  │                          literature_reference, dead_family          │
+  └─────────────────┬──────────────────────┬────────────────────┘
                     │                                │
        STORAGE_TARGET=local             STORAGE_TARGET=onelake
                     │                                │
     ┌───────────────▼──────────────┐  ┌──────────────▼──────────────────┐
-    │  data/Files/Bronze/DDD/      │  │  <Lakehouse>/Files/Bronze/DDD/  │
-    │  {entity}/{entity}_TS.json   │  │  {entity}/{entity}_TS.json      │
+    │  data/Files/Bronze/          │  │  <Lakehouse>/Files/Bronze/     │
+    │  DDD/{entity}/*.json         │  │  DDD/{entity}/*.json           │
+    │  RFAM/{table}/*.json         │  │  RFAM/{table}/*.json           │
     └───────────────┬──────────────┘  └──────────────┬──────────────────┘
-                    └──────────────────┬──────────────┘
-                          DANISH_DEMOCRACY_DATA_SOURCE (env var)
+                    └────────────────┬─────────────┘
+                          DATA_SOURCE env vars
   ┌───────────────────────────────────▼──────────────────────────────────┐
   │  Layer 2 — Bronze  (dbt views · code-generated)                      │
-  │  DuckDB read_json_auto(DANISH_DEMOCRACY_DATA_SOURCE/{entity}/*.json)  │
+  │  DuckDB read_json_auto(DATA_SOURCE/{entity}/*.json)                   │
   │  Works identically for local paths and abfss:// URLs                 │
-  │  One view per entity · no transformations · raw data preserved       │
+  │  25 entities (18 DDD + 7 Rfam) · no transformations · raw preserved  │
   └───────────────────────────────────┬──────────────────────────────────┘
                                       │
   ┌───────────────────────────────────▼──────────────────────────────────┐
@@ -81,9 +88,10 @@ single environment variable:
 | Concern | Tool |
 | --- | --- |
 | Orchestration | Dagster (software-defined assets, schedules, sensors) |
-| Extraction | dlt (Data Load Tool) |
+| Extraction | dlt (Data Load Tool) — OData API + SQL database |
 | Transformation | dbt-core + dbt-duckdb |
 | Query engine / local storage | DuckDB |
+| SQL source connector | SQLAlchemy + PyMySQL (Rfam MySQL) |
 | Cloud storage (optional) | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
 | Data quality | dbt built-in tests + dbt-expectations |
 | Language | Python 3.12+ |
@@ -99,7 +107,7 @@ The recommended way to run the pipeline is via Docker — no local Python setup 
 docker compose build
 
 # Run the full pipeline end-to-end via Dagster
-docker compose run --rm dagster job execute -j danish_parliament_full_pipeline_job -w workspace.yaml
+docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
 
 # Or start the Dagster UI at http://localhost:3000
 docker compose up dagster
@@ -116,7 +124,9 @@ individual pipeline steps, volume management, and troubleshooting.
 .
 ├── data/                       Local storage (git-ignored) — mirrors Fabric OneLake layout
 │   └── Files/
-│       ├── Bronze/DDD/         NDJSON files per entity (written by dlt in local mode)
+│       ├── Bronze/
+│       │   ├── DDD/            NDJSON files per DDD entity (written by dlt)
+│       │   └── RFAM/           NDJSON files per Rfam table (written by dlt)
 │       ├── Silver/             Delta Lake tables per Silver entity
 │       └── Gold/               Delta Lake tables per Gold model
 ├── dbt/                        dbt project
@@ -152,6 +162,7 @@ individual pipeline steps, volume management, and troubleshooting.
 
 - Python 3.12+
 - The Danish Parliament OData API (`https://oda.ft.dk/api`) is public — no API key required
+- The Rfam MySQL database (`mysql-rfam-public.ebi.ac.uk:4497`) is public read-only — no credentials required
 
 **OneLake mode only (optional):**
 
@@ -191,6 +202,9 @@ cp .env.example .env
 | `DBT_MODELS_DIRECTORY` | All | `/home/you/dbt_duckdb_demo/dbt/models` — path to `dbt/models/` |
 | `DLT_PIPELINES_DIR` | All | `/home/you/dbt_duckdb_demo/dlt/pipelines_dir` — dlt state directory |
 | `DANISH_DEMOCRACY_BASE_URL` | All | `https://oda.ft.dk/api` — Parliament OData API root |
+| `RFAM_CONNECTION_STRING` | All | `mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam` — Rfam MySQL connection |
+| `RFAM_DATA_SOURCE` | All | Local: `<LOCAL_STORAGE_PATH>/Files/Bronze/RFAM`; OneLake: `abfss://.../<lakehouse>.Lakehouse/Files/Bronze/RFAM` |
+| `RFAM_DEFAULT_DAYS_TO_LOAD` | All | Number of days to look back for incremental Rfam loads (default: `365`) |
 | `FABRIC_WORKSPACE` | OneLake | Fabric workspace name |
 | `FABRIC_ONELAKE_STORAGE_ACCOUNT` | OneLake | Usually `onelake` |
 | `FABRIC_ONELAKE_FOLDER_BRONZE` | OneLake | `<Lakehouse>.Lakehouse/Files/Bronze` |
@@ -255,14 +269,17 @@ Open **<http://localhost:3000>** to access the Dagster UI.
 For a first-time **full load**, run in this order:
 
 ```bash
-# 1. Extract all 18 entities (full + incremental)
+# 1. Extract all 18 DDD entities (full + incremental)
 dagster job launch -w workspace.yaml --job danish_parliament_all_job
 
-# 2. Transform: Bronze → Silver → Gold
+# 2. Extract all 7 Rfam tables
+dagster job launch -w workspace.yaml --job rfam_all_job
+
+# 3. Transform: Bronze → Silver → Gold
 dagster job launch -w workspace.yaml --job dbt_silver_job
 dagster job launch -w workspace.yaml --job dbt_gold_job
 
-# 3. Export Silver and Gold as Delta Lake tables
+# 4. Export Silver and Gold as Delta Lake tables
 dagster job launch -w workspace.yaml --job export_silver_job
 dagster job launch -w workspace.yaml --job export_gold_job
 ```
@@ -270,7 +287,7 @@ dagster job launch -w workspace.yaml --job export_gold_job
 Or run the complete pipeline in a single command:
 
 ```bash
-dagster job launch -w workspace.yaml --job danish_parliament_full_pipeline_job
+dagster job launch -w workspace.yaml --job full_pipeline_job
 ```
 
 ### Daily Incremental Runs
@@ -295,7 +312,7 @@ tables are small and it simplifies delete detection.
 dagster job launch -w workspace.yaml --job danish_parliament_full_extract_job
 ```
 
-This also runs as part of `danish_parliament_full_pipeline_job`.
+This also runs as part of `full_pipeline_job`.
 
 ### Individual Layers (CLI)
 
@@ -309,6 +326,86 @@ dagster job launch -w workspace.yaml --job export_gold_job
 
 ---
 
+## Dagster Job Organisation
+
+Jobs are organised in a **modular, composable** hierarchy. Each layer has
+per-source-system jobs that can be run independently. Parent jobs compose these
+building blocks via `AssetSelection` unions — adding a new source system only
+requires adding its leaf jobs and including them in the parent selections.
+
+```text
+full_pipeline_job
+├── Extraction
+│   ├── danish_parliament_all_job
+│   │   ├── danish_parliament_incremental_job   (6 DDD entities)
+│   │   └── danish_parliament_full_extract_job  (12 DDD entities)
+│   └── rfam_all_job
+│       ├── rfam_incremental_job                (2 Rfam tables)
+│       └── rfam_full_extract_job               (5 Rfam tables)
+├── dbt Bronze
+│   └── dbt_bronze_job                          = dbt_bronze_ddd_job | dbt_bronze_rfam_job
+│       ├── dbt_bronze_ddd_job                  (18 DDD bronze models + _latest views)
+│       └── dbt_bronze_rfam_job                 (7 Rfam bronze models + _latest views)
+├── dbt Silver
+│   └── dbt_silver_job                          = dbt_silver_ddd_job | dbt_silver_rfam_job
+│       ├── dbt_silver_ddd_job                  (18 DDD silver tables + _cv views)
+│       └── dbt_silver_rfam_job                 (7 Rfam silver tables + _cv views)
+├── dbt Gold
+│   └── dbt_gold_job                            (10 Gold models — DDD only)
+└── Export
+    ├── export_silver_job                       (DuckDB Silver → OneLake Delta)
+    └── export_gold_job                         (DuckDB Gold → OneLake Delta)
+```
+
+**Run a single source system** through Bronze and Silver without touching the other:
+
+```bash
+# DDD only
+dagster job launch -w workspace.yaml --job dbt_bronze_ddd_job
+dagster job launch -w workspace.yaml --job dbt_silver_ddd_job
+
+# Rfam only
+dagster job launch -w workspace.yaml --job dbt_bronze_rfam_job
+dagster job launch -w workspace.yaml --job dbt_silver_rfam_job
+```
+
+**Run all source systems** (parent jobs compose the per-source-system selections):
+
+```bash
+dagster job launch -w workspace.yaml --job dbt_bronze_job   # DDD + Rfam bronze
+dagster job launch -w workspace.yaml --job dbt_silver_job   # DDD + Rfam silver
+```
+
+### Job Summary
+
+| Job | Scope | Executor |
+| --- | --- | --- |
+| `full_pipeline_job` | End-to-end: extract → Bronze → Silver → Gold → export | multiprocess (max 4) |
+| `danish_parliament_incremental_job` | 6 DDD incremental entities | multiprocess (max 4) |
+| `danish_parliament_full_extract_job` | 12 DDD full-extract entities | multiprocess (max 4) |
+| `danish_parliament_all_job` | All 18 DDD entities | multiprocess (max 4) |
+| `rfam_incremental_job` | 2 Rfam incremental tables | multiprocess (max 4) |
+| `rfam_full_extract_job` | 5 Rfam full-extract tables | multiprocess (max 4) |
+| `rfam_all_job` | All 7 Rfam tables | multiprocess (max 4) |
+| `dbt_seeds_job` | Static CSV seeds | in-process |
+| `dbt_bronze_job` | All Bronze models (DDD + Rfam) | in-process |
+| `dbt_bronze_ddd_job` | DDD Bronze models only | in-process |
+| `dbt_bronze_rfam_job` | Rfam Bronze models only | in-process |
+| `dbt_silver_job` | All Silver models (DDD + Rfam) | in-process |
+| `dbt_silver_ddd_job` | DDD Silver models only | in-process |
+| `dbt_silver_rfam_job` | Rfam Silver models only | in-process |
+| `dbt_gold_job` | All Gold models (DDD only) | in-process |
+| `export_silver_job` | Silver → OneLake Delta Lake | multiprocess (max 4) |
+| `export_gold_job` | Gold → OneLake Delta Lake | multiprocess (max 4) |
+
+Extraction and export jobs use `multiprocess_executor` (I/O bound, safe to
+parallelise). dbt jobs use `in_process_executor` due to DuckDB's single-writer
+constraint. The model lists for per-source-system selections are driven from
+`configuration_variables.py`, so adding a new entity automatically includes it
+in the correct job.
+
+---
+
 ## Local Storage Layout
 
 When `STORAGE_TARGET=local`, all data lands under `LOCAL_STORAGE_PATH` in a
@@ -319,15 +416,20 @@ that paths are directly comparable:
 LOCAL_STORAGE_PATH/          (e.g. /home/you/dbt_duckdb_demo/data  or  /data/local in Docker)
 └── Files/
     ├── Bronze/
-    │   └── DDD/
-    │       ├── aktoer/          aktoer_YYYYMMDD_HHMMSS.json
-    │       ├── aktoertype/      aktoertype_YYYYMMDD_HHMMSS.json
-    │       ├── afstemning/      …
-    │       └── … (18 entities total)
+    │   ├── DDD/
+    │   │   ├── aktoer/          aktoer_YYYYMMDD_HHMMSS.json
+    │   │   ├── aktoertype/      aktoertype_YYYYMMDD_HHMMSS.json
+    │   │   ├── afstemning/      …
+    │   │   └── … (18 DDD entities)
+    │   └── RFAM/
+    │       ├── family/          family_YYYYMMDD_HHMMSS.json
+    │       ├── genome/          genome_YYYYMMDD_HHMMSS.json
+    │       └── … (7 Rfam tables)
     ├── Silver/
     │   ├── silver_aktoer/       Delta Lake table (incremental append)
     │   ├── silver_aktoertype/   Delta Lake table
-    │   └── … (18 Silver tables)
+    │   ├── silver_rfam_family/  Delta Lake table
+    │   └── … (25 Silver tables: 18 DDD + 7 Rfam)
     └── Gold/
         ├── actor/               Delta Lake table (full overwrite)
         ├── vote/
@@ -339,26 +441,35 @@ Compare with OneLake (`STORAGE_TARGET=onelake`):
 ```text
 <Workspace>/
 └── <Lakehouse>.Lakehouse/Files/
-    ├── Bronze/DDD/{entity}/     — NDJSON files
+    ├── Bronze/
+    │   ├── DDD/{entity}/        — NDJSON files
+    │   └── RFAM/{table}/        — NDJSON files
     ├── Silver/{table}/          — Delta Lake tables
     └── Gold/{table}/            — Delta Lake tables
 ```
 
-The `DANISH_DEMOCRACY_DATA_SOURCE` variable is what dbt's Bronze layer uses to
-locate the NDJSON files via DuckDB's `read_json_auto()`. Set it to either an
-`abfss://` URL (OneLake) or an absolute local path — the Bronze models work
-identically in both cases.
+The `DANISH_DEMOCRACY_DATA_SOURCE` and `RFAM_DATA_SOURCE` variables are what
+dbt’s Bronze layer uses to locate the NDJSON files via DuckDB’s
+`read_json_auto()`. Set them to either `abfss://` URLs (OneLake) or absolute
+local paths — the Bronze models work identically in both cases.
 
 ---
 
 ## Data Model
 
-### Entities (18)
+### DDD Entities (18)
 
 | Category | Entities |
 | --- | --- |
 | **Incremental** (date-filtered) | Aktør, Møde, Sag, Sagstrin, SagstrinAktør, Stemme |
 | **Full-extract** (always fully fetched — small tables, easy delete detection) | Afstemning, Afstemningstype, Aktørtype, Mødestatus, Mødetype, Periode, Sagskategori, Sagsstatus, Sagstrinsstatus, Sagstrinstype, Sagstype, Stemmetype |
+
+### Rfam Tables (7)
+
+| Category | Tables | Primary Key |
+| --- | --- | --- |
+| **Incremental** (date-filtered) | family, genome | `rfam_acc`, `upid` |
+| **Full-extract** | clan, clan_membership, author, literature_reference, dead_family | `clan_acc`, (`clan_acc`, `rfam_acc`), `author_id`, `pmid`, `rfam_acc` |
 
 ### Silver Layer — SCD Type 2
 
@@ -367,7 +478,7 @@ lakehouse metadata columns:
 
 | Column | Description |
 | --- | --- |
-| `LKHS_source_system_code` | Always `DDD` |
+| `LKHS_source_system_code` | `DDD` or `RFAM` — identifies the source system |
 | `LKHS_date_valid_from` | Point-in-time when this version was first observed |
 | `LKHS_hash_value` | SHA-256 of all business columns (64 hex chars) — used for change detection |
 | `LKHS_cdc_operation` | `I` insert · `U` update · `D` delete |
@@ -423,6 +534,38 @@ dbt docs generate --profiles-dir . && dbt docs serve   # lineage browser on :808
 
 ---
 
+## dbt Documentation
+
+The project includes full dbt documentation with model descriptions, column
+lineage, and a dependency graph. A pre-generated copy is committed at
+[`documentation/dbt-docs/`](documentation/dbt-docs/) so you can browse it
+without running the pipeline first.
+
+**Browse the committed docs** — open `documentation/dbt-docs/index.html` in
+your browser. The documentation covers:
+
+- All 121 models across Bronze, Silver, and Gold layers
+- Column-level lineage and data types via the catalog
+- The full DAG (directed acyclic graph) showing dependencies between
+  models, seeds, sources, and tests
+- 264 data quality tests defined across the project
+
+**Regenerate after changes:**
+
+```bash
+cd dbt
+dbt docs generate --profiles-dir .
+dbt docs serve --profiles-dir .        # interactive site at http://localhost:8080
+```
+
+After regenerating, copy the updated files back into the repository:
+
+```bash
+cp dbt/target/{index.html,catalog.json,manifest.json} documentation/dbt-docs/
+```
+
+---
+
 ## Running Tests (pytest)
 
 No cloud credentials required — tests use in-memory DuckDB and mocked clients.
@@ -437,6 +580,10 @@ pytest tests/ -v
 | `test_export_gold.py` | Gold Delta Lake export — overwrite mode, row count, target path |
 | `test_export_silver.py` | Silver Delta Lake export — incremental append, first-load overwrite |
 | `test_generate_dbt_models.py` | dbt model code-generation macros |
+| `test_integration_bronze.py` | Bronze layer: JSON read, filename extraction, `_latest` view |
+| `test_integration_silver_cdc.py` | Silver CDC: insert/update/delete detection, `_cv` view, deduplication |
+| `test_integration_gold.py` | Gold star-schema: SCD2, surrogate keys, fact joins |
+| `test_integration_e2e_pipeline.py` | End-to-end: Bronze→Silver→Delta Lake round-trip |
 | `test_serialize_trace.py` | dlt run trace serialisation |
 | `test_scrub_secrets.py` | Credential scrubbing in log output |
 | `test_require_env.py` | Missing env var handling |
@@ -509,8 +656,8 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 | `INTERNAL Error: Failed to bind column reference "id"` in Silver `_cv` tests | DuckDB >=1.5.0 QUALIFY + GROUP BY bug | Downgrade: `pip install "duckdb>=1.1,<1.5"` (pinned in `pyproject.toml`) |
 | `write_deltalake() unexpected keyword argument` | `deltalake` version mismatch | `pip install -e ".[dagster,dev]"` to restore pinned versions |
 | `FileNotFoundError` on DuckDB path | `DUCKDB_DATABASE_LOCATION` not set | Check `.env` and ensure the directory exists |
-| Bronze models return no rows (local mode) | `DANISH_DEMOCRACY_DATA_SOURCE` points to empty or wrong directory | Verify files exist under `LOCAL_STORAGE_PATH/Files/Bronze/DDD/{entity}/` |
-| Bronze models return no rows (OneLake mode) | `DANISH_DEMOCRACY_DATA_SOURCE` missing or wrong `abfss://` path | Set the correct path pointing to the Bronze NDJSON root on OneLake |
+| Bronze models return no rows (local mode) | `DANISH_DEMOCRACY_DATA_SOURCE` or `RFAM_DATA_SOURCE` points to empty or wrong directory | Verify files exist under `LOCAL_STORAGE_PATH/Files/Bronze/DDD/{entity}/` or `.../RFAM/{table}/` |
+| Bronze models return no rows (OneLake mode) | `DANISH_DEMOCRACY_DATA_SOURCE` or `RFAM_DATA_SOURCE` missing or wrong `abfss://` path | Set the correct path pointing to the Bronze NDJSON root on OneLake |
 | dbt uses wrong output profile | `STORAGE_TARGET` mismatch | `dbt/profiles.yml` selects the `local` or `onelake` output based on `STORAGE_TARGET` — ensure `.env` is set correctly |
 | Azure credential errors in local mode | `STORAGE_TARGET=onelake` set accidentally | Set `STORAGE_TARGET=local` in `.env`; no Azure vars are needed |
 | dbt models missing (empty `models/` dir) | Model generation not run | Run `python -m ddd_python.ddd_dbt.generate_dbt_models` |

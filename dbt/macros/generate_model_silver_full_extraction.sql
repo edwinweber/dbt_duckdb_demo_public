@@ -1,33 +1,37 @@
-{%- macro generate_model_silver_full_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash) -%}
+{%- macro generate_model_silver_full_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
 WITH CTE_BRONZE AS (
 SELECT src.*
 ,sha256({{ base_for_hash }}) AS LKHS_hash_value
 ,{{ base_for_hash }} AS LKHS_base_for_hash_value
+{%- if date_column %}
 ,CAST(MIN({{ date_column }}) OVER (PARTITION BY {{ primary_key_columns }}) AS DATETIME) AS LKHS_date_inserted_src
+{%- else %}
+,CAST(MIN(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15), '%Y%m%d_%H%M%S')) OVER (PARTITION BY {{ primary_key_columns }}) AS DATETIME) AS LKHS_date_inserted_src
+{%- endif %}
 FROM {{ ref(bronze_table_name) }} src
 )
 ,CTE_FILES AS   (
                 SELECT LKHS_filename
-                ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S') AS LKHS_date_valid_from
+                ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S') AS LKHS_date_valid_from
                 ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
                 ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
-                ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-                ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
+                ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
+                ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
                 FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
-                        FROM read_text('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/{{ file_name }}/{{ file_name }}_*.json')
+                        FROM read_text('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*')
                         ) files
                 )
 ,CTE_BRONZE_INCL_LAG AS (
                         SELECT CTE_BRONZE.*
                         ,       CTE_FILES.LKHS_date_valid_from
                         ,       CTE_BRONZE_PREVIOUS.LKHS_hash_value AS LKHS_hash_value_previous
-                        ,       CTE_BRONZE_PREVIOUS.id AS LKHS_primary_key_previous
+                        ,       CTE_BRONZE_PREVIOUS.{{ primary_key_columns }} AS LKHS_primary_key_previous
                         FROM       CTE_BRONZE
                         INNER JOIN CTE_FILES
                         ON         CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
                         LEFT JOIN  CTE_BRONZE CTE_BRONZE_PREVIOUS
                         ON         CTE_FILES.LKHS_filename_previous = CTE_BRONZE_PREVIOUS.LKHS_filename
-                        AND        CTE_BRONZE.id = CTE_BRONZE_PREVIOUS.id
+                        AND        CTE_BRONZE.{{ primary_key_columns }} = CTE_BRONZE_PREVIOUS.{{ primary_key_columns }}
                         )
 ,CTE_ALL_ROWS AS
 (
@@ -52,8 +56,8 @@ INNER JOIN  CTE_FILES
 ON          CTE_BRONZE_INCL_LAG.LKHS_filename = CTE_FILES.LKHS_filename
 LEFT  JOIN  CTE_BRONZE_INCL_LAG CTE_BRONZE_INCL_LAG_NEXT
 ON          CTE_FILES.LKHS_filename_next = CTE_BRONZE_INCL_LAG_NEXT.LKHS_filename
-AND         CTE_BRONZE_INCL_LAG.id = CTE_BRONZE_INCL_LAG_NEXT.id
-WHERE       CTE_BRONZE_INCL_LAG_NEXT.id IS NULL
+AND         CTE_BRONZE_INCL_LAG.{{ primary_key_columns }} = CTE_BRONZE_INCL_LAG_NEXT.{{ primary_key_columns }}
+WHERE       CTE_BRONZE_INCL_LAG_NEXT.{{ primary_key_columns }} IS NULL
 AND         CTE_FILES.LKHS_filename_next IS NOT NULL
 )
 SELECT CTE_ALL_ROWS.*
@@ -62,6 +66,6 @@ WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ thi
         OR (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file) IS NULL
        )
 {% if is_incremental() %}
-AND NOT EXISTS (SELECT id FROM {{ this }} WHERE id = CTE_ALL_ROWS.id AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+AND NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
 {%- endif -%}
 {%- endmacro -%}

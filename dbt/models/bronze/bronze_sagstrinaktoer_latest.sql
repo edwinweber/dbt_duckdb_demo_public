@@ -1,1 +1,0 @@
-{{ generate_model_bronze_latest('sagstrinaktoer','DDD','danish_parliament') }}

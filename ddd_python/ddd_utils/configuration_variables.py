@@ -38,46 +38,69 @@ DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL = [
 ]
 
 DANISH_DEMOCRACY_MODELS_BRONZE = [
-    "bronze_afstemning",
-    "bronze_afstemningstype",
-    "bronze_aktoertype",
-    "bronze_aktoer",
-    "bronze_moedestatus",
-    "bronze_moedetype",
-    "bronze_moede",
-    "bronze_periode",
-    "bronze_sag",
-    "bronze_sagskategori",
-    "bronze_sagsstatus",
-    "bronze_sagstrin",
-    "bronze_sagstrinaktoer",
-    "bronze_sagstrinsstatus",
-    "bronze_sagstrinstype",
-    "bronze_sagstype",
-    "bronze_stemmetype",
-    "bronze_stemme",
+    "bronze_ddd_afstemning",
+    "bronze_ddd_afstemningstype",
+    "bronze_ddd_aktoertype",
+    "bronze_ddd_aktoer",
+    "bronze_ddd_moedestatus",
+    "bronze_ddd_moedetype",
+    "bronze_ddd_moede",
+    "bronze_ddd_periode",
+    "bronze_ddd_sag",
+    "bronze_ddd_sagskategori",
+    "bronze_ddd_sagsstatus",
+    "bronze_ddd_sagstrin",
+    "bronze_ddd_sagstrinaktoer",
+    "bronze_ddd_sagstrinsstatus",
+    "bronze_ddd_sagstrinstype",
+    "bronze_ddd_sagstype",
+    "bronze_ddd_stemmetype",
+    "bronze_ddd_stemme",
 ]
 
 DANISH_DEMOCRACY_MODELS_SILVER = [
-    "silver_afstemning",
-    "silver_afstemningstype",
-    "silver_aktoertype",
-    "silver_aktoer",
-    "silver_moedestatus",
-    "silver_moedetype",
-    "silver_moede",
-    "silver_periode",
-    "silver_sag",
-    "silver_sagskategori",
-    "silver_sagsstatus",
-    "silver_sagstrin",
-    "silver_sagstrinaktoer",
-    "silver_sagstrinsstatus",
-    "silver_sagstrinstype",
-    "silver_sagstype",
-    "silver_stemmetype",
-    "silver_stemme",
+    "silver_ddd_afstemning",
+    "silver_ddd_afstemningstype",
+    "silver_ddd_aktoertype",
+    "silver_ddd_aktoer",
+    "silver_ddd_moedestatus",
+    "silver_ddd_moedetype",
+    "silver_ddd_moede",
+    "silver_ddd_periode",
+    "silver_ddd_sag",
+    "silver_ddd_sagskategori",
+    "silver_ddd_sagsstatus",
+    "silver_ddd_sagstrin",
+    "silver_ddd_sagstrinaktoer",
+    "silver_ddd_sagstrinsstatus",
+    "silver_ddd_sagstrinstype",
+    "silver_ddd_sagstype",
+    "silver_ddd_stemmetype",
+    "silver_ddd_stemme",
 ]
+
+# Primary key column name per DDD table.  Used by the dbt model generator
+# to parameterize the Silver macros and _cv views.
+DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS: dict[str, str] = {
+    "afstemning": "id",
+    "afstemningstype": "id",
+    "aktoer": "id",
+    "aktoertype": "id",
+    "moede": "id",
+    "moedestatus": "id",
+    "moedetype": "id",
+    "periode": "id",
+    "sag": "id",
+    "sagskategori": "id",
+    "sagsstatus": "id",
+    "sagstrin": "id",
+    "sagstrinaktoer": "id",
+    "sagstrinsstatus": "id",
+    "sagstrinstype": "id",
+    "sagstype": "id",
+    "stemme": "id",
+    "stemmetype": "id",
+}
 
 DANISH_DEMOCRACY_MODELS_GOLD = [
     "actor",
@@ -91,3 +114,110 @@ DANISH_DEMOCRACY_MODELS_GOLD = [
     "vote",
     "vote_type",
 ]
+
+# ── Rfam settings ────────────────────────────────────────────────────────────
+# RFAM_CONNECTION_STRING and RFAM_DEFAULT_DAYS_TO_LOAD are defined in .env
+# and loaded via get_variables_from_env.
+
+# All 7 Rfam MySQL table names to extract.
+RFAM_TABLE_NAMES = [
+    "family",
+    "genome",
+    "clan",
+    "clan_membership",
+    "author",
+    "literature_reference",
+    "dead_family",
+]
+
+# Tables extracted incrementally using the `updated` timestamp column.
+# The remaining tables are always extracted in full — they are small
+# and a full extract keeps delete detection simple.
+RFAM_TABLE_NAMES_INCREMENTAL = [
+    "family",
+    "genome",
+]
+
+RFAM_MODELS_BRONZE = [
+    "bronze_rfam_family",
+    "bronze_rfam_genome",
+    "bronze_rfam_clan",
+    "bronze_rfam_clan_membership",
+    "bronze_rfam_author",
+    "bronze_rfam_literature_reference",
+    "bronze_rfam_dead_family",
+]
+
+RFAM_MODELS_SILVER = [
+    "silver_rfam_family",
+    "silver_rfam_genome",
+    "silver_rfam_clan",
+    "silver_rfam_clan_membership",
+    "silver_rfam_author",
+    "silver_rfam_literature_reference",
+    "silver_rfam_dead_family",
+]
+
+# Primary key column name per Rfam table.  Used by the dbt model generator
+# to parameterize the Silver macros and _cv views.
+RFAM_TABLE_PRIMARY_KEYS: dict[str, str] = {
+    "family": "rfam_acc",
+    "genome": "upid",
+    "clan": "clan_acc",
+    "clan_membership": "rfam_acc",
+    "author": "author_id",
+    "literature_reference": "pmid",
+    "dead_family": "rfam_acc",
+}
+
+# Source date column per Rfam table.  Incremental tables have a real
+# `updated` column; full-extraction tables have none (empty string tells
+# the Silver macro to derive LKHS_date_inserted_src from the filename).
+RFAM_TABLE_DATE_COLUMNS: dict[str, str] = {
+    "family": "updated",
+    "genome": "updated",
+    "clan": "updated",
+    "clan_membership": "",
+    "author": "",
+    "literature_reference": "",
+    "dead_family": "",
+}
+
+# Combined mapping of Silver model name → primary key column.
+# Used by the Silver Delta Lake export to build the correct LEFT JOIN for
+# incremental appends (each source system may have different PK columns).
+SILVER_TABLE_PRIMARY_KEYS: dict[str, str] = {
+    **{f"silver_ddd_{entity}": pk for entity, pk in DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS.items()},
+    **{f"silver_rfam_{entity}": pk for entity, pk in RFAM_TABLE_PRIMARY_KEYS.items()},
+}
+
+# SQL queries per Rfam table.
+# - Uses SELECT * to let dlt handle schema evolution automatically.
+# - The {where_clause} placeholder is replaced at runtime: incremental tables
+#   get a date filter, full-extract tables get no filter.
+# - Tables without an `updated` column are extracted as-is; change detection
+#   in the Silver layer uses lag on the hash value partitioned by PK, ordered
+#   by LKHS_date_inserted (which is NOT included in the hash).
+RFAM_TABLE_QUERIES: dict[str, str] = {
+    "family": (
+        "SELECT * FROM family{where_clause}"
+    ),
+    "genome": (
+        "SELECT * FROM genome{where_clause}"
+    ),
+    "clan": (
+        "SELECT * FROM clan"
+    ),
+    "clan_membership": (
+        "SELECT * FROM clan_membership"
+    ),
+    "author": (
+        "SELECT * FROM author"
+    ),
+    "literature_reference": (
+        "SELECT * FROM literature_reference"
+    ),
+    "dead_family": (
+        "SELECT * FROM dead_family"
+    ),
+}

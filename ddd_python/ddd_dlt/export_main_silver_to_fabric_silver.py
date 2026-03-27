@@ -13,7 +13,7 @@ written with ``mode="overwrite"``.
 Usage::
 
     python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
-    python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver --tables silver_aktoer silver_moede
+    python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver --tables silver_ddd_aktoer silver_ddd_moede
 """
 
 import argparse
@@ -29,12 +29,18 @@ from ddd_python.ddd_utils import get_variables_from_env, configuration_variables
 logger = logging.getLogger(__name__)
 
 
+def _get_primary_key(table: str) -> str:
+    """Return the primary key column for a Silver model name."""
+    return configuration_variables.SILVER_TABLE_PRIMARY_KEYS.get(table, "id")
+
+
 def export_single_silver_table(connection: duckdb.DuckDBPyConnection, table: str) -> int:
     """Export one Silver table from DuckDB to OneLake as a Delta Lake table.
 
     Tries to read the existing Delta table on OneLake and inserts only new
-    rows (incremental append via LEFT JOIN on ``id`` + ``LKHS_date_valid_from``).
-    If the Delta table does not exist yet, it is created with a full overwrite.
+    rows (incremental append via LEFT JOIN on the table's primary key +
+    ``LKHS_date_valid_from``).  If the Delta table does not exist yet, it is
+    created with a full overwrite.
 
     Returns:
         Number of rows written.
@@ -53,13 +59,15 @@ def export_single_silver_table(connection: duckdb.DuckDBPyConnection, table: str
         )
         storage_options = {"bearer_token": token, "use_fabric_endpoint": "true"}
 
+    pk = _get_primary_key(table)
+
     if DeltaTable.is_deltatable(target_table_path, storage_options=storage_options):
         target_table = DeltaTable(target_table_path, storage_options=storage_options)
         connection.register(f"target_table_{table}", target_table.to_pyarrow_table())
         query = (
             f"SELECT src.* FROM {get_variables_from_env.DUCKDB_DATABASE}.main_silver.{table} src "
-            f"LEFT JOIN target_table_{table} tgt ON src.id = tgt.id AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from "
-            f"WHERE tgt.id IS NULL"
+            f"LEFT JOIN target_table_{table} tgt ON src.{pk} = tgt.{pk} AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from "
+            f"WHERE tgt.{pk} IS NULL"
         )
         result = connection.execute(query)
         df = result.fetch_arrow_table()

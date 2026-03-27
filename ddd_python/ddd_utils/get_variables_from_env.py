@@ -96,6 +96,11 @@ _mod.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = int(os.getenv("DANISH_DEMOCRACY_DEF
 _mod.DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")  # type: ignore[attr-defined]
 _mod.DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")  # type: ignore[attr-defined]
 
+# ── Rfam data retrieval (optional — eager) ───────────────────────────────
+_mod.RFAM_CONNECTION_STRING = os.getenv("RFAM_CONNECTION_STRING", "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam")  # type: ignore[attr-defined]
+_mod.RFAM_DATA_SOURCE = os.getenv("RFAM_DATA_SOURCE")  # type: ignore[attr-defined]
+_mod.RFAM_DEFAULT_DAYS_TO_LOAD = int(os.getenv("RFAM_DEFAULT_DAYS_TO_LOAD", "365"))  # type: ignore[attr-defined]
+
 # Replace this module in sys.modules so that all existing
 # ``from ddd_python.ddd_utils import get_variables_from_env`` and
 # ``get_variables_from_env.SOME_VAR`` accesses go through the lazy wrapper.

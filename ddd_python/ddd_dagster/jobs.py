@@ -1,7 +1,7 @@
-"""Dagster job definitions for the Danish Democracy Data (DDD) pipeline.
+"""Dagster job definitions for all source systems.
 
-Extraction jobs
-~~~~~~~~~~~~~~~
+DDD extraction jobs
+~~~~~~~~~~~~~~~~~~~
 ``danish_parliament_incremental_job``
     Runs all assets in the ``ingestion/DDD`` group (6 incremental entities).
 
@@ -9,11 +9,30 @@ Extraction jobs
     Runs all assets in the ``ingestion/DDD`` group (12 full-extract entities).
 
 ``danish_parliament_all_job``
-    All 18 extraction assets in a single job.
+    All 18 DDD extraction assets in a single job.
+
+Rfam extraction jobs
+~~~~~~~~~~~~~~~~~~~~
+``rfam_incremental_job``
+    Incrementally extracts Rfam tables with ``updated`` column (2 tables).
+
+``rfam_full_extract_job``
+    Full extraction of the 5 small Rfam lookup tables.
+
+``rfam_all_job``
+    All 7 Rfam extraction assets in a single job.
 
 dbt transformation jobs
 ~~~~~~~~~~~~~~~~~~~~~~~
-``dbt_seeds_job``, ``dbt_bronze_job``, ``dbt_silver_job``, ``dbt_gold_job``
+``dbt_seeds_job``
+
+``dbt_bronze_job`` / ``dbt_bronze_ddd_job`` / ``dbt_bronze_rfam_job``
+    All Bronze models, or filtered by source system.
+
+``dbt_silver_job`` / ``dbt_silver_ddd_job`` / ``dbt_silver_rfam_job``
+    All Silver models, or filtered by source system.
+
+``dbt_gold_job``
 
 Export jobs
 ~~~~~~~~~~
@@ -27,8 +46,9 @@ Export jobs
 
 End-to-end pipeline
 ~~~~~~~~~~~~~~~~~~~
-``danish_parliament_full_pipeline_job``
-    Runs extraction → dbt Bronze → Silver → Gold → export Silver → export Gold.
+``full_pipeline_job``
+    Runs all source system extractions (DDD + Rfam) → dbt Bronze → Silver →
+    Gold → export Silver → export Gold.
 
 Executor
 --------
@@ -104,6 +124,55 @@ danish_parliament_all_job = define_asset_job(
 )
 
 # ---------------------------------------------------------------------------
+# Rfam extraction jobs
+# ---------------------------------------------------------------------------
+
+rfam_incremental_job = define_asset_job(
+    name="rfam_incremental_job",
+    selection=AssetSelection.groups("ingestion_RFAM_incremental"),
+    executor_def=_concurrent_executor,
+    description=(
+        "Incrementally extracts Rfam tables that support date filtering via "
+        "the ``updated`` timestamp column (family, genome)."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "RFAM",
+        "load_mode": "incremental",
+    },
+)
+
+rfam_full_extract_job = define_asset_job(
+    name="rfam_full_extract_job",
+    selection=AssetSelection.groups("ingestion_RFAM_full_extract"),
+    executor_def=_concurrent_executor,
+    description=(
+        "Full extraction of the 5 small Rfam lookup tables that are always "
+        "fetched in full on every run."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "RFAM",
+        "load_mode": "full_extract",
+    },
+)
+
+rfam_all_job = define_asset_job(
+    name="rfam_all_job",
+    selection=AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract"),
+    executor_def=_concurrent_executor,
+    description=(
+        "Runs all 7 Rfam extraction assets — incremental and full-extract — "
+        "in a single job."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "RFAM",
+        "load_mode": "all",
+    },
+)
+
+# ---------------------------------------------------------------------------
 # dbt transformation jobs — Bronze → Silver → Gold (sequential)
 # ---------------------------------------------------------------------------
 #
@@ -115,14 +184,52 @@ def _seeds_selection():
     return build_dbt_asset_selection([dbt_seeds_assets])
 
 
-def _bronze_selection():
+def _dbt_select_with_latest(model_names: list[str]) -> str:
+    """Build a dbt select string for a list of models and their ``_latest`` views."""
+    all_names = model_names + [f"{m}_latest" for m in model_names]
+    return " ".join(all_names)
+
+
+def _dbt_select_with_cv(model_names: list[str]) -> str:
+    """Build a dbt select string for a list of models and their ``_cv`` views."""
+    all_names = model_names + [f"{m}_cv" for m in model_names]
+    return " ".join(all_names)
+
+
+def _bronze_ddd_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
-    return build_dbt_asset_selection([dbt_bronze_assets])
+    from ddd_python.ddd_utils import configuration_variables
+    select = _dbt_select_with_latest(configuration_variables.DANISH_DEMOCRACY_MODELS_BRONZE)
+    return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
+
+
+def _bronze_rfam_selection():
+    from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
+    from ddd_python.ddd_utils import configuration_variables
+    select = _dbt_select_with_latest(configuration_variables.RFAM_MODELS_BRONZE)
+    return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
+
+
+def _bronze_selection():
+    return _bronze_ddd_selection() | _bronze_rfam_selection()
+
+
+def _silver_ddd_selection():
+    from ddd_python.ddd_dagster.dbt_assets import dbt_silver_assets
+    from ddd_python.ddd_utils import configuration_variables
+    select = _dbt_select_with_cv(configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER)
+    return build_dbt_asset_selection([dbt_silver_assets], dbt_select=select)
+
+
+def _silver_rfam_selection():
+    from ddd_python.ddd_dagster.dbt_assets import dbt_silver_assets
+    from ddd_python.ddd_utils import configuration_variables
+    select = _dbt_select_with_cv(configuration_variables.RFAM_MODELS_SILVER)
+    return build_dbt_asset_selection([dbt_silver_assets], dbt_select=select)
 
 
 def _silver_selection():
-    from ddd_python.ddd_dagster.dbt_assets import dbt_silver_assets
-    return build_dbt_asset_selection([dbt_silver_assets])
+    return _silver_ddd_selection() | _silver_rfam_selection()
 
 
 def _gold_selection():
@@ -151,14 +258,44 @@ dbt_bronze_job = define_asset_job(
     selection=_bronze_selection(),
     executor_def=in_process_executor,
     description=(
-        "Runs all dbt Bronze models (views that read raw NDJSON from OneLake) "
-        "via ``dbt build --select bronze``.  Bronze models are cheap views; "
-        "this job wires the dlt extraction output into the dbt transformation "
-        "layer.  Normally included implicitly in the Silver job schedule."
+        "Runs all dbt Bronze models for all source systems (DDD + RFAM).  "
+        "Bronze models are cheap views that read raw NDJSON via "
+        "``read_json_auto``.  Use ``dbt_bronze_ddd_job`` or "
+        "``dbt_bronze_rfam_job`` to run a single source system."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "all",
+        "layer": "bronze",
+    },
+)
+
+dbt_bronze_ddd_job = define_asset_job(
+    name="dbt_bronze_ddd_job",
+    selection=_bronze_ddd_selection(),
+    executor_def=in_process_executor,
+    description=(
+        "Runs dbt Bronze models for the DDD (Danish Parliament) source system "
+        "only.  Selects ``bronze_ddd_*`` models."
     ),
     tags={
         "team": "data-engineering",
         "source_system": "DDD",
+        "layer": "bronze",
+    },
+)
+
+dbt_bronze_rfam_job = define_asset_job(
+    name="dbt_bronze_rfam_job",
+    selection=_bronze_rfam_selection(),
+    executor_def=in_process_executor,
+    description=(
+        "Runs dbt Bronze models for the RFAM source system only.  "
+        "Selects ``bronze_rfam_*`` models."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "RFAM",
         "layer": "bronze",
     },
 )
@@ -168,13 +305,43 @@ dbt_silver_job = define_asset_job(
     selection=_silver_selection(),
     executor_def=in_process_executor,
     description=(
-        "Runs all dbt Silver models (incremental CDC tables and current-version "
-        "views) via ``dbt build --select silver``.  "
-        "Reads from Bronze views on DuckDB (local)."
+        "Runs all dbt Silver models for all source systems (DDD + RFAM).  "
+        "Use ``dbt_silver_ddd_job`` or ``dbt_silver_rfam_job`` to run a "
+        "single source system."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "all",
+        "layer": "silver",
+    },
+)
+
+dbt_silver_ddd_job = define_asset_job(
+    name="dbt_silver_ddd_job",
+    selection=_silver_ddd_selection(),
+    executor_def=in_process_executor,
+    description=(
+        "Runs dbt Silver models for the DDD (Danish Parliament) source system "
+        "only.  Selects ``silver_ddd_*`` models."
     ),
     tags={
         "team": "data-engineering",
         "source_system": "DDD",
+        "layer": "silver",
+    },
+)
+
+dbt_silver_rfam_job = define_asset_job(
+    name="dbt_silver_rfam_job",
+    selection=_silver_rfam_selection(),
+    executor_def=in_process_executor,
+    description=(
+        "Runs dbt Silver models for the RFAM source system only.  "
+        "Selects ``silver_rfam_*`` models."
+    ),
+    tags={
+        "team": "data-engineering",
+        "source_system": "RFAM",
         "layer": "silver",
     },
 )
@@ -238,30 +405,33 @@ export_gold_job = define_asset_job(
 # ---------------------------------------------------------------------------
 
 def _full_pipeline_selection():
-    from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets, dbt_silver_assets, dbt_gold_assets
     return (
-        AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract")
-        | build_dbt_asset_selection([dbt_bronze_assets])
-        | build_dbt_asset_selection([dbt_silver_assets])
-        | build_dbt_asset_selection([dbt_gold_assets])
+        AssetSelection.groups(
+            "ingestion_DDD_incremental", "ingestion_DDD_full_extract",
+            "ingestion_RFAM_incremental", "ingestion_RFAM_full_extract",
+        )
+        | _bronze_selection()
+        | _silver_selection()
+        | _gold_selection()
         | AssetSelection.groups("export_silver", "export_gold")
     )
 
 
-danish_parliament_full_pipeline_job = define_asset_job(
-    name="danish_parliament_full_pipeline_job",
+full_pipeline_job = define_asset_job(
+    name="full_pipeline_job",
     selection=_full_pipeline_selection(),
     executor_def=_concurrent_executor,
     description=(
-        "End-to-end pipeline: extracts all 18 Danish Parliament resources via "
-        "dlt, runs dbt Bronze → Silver → Gold, then exports Silver and Gold "
-        "tables to OneLake as Delta Lake.  Extraction and export assets run "
-        "concurrently (max 4); dbt assets run sequentially via asset "
-        "dependencies and DuckDB's single-writer constraint (threads: 1)."
+        "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
+        "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, then "
+        "exports Silver and Gold tables to OneLake as Delta Lake.  Extraction "
+        "and export assets run concurrently (max 4); dbt assets run "
+        "sequentially via asset dependencies and DuckDB's single-writer "
+        "constraint (threads: 1)."
     ),
     tags={
         "team": "data-engineering",
-        "source_system": "DDD",
+        "source_system": "all",
         "load_mode": "full_pipeline",
     },
 )

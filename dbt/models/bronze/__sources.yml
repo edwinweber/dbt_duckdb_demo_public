@@ -11,75 +11,75 @@ sources:
       error_after: {count: "{{ env_var('DBT_FRESHNESS_ERROR_AFTER_DAYS', '7') | int }}", period: day}
 
     tables:
-    - name: bronze_afstemning
+    - name: bronze_ddd_afstemning
       description: One record per party vote in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/afstemning/afstemning_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_afstemningstype
+    - name: bronze_ddd_afstemningstype
       description: One record per voting type in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/afstemningstype/afstemningstype_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_aktoer
+    - name: bronze_ddd_aktoer
       description: One record per member in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/aktoer/aktoer_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_aktoertype
+    - name: bronze_ddd_aktoertype
       description: One record per member type in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/aktoertype/aktoertype_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_moede
+    - name: bronze_ddd_moede
       description: One record per meeting in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/moede/moede_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_moedestatus
+    - name: bronze_ddd_moedestatus
       description: One record per meeting in the danish parliament status
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/moedestatus/moedestatus_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_moedetype
+    - name: bronze_ddd_moedetype
       description: One record per meeting type
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/moedetype/moedetype_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_periode
+    - name: bronze_ddd_periode
       description: One record per period in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/periode/periode_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sag
+    - name: bronze_ddd_sag
       description: One record per case in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sag/sag_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagskategori
+    - name: bronze_ddd_sagskategori
       description: One record per case category in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagskategori/sagskategori_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagstrin
+    - name: bronze_ddd_sagstrin
       description: One record per case step in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagstrin/sagstrin_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagstrinaktoer
+    - name: bronze_ddd_sagstrinaktoer
       description: One record per case aktor interaction in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagstrinaktoer/sagstrinaktoer_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagsstatus
+    - name: bronze_ddd_sagsstatus
       description: One record per case status in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagsstatus/sagsstatus_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagstrinsstatus
+    - name: bronze_ddd_sagstrinsstatus
       description: One record per case step status in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagstrinsstatus/sagstrinsstatus_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagstrinstype
+    - name: bronze_ddd_sagstrinstype
       description: One record per case step type in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagstrinstype/sagstrinstype_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_sagstype
+    - name: bronze_ddd_sagstype
       description: One record per case type in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/sagstype/sagstype_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_stemme
+    - name: bronze_ddd_stemme
       description: One record per individual vote in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/stemme/stemme_*.json*', filename=True, union_by_name = true)"
-    - name: bronze_stemmetype
+    - name: bronze_ddd_stemmetype
       description: One record per individual voting type in the danish parliament
       meta:
         external_location: "read_json_auto('{{ env_var('DANISH_DEMOCRACY_DATA_SOURCE') }}/stemmetype/stemmetype_*.json*', filename=True, union_by_name = true)"

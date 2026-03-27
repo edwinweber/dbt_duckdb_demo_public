@@ -13,11 +13,11 @@ from dagster import (
     ScheduleDefinition,
 )
 
-from ddd_python.ddd_dagster.jobs import danish_parliament_full_pipeline_job
+from ddd_python.ddd_dagster.jobs import full_pipeline_job
 
 danish_parliament_full_pipeline_schedule = ScheduleDefinition(
     name="danish_parliament_full_pipeline_schedule",
-    job=danish_parliament_full_pipeline_job,
+    job=full_pipeline_job,
     cron_schedule="0 6 * * *",
     execution_timezone="UTC",
     description=(

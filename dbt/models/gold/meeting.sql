@@ -6,7 +6,7 @@ FROM
 ,       src.*
 ,       LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,       ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_moede') }} src
+FROM {{ ref('silver_ddd_moede') }} src
 ) iv
 WHERE  LKHS_date_valid_to = '9999-12-31'
 ),

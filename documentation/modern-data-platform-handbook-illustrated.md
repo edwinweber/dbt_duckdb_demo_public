@@ -602,7 +602,7 @@ WITH CTE_BRONZE AS (
 CTE_FILES AS (
     SELECT LKHS_filename,
            strptime(
-               SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - 19, 15),
+               SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),
                '%Y%m%d_%H%M%S'
            ) AS LKHS_date_valid_from,
            LAG(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous

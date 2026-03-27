@@ -30,9 +30,14 @@ Architecture summary
                             │ triggers
     ┌───────────────────────▼─────────────────────────────────────┐
     │  dlt Extraction jobs  (multiprocess, max_concurrent=4)      │
+    │  DDD:                                                       │
     │  ├── danish_parliament_incremental_job  (6 assets)          │
     │  ├── danish_parliament_full_extract_job (12 assets)         │
     │  └── danish_parliament_all_job          (18 assets)         │
+    │  Rfam:                                                      │
+    │  ├── rfam_incremental_job              (2 assets)           │
+    │  ├── rfam_full_extract_job             (5 assets)           │
+    │  └── rfam_all_job                      (7 assets)           │
     │  Output: NDJSON files on OneLake Bronze via DltOneLakeResource│
     └───────────────────────┬─────────────────────────────────────┘
                             │ lineage (DddDbtTranslator)
@@ -86,19 +91,27 @@ from dagster import Definitions
 from dagster_dbt import DbtCliResource
 
 from ddd_python.ddd_dagster.assets import all_extraction_assets
+from ddd_python.ddd_dagster.rfam_assets import all_rfam_extraction_assets
 from ddd_python.ddd_dagster.dbt_assets import _DBT_PROJECT_DIR, dbt_bronze_assets, dbt_gold_assets, dbt_seeds_assets, dbt_silver_assets
 from ddd_python.ddd_dagster.export_assets import all_export_assets
 from ddd_python.ddd_dagster.jobs import (
     danish_parliament_all_job,
     danish_parliament_full_extract_job,
-    danish_parliament_full_pipeline_job,
+    full_pipeline_job,
     danish_parliament_incremental_job,
+    dbt_bronze_ddd_job,
     dbt_bronze_job,
+    dbt_bronze_rfam_job,
     dbt_gold_job,
     dbt_seeds_job,
+    dbt_silver_ddd_job,
     dbt_silver_job,
+    dbt_silver_rfam_job,
     export_gold_job,
     export_silver_job,
+    rfam_all_job,
+    rfam_full_extract_job,
+    rfam_incremental_job,
 )
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 from ddd_python.ddd_dagster.schedules import danish_parliament_full_pipeline_schedule
@@ -110,6 +123,7 @@ from ddd_python.ddd_dagster.sensors import (
 defs = Definitions(
     assets=[
         *all_extraction_assets,
+        *all_rfam_extraction_assets,
         dbt_seeds_assets,
         dbt_bronze_assets,
         dbt_silver_assets,
@@ -124,13 +138,21 @@ defs = Definitions(
         # dbt transformation jobs (seeds + bronze → silver → gold)
         dbt_seeds_job,
         dbt_bronze_job,
+        dbt_bronze_ddd_job,
+        dbt_bronze_rfam_job,
         dbt_silver_job,
+        dbt_silver_ddd_job,
+        dbt_silver_rfam_job,
         dbt_gold_job,
         # Delta Lake export jobs (DuckDB → OneLake)
         export_silver_job,
         export_gold_job,
         # end-to-end pipeline (extraction → dbt → export)
-        danish_parliament_full_pipeline_job,
+        full_pipeline_job,
+        # Rfam extraction jobs
+        rfam_incremental_job,
+        rfam_full_extract_job,
+        rfam_all_job,
     ],
     schedules=[
         danish_parliament_full_pipeline_schedule,

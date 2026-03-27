@@ -31,6 +31,7 @@ dependencies = [
 
     # SQL source pipeline (used by dlt_pipeline_execution_functions.py)
     "sqlalchemy>=2.0",
+    "pymysql>=1.1",
 ]
 
 [project.urls]

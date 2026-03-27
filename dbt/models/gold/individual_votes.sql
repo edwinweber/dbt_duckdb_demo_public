@@ -14,17 +14,17 @@ vote AS (
 vote_silver AS
 (
 SELECT src.*
-FROM {{ ref('silver_afstemning_cv') }} src
+FROM {{ ref('silver_ddd_afstemning_cv') }} src
 ),
 individual_voting_type AS 
 (
 SELECT src.*
-FROM {{ ref('silver_stemmetype_cv') }} src
+FROM {{ ref('silver_ddd_stemmetype_cv') }} src
 ),
 individual_vote AS 
 (
 SELECT src.*
-FROM {{ ref('silver_stemme_cv') }} src
+FROM {{ ref('silver_ddd_stemme_cv') }} src
 -- Only include rows that are not marked as deleted!
 WHERE src.LKHS_cdc_operation != 'D'
 )

@@ -5,7 +5,7 @@ SELECT {{ cast_hash_to_bigint('src.LKHS_source_system_code,src.id,src.LKHS_date_
 ,      src.*
 ,      LEAD(src.LKHS_date_valid_from,1,CAST('9999-12-31' AS DATETIME)) OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
 ,      ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-FROM {{ ref('silver_afstemning') }} src
+FROM {{ ref('silver_ddd_afstemning') }} src
 )
 ,
 vote_type AS (
