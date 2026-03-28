@@ -4,11 +4,6 @@ Reads each Gold table via DuckDB, converts it to a PyArrow table, and writes
 it as a Delta Lake table to OneLake using ``deltalake``.  Gold tables are
 always fully overwritten (``mode="overwrite"``).
 
-.. note::
-    ``fetch_arrow_table()`` is deprecated in DuckDB >=1.5 in favour of
-    ``to_arrow_table()``.  We keep the old name while pinned to DuckDB <1.5
-    (see pyproject.toml for rationale).  TODO: rename once the pin is lifted.
-
 Usage::
 
     python -m ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
@@ -50,7 +45,7 @@ def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) 
         storage_options = {"bearer_token": token, "use_fabric_endpoint": "true"}
     query = f"SELECT * FROM {get_variables_from_env.DUCKDB_DATABASE}.main_gold.{table}"
     result = connection.execute(query)
-    df = result.fetch_arrow_table()
+    df = result.to_arrow_table()
     write_deltalake(
         target_table_path, df,
         mode="overwrite", schema_mode="merge",

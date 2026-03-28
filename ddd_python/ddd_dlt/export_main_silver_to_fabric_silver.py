@@ -5,11 +5,6 @@ against the existing Delta table on OneLake (if present), and appends only
 the delta.  On first load (no existing Delta table), the full table is
 written with ``mode="overwrite"``.
 
-.. note::
-    ``fetch_arrow_table()`` is deprecated in DuckDB >=1.5 in favour of
-    ``to_arrow_table()``.  We keep the old name while pinned to DuckDB <1.5
-    (see pyproject.toml for rationale).  TODO: rename once the pin is lifted.
-
 Usage::
 
     python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
@@ -70,7 +65,7 @@ def export_single_silver_table(connection: duckdb.DuckDBPyConnection, table: str
             f"WHERE tgt.{pk} IS NULL"
         )
         result = connection.execute(query)
-        df = result.fetch_arrow_table()
+        df = result.to_arrow_table()
         if df.num_rows > 0:
             write_deltalake(
                 target_table_path, df,
@@ -82,7 +77,7 @@ def export_single_silver_table(connection: duckdb.DuckDBPyConnection, table: str
     else:
         query = f"SELECT src.* FROM {get_variables_from_env.DUCKDB_DATABASE}.main_silver.{table} src"
         result = connection.execute(query)
-        df = result.fetch_arrow_table()
+        df = result.to_arrow_table()
         if df.num_rows > 0:
             write_deltalake(
                 target_table_path, df,

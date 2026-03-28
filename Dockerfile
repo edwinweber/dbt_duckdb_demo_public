@@ -9,8 +9,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git curl unzip ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Install DuckDB CLI v1.4.0
-RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.4.0/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip && \
+# Install DuckDB CLI v1.5.1
+RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.1/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip && \
     unzip /tmp/duckdb.zip -d /usr/local/bin && \
     chmod +x /usr/local/bin/duckdb && \
     rm /tmp/duckdb.zip

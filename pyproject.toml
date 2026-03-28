@@ -20,10 +20,7 @@ dependencies = [
     # Transformation
     "dbt-core>=1.10,<2",
     "dbt-duckdb>=1.9,<2",
-    # Pinned below 1.5: DuckDB 1.5.0 has an internal QUALIFY + GROUP BY
-    # column-binding bug that crashes dbt uniqueness tests on _cv views.
-    # TODO: remove upper bound once the upstream fix is released.
-    "duckdb>=1.1,<1.5",
+    "duckdb>=1.5.1,<1.6",
 
     # Export to Delta Lake
     "deltalake>=1.0",

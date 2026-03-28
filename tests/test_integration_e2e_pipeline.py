@@ -149,7 +149,7 @@ def test_e2e_silver_to_delta_first_load(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").fetch_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -165,7 +165,7 @@ def test_e2e_incremental_export_no_duplicates(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").fetch_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -184,7 +184,7 @@ def test_e2e_incremental_export_no_duplicates(e2e_fixture):
                ON src.id = tgt.id
               AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from
         WHERE  tgt.id IS NULL
-    """).fetch_arrow_table()
+    """).to_arrow_table()
 
     assert new_rows.num_rows == 0
     conn.close()
@@ -195,7 +195,7 @@ def test_e2e_incremental_export_appends_new_rows(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").fetch_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -229,7 +229,7 @@ def test_e2e_incremental_export_appends_new_rows(e2e_fixture):
                ON src.id = tgt.id
               AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from
         WHERE  tgt.id IS NULL
-    """).fetch_arrow_table()
+    """).to_arrow_table()
 
     # Row 4 is new (Insert in file 3)
     assert new_rows.num_rows >= 1

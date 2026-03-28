@@ -634,18 +634,6 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ---
 
-## Known Limitations
-
-- **DuckDB pinned below 1.5** (as of March 2026) — DuckDB 1.5.0 introduced an
-  internal column-binding bug that crashes `GROUP BY` queries against views
-  using `QUALIFY ROW_NUMBER()`. This breaks dbt's auto-generated `unique` tests
-  on all Silver `_cv` views. The project is pinned to `duckdb>=1.1,<1.5` until
-  the upstream fix is released. `fetch_arrow_table()` (deprecated in 1.5) is
-  used accordingly. Track the upstream issue at
-  [duckdb/duckdb#16407](https://github.com/duckdb/duckdb/issues/16407).
-
----
-
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -653,7 +641,7 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 | `CapacityNotActive` in export / Bronze models | Fabric capacity is paused | Resume the capacity in the Azure portal and re-run |
 | `Parser Error: syntax error at or near "DBT_..."` in Bronze | Stale dbt partial-parse cache | Run `dbt run --no-partial-parse` or delete `dbt/target/partial_parse.msgpack` |
 | Asset shows as **unsynced** (yellow) in Dagster | Upstream materialized without running downstream | Materialize the downstream asset, or run the relevant job |
-| `INTERNAL Error: Failed to bind column reference "id"` in Silver `_cv` tests | DuckDB >=1.5.0 QUALIFY + GROUP BY bug | Downgrade: `pip install "duckdb>=1.1,<1.5"` (pinned in `pyproject.toml`) |
+| `INTERNAL Error: Failed to bind column reference "id"` | DuckDB QUALIFY + UNION ALL bug (affects 1.5.0; fixed in tests for 1.5.1) | Ensure `duckdb>=1.5.1` is installed: `pip install -e ".[dagster,dev]"` |
 | `write_deltalake() unexpected keyword argument` | `deltalake` version mismatch | `pip install -e ".[dagster,dev]"` to restore pinned versions |
 | `FileNotFoundError` on DuckDB path | `DUCKDB_DATABASE_LOCATION` not set | Check `.env` and ensure the directory exists |
 | Bronze models return no rows (local mode) | `DANISH_DEMOCRACY_DATA_SOURCE` or `RFAM_DATA_SOURCE` points to empty or wrong directory | Verify files exist under `LOCAL_STORAGE_PATH/Files/Bronze/DDD/{entity}/` or `.../RFAM/{table}/` |

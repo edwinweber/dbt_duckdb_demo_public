@@ -21,7 +21,7 @@ exports the result as Delta Lake tables to Microsoft Fabric OneLake.
 | Orchestration   | Dagster ≥1.7 (software-defined assets)               |
 | Extraction      | dlt ≥1.17 (Data Load Tool)                           |
 | Transformation  | dbt-core ≥1.10 + dbt-duckdb ≥1.9                    |
-| Query engine    | DuckDB ≥1.1,<1.5 (pinned — 1.5 has a QUALIFY bug)   |
+| Query engine    | DuckDB ≥1.5.1,<1.6                                   |
 | Data quality    | dbt-utils 1.3.0, dbt-expectations 0.10.4             |
 | Cloud storage   | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake)    |
 | Export          | deltalake ≥1.0, PyArrow ≥17                          |
@@ -67,7 +67,7 @@ Orchestrated by **Dagster** (daily 06:00 UTC schedule, disabled by default).
 │   └── Files/{Bronze,Silver,Gold}/
 ├── documentation/               Handbook markdown + build scripts
 ├── docker-compose.yml           Services: 'run' (one-off) + 'dagster' (UI)
-├── Dockerfile                   Python 3.12 + DuckDB CLI v1.4.0
+├── Dockerfile                   Python 3.12 + DuckDB CLI v1.5.1
 ├── pyproject.toml               Dependencies + build config
 ├── workspace.yaml               Dagster workspace (loads ddd_dagster.definitions)
 └── .env.example                 Template for environment variables

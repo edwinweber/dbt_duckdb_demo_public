@@ -211,8 +211,21 @@ _DIMENSION_CV_SQL = f"""
 
 
 def test_cv_dimension_returns_latest_per_pk(gold_duckdb):
-    """The _cv view should return only the latest version of each dimension row."""
-    df = gold_duckdb.execute(_DIMENSION_CV_SQL).fetchdf()
+    """The _cv view should return only the latest version of each dimension row.
+
+    DuckDB 1.5.x has a bug where QUALIFY on a top-level UNION ALL query crashes
+    with an InternalException. The workaround is to materialize the dimension
+    into a temp table first, then apply QUALIFY to the plain table.
+    """
+    gold_duckdb.execute(f"CREATE OR REPLACE TEMP TABLE _dim_mat AS {_DIMENSION_SQL}")
+    df = gold_duckdb.execute("""
+        SELECT * FROM _dim_mat
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY LKHS_source_system_code, id
+            ORDER BY LKHS_date_valid_from DESC
+        ) = 1
+    """).fetchdf()
+    gold_duckdb.execute("DROP TABLE _dim_mat")
 
     # 3 PKs (1, 2, 3) + Unknown (0) = 4
     assert len(df) == 4
