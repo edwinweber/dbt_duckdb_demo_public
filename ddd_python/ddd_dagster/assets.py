@@ -9,10 +9,10 @@ single Dagster ``@asset``.  Assets are split into two groups:
   ``date_to_load_from`` run-config field (defaults to
   ``today - DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD`` days).
 
-* **ingestion/DDD** — resources that are always fully extracted on every run.
-  The API does support ``opdateringsdato`` filtering for these entities, but
-  they are small tables and a full extraction on every run keeps delete
-  detection simple — no date config is applied.
+* **ingestion/DDD** (full-extract) — resources that are always fully extracted
+  on every run.  The API does support ``opdateringsdato`` filtering for these
+  entities, but they are small tables and a full extraction on every run keeps
+  delete detection simple — no date config is applied.
 
 Design notes
 ------------
@@ -55,6 +55,7 @@ from dagster import (
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 
 
@@ -97,17 +98,8 @@ _RETRY_POLICY = RetryPolicy(
 
 
 def _base_name(api_resource: str) -> str:
-    """Normalise an API resource name to a safe, lowercased file-system identifier.
-
-    Replaces Danish characters that are unsupported by DuckDB / OneLake paths.
-    """
-    return (
-        api_resource
-        .replace("ø", "oe")
-        .replace("æ", "ae")
-        .replace("å", "aa")
-        .lower()
-    )
+    """Normalise an API resource name to a safe, lowercased file-system identifier."""
+    return normalize_danish_name(api_resource)
 
 
 def _destination_path(base: str) -> str:

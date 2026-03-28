@@ -8,6 +8,8 @@ import duckdb
 import pytest
 from unittest.mock import patch
 
+import ddd_python.ddd_dlt.export_main_gold_to_fabric_gold as gold_mod
+
 _ENV_PATCHES = {
     "STORAGE_TARGET": "onelake",
     "FABRIC_WORKSPACE": "test-workspace",
@@ -15,6 +17,20 @@ _ENV_PATCHES = {
     "FABRIC_ONELAKE_FOLDER_GOLD": "Lakehouse/Files/Gold",
     "DUCKDB_DATABASE": "memory",
 }
+
+
+def _patch_env():
+    """Patch env vars on the already-imported module.
+
+    Uses patch.dict on __dict__ to bypass __getattr__ (which would call
+    _require() and raise for lazy-required vars like FABRIC_WORKSPACE
+    when no .env file is present, e.g. in CI).
+    """
+    return patch.dict(
+        "ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__",
+        _ENV_PATCHES,
+        clear=False,
+    )
 
 
 @pytest.fixture
@@ -32,13 +48,13 @@ def gold_connection():
     conn.close()
 
 
-@patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_overwrites(mock_write, gold_connection, mock_fabric_clients):
+def test_gold_export_overwrites(gold_connection, mock_fabric_clients):
     """Gold export should always use mode='overwrite'."""
-    from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-    rows = export_single_gold_table(gold_connection, "actor")
+    with (
+        _patch_env(),
+        patch.object(gold_mod, "write_deltalake") as mock_write,
+    ):
+        rows = gold_mod.export_single_gold_table(gold_connection, "actor")
 
     assert rows == 2
     mock_write.assert_called_once()
@@ -46,23 +62,24 @@ def test_gold_export_overwrites(mock_write, gold_connection, mock_fabric_clients
     assert call_kwargs.kwargs.get("mode") == "overwrite" or call_kwargs[1].get("mode") == "overwrite"
 
 
-@patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_returns_row_count(mock_write, gold_connection, mock_fabric_clients):
+def test_gold_export_returns_row_count(gold_connection, mock_fabric_clients):
     """Return value should be the number of rows in the table."""
-    from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
+    with (
+        _patch_env(),
+        patch.object(gold_mod, "write_deltalake") as mock_write,
+    ):
+        rows = gold_mod.export_single_gold_table(gold_connection, "actor")
 
-    rows = export_single_gold_table(gold_connection, "actor")
     assert rows == 2
 
 
-@patch.dict("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__", _ENV_PATCHES, clear=False)
-@patch("ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.write_deltalake")
-def test_gold_export_correct_target_path(mock_write, gold_connection, mock_fabric_clients):
+def test_gold_export_correct_target_path(gold_connection, mock_fabric_clients):
     """The target path should follow the expected pattern."""
-    from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-    export_single_gold_table(gold_connection, "actor")
+    with (
+        _patch_env(),
+        patch.object(gold_mod, "write_deltalake") as mock_write,
+    ):
+        gold_mod.export_single_gold_table(gold_connection, "actor")
 
     target_path = mock_write.call_args[0][0]
     assert "Lakehouse/Files/Gold/actor/" in target_path

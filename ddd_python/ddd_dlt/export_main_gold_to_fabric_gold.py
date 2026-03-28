@@ -60,12 +60,21 @@ def write_tables_to_onelake_gold(connection: duckdb.DuckDBPyConnection, tables: 
 
     Convenience wrapper that calls :func:`export_single_gold_table` for each
     table in *tables*.
+
+    Raises:
+        RuntimeError: If one or more tables failed to export, after attempting
+            all tables.  Partial failures are logged at ERROR level.
     """
+    failed: list[str] = []
     for table in tables:
         try:
             export_single_gold_table(connection, table)
         except Exception as e:
             logger.error("Failed to export Gold table %s: %s", table, e)
+            failed.append(table)
+
+    if failed:
+        raise RuntimeError(f"Gold export failed for {len(failed)} table(s): {', '.join(failed)}")
 
 
 def main() -> None:
@@ -75,11 +84,8 @@ def main() -> None:
 
     tables = args.tables or configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
 
-    connection = duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True)
-    try:
+    with duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True) as connection:
         write_tables_to_onelake_gold(connection, tables)
-    finally:
-        connection.close()
 
 
 if __name__ == "__main__":

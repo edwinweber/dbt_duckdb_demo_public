@@ -15,6 +15,25 @@ def _require(name: str) -> str:
     return value
 
 
+def _int_env(name: str, default: int) -> int:
+    """Return the integer value of environment variable *name*.
+
+    Falls back to *default* when the variable is absent.  Raises
+    ``EnvironmentError`` (rather than a bare ``ValueError``) with a clear
+    message when the variable is set but cannot be parsed as an integer, so
+    misconfiguration is surfaced at import time with a useful diagnostic.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise EnvironmentError(
+            f"Environment variable {name!r} must be an integer; got {raw!r}"
+        ) from None
+
+
 # Map of attribute name → env var name for required variables that are
 # resolved lazily (on first access) rather than at import time.
 _LAZY_REQUIRED: dict[str, str] = {
@@ -87,19 +106,26 @@ _mod.AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")  # type: ignore[at
 # ── Storage target (optional — eager) ───────────────────────────────────
 # Set STORAGE_TARGET=local to write to a Docker volume instead of Fabric OneLake.
 # Set LOCAL_STORAGE_PATH to override the default local base path.
-_mod.STORAGE_TARGET = os.getenv("STORAGE_TARGET", "local")  # type: ignore[attr-defined]
+_VALID_STORAGE_TARGETS = frozenset({"local", "onelake"})
+_storage_target = os.getenv("STORAGE_TARGET", "local")
+if _storage_target not in _VALID_STORAGE_TARGETS:
+    raise EnvironmentError(
+        f"Invalid STORAGE_TARGET={_storage_target!r}. "
+        f"Must be one of: {sorted(_VALID_STORAGE_TARGETS)}"
+    )
+_mod.STORAGE_TARGET = _storage_target  # type: ignore[attr-defined]
 _mod.LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "data")  # type: ignore[attr-defined]
 
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
 _mod.DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")  # type: ignore[attr-defined]
-_mod.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = int(os.getenv("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", "31"))  # type: ignore[attr-defined]
+_mod.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = _int_env("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", 31)  # type: ignore[attr-defined]
 _mod.DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")  # type: ignore[attr-defined]
 _mod.DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")  # type: ignore[attr-defined]
 
 # ── Rfam data retrieval (optional — eager) ───────────────────────────────
 _mod.RFAM_CONNECTION_STRING = os.getenv("RFAM_CONNECTION_STRING", "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam")  # type: ignore[attr-defined]
 _mod.RFAM_DATA_SOURCE = os.getenv("RFAM_DATA_SOURCE")  # type: ignore[attr-defined]
-_mod.RFAM_DEFAULT_DAYS_TO_LOAD = int(os.getenv("RFAM_DEFAULT_DAYS_TO_LOAD", "365"))  # type: ignore[attr-defined]
+_mod.RFAM_DEFAULT_DAYS_TO_LOAD = _int_env("RFAM_DEFAULT_DAYS_TO_LOAD", 365)  # type: ignore[attr-defined]
 
 # Replace this module in sys.modules so that all existing
 # ``from ddd_python.ddd_utils import get_variables_from_env`` and

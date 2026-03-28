@@ -22,7 +22,7 @@ Usage::
 import argparse
 import concurrent.futures
 import json
-import re
+import logging
 import sys
 import time
 import traceback
@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
+
+logger = logging.getLogger(__name__)
 
 SOURCE_SYSTEM_CODE = "RFAM"
 PIPELINE_TYPE = "sql_to_file"
@@ -84,14 +86,16 @@ def run_extraction_pipelines_rfam(
         for table_name in table_names_to_retrieve:
             query_template = configuration_variables.RFAM_TABLE_QUERIES[table_name]
 
-            # Build the SQL query with optional date filter
+            # Build the SQL query with optional date filter.
+            # Incremental tables use a SQLAlchemy named parameter (:updated_from)
+            # rather than string interpolation — this prevents SQL injection even
+            # if the date value ever bypasses the format check above.
             if table_name in incremental_set:
-                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_to_load_from):
-                    raise ValueError(f"Unsafe date value: {date_to_load_from!r}")
-                where_clause = f" WHERE updated >= '{date_to_load_from}'"
+                sql_query = query_template.format(where_clause=" WHERE updated >= :updated_from")
+                sql_params: dict = {"updated_from": date_to_load_from}
             else:
-                where_clause = ""
-            sql_query = query_template.format(where_clause=where_clause)
+                sql_query = query_template.format(where_clause="")
+                sql_params = {}
 
             destination_file_name = f"{table_name}_{start_time:%Y%m%d_%H%M%S}.json"
 
@@ -110,6 +114,7 @@ def run_extraction_pipelines_rfam(
                 pipeline_name=table_name,
                 source_connection_string=get_variables_from_env.RFAM_CONNECTION_STRING,
                 source_sql_query=sql_query,
+                sql_params=sql_params,
                 destination_directory_path=dest_dir,
                 destination_file_name=destination_file_name,
                 loader_file_format="jsonl",
@@ -125,13 +130,14 @@ def run_extraction_pipelines_rfam(
                     "status": "success",
                     "records_written": result.get("records_written"),
                 })
-            except Exception:
+            except Exception as exc:
                 pipeline_results.append({
                     "resource": name,
                     "status": "failure",
                     "error": traceback.format_exc(),
                 })
                 failed.append(name)
+                logger.error("Pipeline failed for table %s: %s", name, exc)
 
     end_time = datetime.now(timezone.utc)
     duration_seconds = time.monotonic() - script_start
@@ -173,6 +179,7 @@ def run_extraction_pipelines_rfam(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         description="Run extraction pipelines for Rfam MySQL database."
     )
@@ -194,5 +201,5 @@ if __name__ == "__main__":
             args.table_names_to_retrieve,
         )
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.error("ERROR: %s", exc)
         sys.exit(1)

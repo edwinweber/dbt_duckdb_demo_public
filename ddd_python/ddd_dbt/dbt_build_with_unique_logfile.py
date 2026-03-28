@@ -45,6 +45,7 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> i
 
 
 def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
+    # Deferred import: only called in onelake mode; keeps local-mode imports Azure-free.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC, log_file_name,

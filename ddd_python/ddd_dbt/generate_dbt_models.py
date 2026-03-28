@@ -12,6 +12,7 @@ import logging
 import os
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ SUFFIX_STMT = '-%}'
 # Build the set of Silver model names that use incremental extraction,
 # derived from the canonical list in configuration_variables — NOT hardcoded.
 _INCREMENTAL_SILVER_MODELS_DDD: frozenset[str] = frozenset(
-    f"silver_ddd_{name.replace('ø', 'oe').replace('æ', 'ae').replace('å', 'aa').lower()}"
+    f"silver_ddd_{normalize_danish_name(name)}"
     for name in configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
 )
 
@@ -69,7 +70,7 @@ def generate_dbt_models_bronze(
         dsev_arg = f",data_source_env_var='{data_source_env_var}'"
 
     for file_name in file_names:
-        file_name = file_name.replace("ø", "oe").replace("æ", "ae").replace("å", "aa").lower()
+        file_name = normalize_danish_name(file_name)
         # Derive _latest model name from the Bronze model naming convention.
         # For DDD: bronze_{file_name}_latest.  For Rfam: bronze_rfam_{file_name}_latest.
         # We find the matching Bronze model name and append _latest.
@@ -202,7 +203,7 @@ def generate_dbt_models_gold_cv(table_names: list[str]) -> None:
         model_path = os.path.join(target_dir, model_name)
 
         query = (
-            f"SELECT  src.* EXCLUDE (LKHS_date_inserted_src,LKHS_date_valid_from,LKHS_date_valid_to,LKHS_row_version)\n"
+            f"SELECT src.* EXCLUDE (LKHS_date_inserted_src,LKHS_date_valid_from,LKHS_date_valid_to,LKHS_row_version)\n"
             f"FROM {PREFIX} ref('{table_name}') {SUFFIX} src\n"
             f"QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.{table_name}_bk ORDER BY src.LKHS_date_valid_from DESC) = 1\n"
         )

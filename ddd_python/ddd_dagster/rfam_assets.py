@@ -13,7 +13,6 @@ are architecturally consistent.
 """
 
 from datetime import datetime, timedelta, timezone
-import re
 
 from dagster import (
     AssetExecutionContext,
@@ -105,11 +104,9 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
 
         ts = datetime.now(timezone.utc)
         destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_from):
-            raise ValueError(f"Unsafe date value: {date_from!r}")
-        sql_query = query_template.format(
-            where_clause=f" WHERE updated >= '{date_from}'"
-        )
+        # Use a SQLAlchemy named parameter (:updated_from) rather than
+        # interpolating the date string — prevents SQL injection.
+        sql_query = query_template.format(where_clause=" WHERE updated >= :updated_from")
 
         result = dlt_onelake.execute_pipeline(
             pipeline_type=_PIPELINE_TYPE,
@@ -117,6 +114,7 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
             pipeline_name=table_name,
             source_connection_string=get_variables_from_env.RFAM_CONNECTION_STRING,
             source_sql_query=sql_query,
+            sql_params={"updated_from": date_from},
             destination_directory_path=_destination_path(table_name),
             destination_file_name=destination_file,
             loader_file_format="jsonl",

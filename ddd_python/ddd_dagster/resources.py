@@ -49,7 +49,7 @@ class DltOneLakeResource(ConfigurableResource):
     # Pipeline execution
     # ------------------------------------------------------------------
 
-    def execute_pipeline(self, pipeline_type: str, **kwargs: Any) -> dict:
+    def execute_pipeline(self, pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
         """Dispatch a single DLT pipeline run and return the result dict.
 
         This is a thin pass-through to

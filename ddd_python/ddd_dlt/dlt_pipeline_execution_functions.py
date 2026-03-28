@@ -52,18 +52,19 @@ Typical usage::
     )
 """
 
-from datetime import datetime, timezone
-from typing import Any
-import logging
-import requests
-import time
+import io
 import json
+import logging
 import os
+import time
 import traceback
 import warnings
+from datetime import datetime, timezone
+from typing import Any
+
 import dlt
+import requests
 from dlt.destinations import filesystem as dlt_filesystem
-import io
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,9 @@ def _json_default(obj: Any) -> str:
 
 def _upload_to_onelake(data: bytes | str, directory_path: str, file_name: str) -> None:
     """Upload data to a Fabric OneLake file, overwriting any existing content."""
+    # Deferred import: get_fabric_onelake_clients pulls in the Azure SDK.
+    # Keeping it local means the module can be imported in local-storage mode
+    # (e.g. tests, code generation) without requiring Azure credentials.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         directory_path, file_name
@@ -151,7 +155,7 @@ def _make_destination(
     directory_path: str,
     file_name: str,
     data_table_name: str,
-) -> tuple[dlt_filesystem, str]:
+) -> tuple[Any, str]:
     """Build a dlt filesystem destination for either OneLake or local storage.
 
     When ``STORAGE_TARGET=local``, *directory_path* is treated as a path
@@ -197,7 +201,7 @@ def _make_destination(
     return destination, parent_path
 
 
-def _serialize_trace(trace: Any) -> dict:
+def _serialize_trace(trace: Any) -> dict[str, Any]:
     """Serialize a dlt pipeline trace to a plain, JSON-serializable dictionary.
 
     Args:
@@ -258,6 +262,7 @@ def write_log_to_onelake(
             f.write(data)
         return
 
+    # Deferred imports: Azure SDK + ADLS client only needed for OneLake writes.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         destination_directory_path, destination_file_name
@@ -288,7 +293,7 @@ def run_api_to_file_pipeline(
     destination_file_name: str,
     source_api_incremental_field: str | None = None,
     full_refresh: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Fetch data from a paginated OData / REST API and write it as NDJSON to OneLake.
 
     Records are yielded **individually** as dlt resource items — one dict per
@@ -355,6 +360,33 @@ def run_api_to_file_pipeline(
     num_rows = 0
     session = requests.Session()  # reuse TCP connection across pages
 
+    def _iter_odata_pages(initial_url: str) -> Any:
+        """Yield individual records from a paginated OData endpoint.
+
+        Follows ``odata.nextLink`` until exhausted.  Each call to this
+        generator is a single HTTP round-trip, keeping memory usage low for
+        large entity sets.
+        """
+        nonlocal num_rows
+        api_url: str | None = initial_url
+        while api_url is not None:
+            response = session.get(api_url, timeout=30)
+            response.raise_for_status()
+            body = response.json()
+            if "value" not in body:
+                raise ValueError(
+                    f"API response missing 'value' key; got keys: {sorted(body.keys())}"
+                )
+            records: list = body["value"]
+            num_rows += len(records)
+            yield from records                       # individual records — dlt sees real schema
+            api_url = body.get("odata.nextLink")     # follow OData pagination
+
+    # Two @dlt.resource definitions are necessary here: the incremental variant
+    # carries a dlt.sources.incremental cursor parameter that dlt detects at
+    # decoration time to manage state.  The full-extract variant is a plain
+    # function with no cursor.  The page-fetching logic is shared via
+    # _iter_odata_pages above.
     if source_api_incremental_field:
         @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
         def get_api_data(
@@ -364,40 +396,15 @@ def run_api_to_file_pipeline(
                 initial_value=source_api_date_to_load_from,
             ),
         ):
-            nonlocal num_rows
             # Truncate to YYYY-MM-DD for the OData DateTime'...' literal syntax
             last_date = str(updated_at.last_value)[:10]
             date_filter = f"$filter={source_api_incremental_field} ge DateTime'{last_date}'"
             combined_filter = f"{source_api_filter}&{date_filter}" if source_api_filter else date_filter
-            api_url = f"{api_url_base}?{combined_filter}"
-            while api_url is not None:
-                response = session.get(api_url, timeout=30)
-                response.raise_for_status()
-                body = response.json()
-                if "value" not in body:
-                    raise ValueError(
-                        f"API response missing 'value' key; got keys: {sorted(body.keys())}"
-                    )
-                records = body.get("value", [])
-                num_rows += len(records)
-                yield from records                      # individual records — dlt sees real schema
-                api_url = body.get("odata.nextLink")    # follow OData pagination
+            yield from _iter_odata_pages(f"{api_url_base}?{combined_filter}")
     else:
         @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
         def get_api_data(api_url: str):  # type: ignore[no-redef]
-            nonlocal num_rows
-            while api_url is not None:
-                response = session.get(api_url, timeout=30)
-                response.raise_for_status()
-                body = response.json()
-                if "value" not in body:
-                    raise ValueError(
-                        f"API response missing 'value' key; got keys: {sorted(body.keys())}"
-                    )
-                records = body.get("value", [])
-                num_rows += len(records)
-                yield from records                      # individual records — dlt sees real schema
-                api_url = body.get("odata.nextLink")    # follow OData pagination
+            yield from _iter_odata_pages(api_url)
 
     destination, dataset_name = _make_destination(
         destination_directory_path, destination_file_name, data_table_name=pipeline_name,
@@ -436,7 +443,8 @@ def run_sql_to_file_pipeline(
     chunk_size: int = 100_000,
     parquet_compression: str = "snappy",
     loader_file_format: str = "parquet",
-) -> dict:
+    sql_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Execute a SQL query and write the result as a Parquet file to OneLake.
 
     Rows are yielded **individually** from the SQL cursor in chunks of
@@ -465,6 +473,11 @@ def run_sql_to_file_pipeline(
         loader_file_format: Output file format.  ``"parquet"`` (default)
             or ``"jsonl"``.  When ``"jsonl"`` the output is NDJSON, compatible
             with the Bronze layer's ``read_json_auto()`` views.
+        sql_params: Optional dictionary of bound parameters for the SQL query,
+            e.g. ``{"updated_from": "2024-01-01"}``.  Values are passed via
+            SQLAlchemy's parameterised execution (``text()`` + named params),
+            which prevents SQL injection and is preferred over string
+            interpolation for any user-supplied values.
 
     Returns:
         A dictionary with:
@@ -479,6 +492,8 @@ def run_sql_to_file_pipeline(
     """
     num_rows = 0
 
+    _bound_params: dict[str, Any] = sql_params or {}
+
     @dlt.resource(name=pipeline_name, write_disposition="append")
     def get_sql_data(connection_string: str, sql_query: str):
         nonlocal num_rows
@@ -488,7 +503,7 @@ def run_sql_to_file_pipeline(
         )
         try:
             with engine.connect() as conn:
-                result = conn.execute(text(sql_query))
+                result = conn.execute(text(sql_query), _bound_params)
                 columns = list(result.keys())
                 while True:
                     rows = result.fetchmany(chunk_size)
@@ -522,7 +537,7 @@ def run_file_to_file_pipeline(
     source_file_path: str,
     destination_directory_path: str,
     destination_file_name: str,
-) -> dict:
+) -> dict[str, Any]:
     """Read a local file and upload it as-is to Fabric OneLake.
 
     dlt is **not used** here.  A plain file copy via the ADLS Gen2 SDK is all
@@ -564,7 +579,7 @@ def run_file_to_file_pipeline(
 # ---------------------------------------------------------------------------
 
 
-def execute_pipeline(pipeline_type: str, **kwargs) -> dict:
+def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
     """Execute a named pipeline type and write a structured log entry to OneLake.
 
     This is the primary entry point for all pipeline runs.  It dispatches to the
@@ -647,6 +662,7 @@ def execute_pipeline(pipeline_type: str, **kwargs) -> dict:
                 chunk_size=kwargs.get("chunk_size", 100_000),
                 parquet_compression=kwargs.get("parquet_compression", "snappy"),
                 loader_file_format=kwargs.get("loader_file_format", "parquet"),
+                sql_params=kwargs.get("sql_params"),
             )
         elif pipeline_type == "file_to_file":
             result = run_file_to_file_pipeline(
@@ -661,9 +677,9 @@ def execute_pipeline(pipeline_type: str, **kwargs) -> dict:
         level, message = "INFO", "Pipeline execution completed successfully"
         return result
 
-    except Exception as e:
+    except Exception as exc:
         error = traceback.format_exc()
-        raise
+        raise exc
 
     finally:
         end_timestamp = time.time()

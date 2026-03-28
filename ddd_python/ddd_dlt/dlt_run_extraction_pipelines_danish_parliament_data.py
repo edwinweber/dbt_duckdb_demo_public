@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import json
+import logging
 import sys
 import time
 import traceback
@@ -8,7 +9,10 @@ import warnings
 from datetime import datetime, timedelta, timezone
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
+
+logger = logging.getLogger(__name__)
 
 SOURCE_SYSTEM_CODE = "DDD"
 PIPELINE_TYPE = "api_to_file"
@@ -83,10 +87,7 @@ def run_extraction_pipelines_danish_parliament_data(
                 else "$inlinecount=allpages&$orderby=id"
             )
 
-            # Replace Danish characters; DuckDB / OneLake does not support them in paths.
-            base_file_name_lower = (
-                file_name.replace("ø", "oe").replace("æ", "ae").replace("å", "aa").lower()
-            )
+            base_file_name_lower = normalize_danish_name(file_name)
             destination_file_name = f"{base_file_name_lower}_{start_time:%Y%m%d_%H%M%S}.json"
 
             if get_variables_from_env.STORAGE_TARGET == "local":
@@ -169,6 +170,7 @@ def run_extraction_pipelines_danish_parliament_data(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         description="Run extraction pipelines for Danish parliament data."
     )
@@ -190,5 +192,5 @@ if __name__ == "__main__":
             args.file_names_to_retrieve,
         )
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.error("ERROR: %s", exc)
         sys.exit(1)

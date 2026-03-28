@@ -8,10 +8,13 @@ Usage::
     python -m ddd_python.ddd_dbt.init_duckdb
 """
 
+import logging
 import os
 import duckdb
 
 from ddd_python.ddd_utils import get_variables_from_env
+
+logger = logging.getLogger(__name__)
 
 
 def init_duckdb() -> None:
@@ -24,10 +27,9 @@ def init_duckdb() -> None:
 
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    print(f"Initializing DuckDB at: {db_path}")
+    logger.info("Initializing DuckDB at: %s", db_path)
 
-    con = duckdb.connect(db_path)
-    try:
+    with duckdb.connect(db_path) as con:
         # Install and load extensions
         for ext in ("httpfs", "azure", "delta"):
             con.execute(f"INSTALL {ext};")
@@ -41,29 +43,30 @@ def init_duckdb() -> None:
         client_id = get_variables_from_env.AZURE_CLIENT_ID
         client_secret = get_variables_from_env.AZURE_CLIENT_SECRET
 
-        # Create persistent secret — values are passed inline because
-        # DuckDB's getenv() is not available in the Python API.
-        con.execute(f"""
-            CREATE OR REPLACE PERSISTENT SECRET azure_sp (
-                TYPE azure,
-                PROVIDER service_principal,
-                TENANT_ID '{tenant_id}',
-                CLIENT_ID '{client_id}',
-                CLIENT_SECRET '{client_secret}',
-                ACCOUNT_NAME 'onelake'
-            );
-        """)
+        # DuckDB's CREATE SECRET DDL does not support bound parameters, so
+        # values are interpolated here.  This statement is intentionally NOT
+        # logged to prevent credentials appearing in log output.
+        secret_sql = (
+            "CREATE OR REPLACE PERSISTENT SECRET azure_sp ("
+            "    TYPE azure,"
+            "    PROVIDER service_principal,"
+            f"    TENANT_ID '{tenant_id}',"
+            f"    CLIENT_ID '{client_id}',"
+            f"    CLIENT_SECRET '{client_secret}',"
+            "    ACCOUNT_NAME 'onelake'"
+            ");"
+        )
+        con.execute(secret_sql)
 
-        # Verify
+        # Verify — only surface the metadata, never the secret values
         result = con.execute(
             "SELECT name, type, provider FROM duckdb_secrets() WHERE name = 'azure_sp'"
         ).fetchall()
-        print(f"Secret created: {result}")
-    finally:
-        con.close()
+        logger.info("Secret created: %s", result)
 
-    print("Done. Persistent Azure secret created, extensions installed.")
+    logger.info("Done. Persistent Azure secret created, extensions installed.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     init_duckdb()

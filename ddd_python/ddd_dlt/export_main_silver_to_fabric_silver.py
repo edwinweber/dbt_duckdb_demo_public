@@ -93,12 +93,21 @@ def write_tables_to_onelake_silver(connection: duckdb.DuckDBPyConnection, tables
 
     Convenience wrapper that calls :func:`export_single_silver_table` for each
     table in *tables*.
+
+    Raises:
+        RuntimeError: If one or more tables failed to export, after attempting
+            all tables.  Partial failures are logged at ERROR level.
     """
+    failed: list[str] = []
     for table in tables:
         try:
             export_single_silver_table(connection, table)
         except Exception as e:
             logger.error("Failed to export Silver table %s: %s", table, e)
+            failed.append(table)
+
+    if failed:
+        raise RuntimeError(f"Silver export failed for {len(failed)} table(s): {', '.join(failed)}")
 
 
 def main() -> None:
@@ -111,11 +120,8 @@ def main() -> None:
         + configuration_variables.RFAM_MODELS_SILVER
     )
 
-    connection = duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True)
-    try:
+    with duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True) as connection:
         write_tables_to_onelake_silver(connection, tables)
-    finally:
-        connection.close()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,19 @@
 # DANISH_DEMOCRACY_BASE_URL and DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD are
 # defined in .env and loaded via get_variables_from_env.
 
+
+def normalize_danish_name(name: str) -> str:
+    """Convert a Danish entity name to a filesystem-safe ASCII identifier.
+
+    Replaces the three Danish characters that are unsupported in DuckDB
+    schema names, dbt model names, and OneLake / local file-system paths:
+    ø → oe, æ → ae, å → aa.  The result is also lowercased.
+
+    This is the single canonical implementation; every other module that
+    needs this normalisation imports and calls this function.
+    """
+    return name.replace("ø", "oe").replace("æ", "ae").replace("å", "aa").lower()
+
 # All 18 API entity names to retrieve data from.
 DANISH_DEMOCRACY_FILE_NAMES = [
     "Afstemning",
