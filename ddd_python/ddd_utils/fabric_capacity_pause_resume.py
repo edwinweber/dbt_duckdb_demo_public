@@ -96,6 +96,9 @@ def change_capacity_state(action: str) -> None:
         wait_for_status(target_status=target_status, access_token=access_token)
     else:
         logger.error("Failed to %s capacity: %d — %s", action, response.status_code, response.text)
+        raise RuntimeError(
+            f"Failed to {action} capacity: HTTP {response.status_code} — {response.text}"
+        )
 
 
 if __name__ == "__main__":

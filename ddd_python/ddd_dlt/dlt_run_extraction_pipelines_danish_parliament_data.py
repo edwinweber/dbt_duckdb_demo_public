@@ -129,6 +129,7 @@ def run_extraction_pipelines_danish_parliament_data(
                     "error": traceback.format_exc(),
                 })
                 failed.append(name)
+                logger.error("Pipeline failed for resource %s: %s", name, exc)
 
     end_time = datetime.now(timezone.utc)
     duration_seconds = time.monotonic() - script_start
@@ -151,10 +152,7 @@ def run_extraction_pipelines_danish_parliament_data(
         ensure_ascii=False,
     ) + "\n"
 
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{SOURCE_SYSTEM_CODE}"
-    else:
-        log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{SOURCE_SYSTEM_CODE}"
+    log_dir = dpef.build_log_dir(SOURCE_SYSTEM_CODE)
     log_file = f"{SCRIPT_NAME}_log.ndjson"
     try:
         dpef.write_log_to_onelake(log_record, log_dir, log_file)

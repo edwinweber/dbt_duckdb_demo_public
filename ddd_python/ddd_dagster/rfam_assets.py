@@ -20,12 +20,11 @@ from dagster import (
     Config,
     MaterializeResult,
     MetadataValue,
-    RetryPolicy,
-    Backoff,
     asset,
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY, build_bronze_destination_path
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 
 
@@ -48,21 +47,10 @@ _INCREMENTAL_NAMES: frozenset[str] = frozenset(
     configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
 )
 
-_RETRY_POLICY = RetryPolicy(
-    max_retries=2,
-    delay=60,
-    backoff=Backoff.EXPONENTIAL,
-)
-
 
 def _destination_path(table_name: str) -> str:
     """Build the Bronze directory path for a given Rfam table name."""
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        return f"Files/Bronze/{_SOURCE_SYSTEM_CODE}/{table_name}"
-    return (
-        f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
-        f"/{_SOURCE_SYSTEM_CODE}/{table_name}"
-    )
+    return build_bronze_destination_path(_SOURCE_SYSTEM_CODE, table_name)
 
 
 def _make_incremental_asset(table_name: str) -> AssetsDefinition:

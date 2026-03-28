@@ -49,13 +49,12 @@ from dagster import (
     Config,
     MaterializeResult,
     MetadataValue,
-    RetryPolicy,
-    Backoff,
     asset,
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY, build_bronze_destination_path
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 
 
@@ -83,14 +82,6 @@ _INCREMENTAL_NAMES: frozenset[str] = frozenset(
     configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
 )
 
-# Two retries with exponential back-off (60 s → 120 s) for transient API /
-# OneLake network failures.
-_RETRY_POLICY = RetryPolicy(
-    max_retries=2,
-    delay=60,
-    backoff=Backoff.EXPONENTIAL,
-)
-
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -104,12 +95,7 @@ def _base_name(api_resource: str) -> str:
 
 def _destination_path(base: str) -> str:
     """Build the Bronze directory path for a given normalised resource name."""
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        return f"Files/Bronze/{_SOURCE_SYSTEM_CODE}/{base}"
-    return (
-        f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
-        f"/{_SOURCE_SYSTEM_CODE}/{base}"
-    )
+    return build_bronze_destination_path(_SOURCE_SYSTEM_CODE, base)
 
 
 # ---------------------------------------------------------------------------

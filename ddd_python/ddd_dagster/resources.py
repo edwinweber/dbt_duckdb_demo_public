@@ -28,7 +28,6 @@ from typing import Any
 from dagster import ConfigurableResource
 
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
-from ddd_python.ddd_utils import get_variables_from_env
 
 
 class DltOneLakeResource(ConfigurableResource):
@@ -129,10 +128,7 @@ class DltOneLakeResource(ConfigurableResource):
             + "\n"
         )
 
-        if get_variables_from_env.STORAGE_TARGET == "local":
-            log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{self.source_system_code}"
-        else:
-            log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{self.source_system_code}"
+        log_dir = dpef.build_log_dir(self.source_system_code)
         log_file = f"{job_name}_run_log.ndjson"
 
         dpef.write_log_to_onelake(record, log_dir, log_file)

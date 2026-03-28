@@ -56,6 +56,7 @@ import io
 import json
 import logging
 import os
+from pathlib import Path
 import time
 import traceback
 import warnings
@@ -166,7 +167,7 @@ def _make_destination(
     Returns:
         A tuple of ``(destination, dataset_name)`` to pass to ``dlt.pipeline``.
     """
-    parent_path = directory_path.rsplit("/", 1)[0]
+    parent_path = str(Path(directory_path).parent)
 
     def _resolve_path(
         schema_name: str,
@@ -575,6 +576,34 @@ def run_file_to_file_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def build_log_dir(source_system_code: str, pipeline_name: str | None = None) -> str:
+    """Build the log directory path for a given source system and optional pipeline.
+
+    Branches on ``STORAGE_TARGET``: local writes land under
+    ``LOCAL_STORAGE_PATH/logs/``, OneLake writes under
+    ``DLT_PIPELINE_RUN_LOG_DIR/``.
+
+    Args:
+        source_system_code: Short source-system identifier (e.g. ``"DDD"``,
+            ``"RFAM"``).
+        pipeline_name: Optional pipeline / resource name appended as a
+            sub-directory.  When omitted the path stops at *source_system_code*.
+
+    Returns:
+        A directory path string, without a trailing slash.
+    """
+    if get_variables_from_env.STORAGE_TARGET == "local":
+        base = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{source_system_code}"
+    else:
+        base = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{source_system_code}"
+    return f"{base}/{pipeline_name}" if pipeline_name else base
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -630,10 +659,7 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
             entry has been written.
     """
     start_timestamp = time.time()
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        log_dir = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{kwargs['source_system_code']}/{kwargs['pipeline_name']}"
-    else:
-        log_dir = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{kwargs['source_system_code']}/{kwargs['pipeline_name']}"
+    log_dir = build_log_dir(kwargs["source_system_code"], kwargs["pipeline_name"])
     log_file = f"{kwargs['pipeline_name']}_log.ndjson"
 
     result = {"status": "failure"}
@@ -679,7 +705,7 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
 
     except Exception as exc:
         error = traceback.format_exc()
-        raise exc
+        raise
 
     finally:
         end_timestamp = time.time()

@@ -25,7 +25,9 @@ def init_duckdb() -> None:
     if not db_path:
         raise EnvironmentError("DUCKDB_DATABASE_LOCATION is not set")
 
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    dirname = os.path.dirname(db_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
 
     logger.info("Initializing DuckDB at: %s", db_path)
 

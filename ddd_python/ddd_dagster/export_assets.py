@@ -23,21 +23,13 @@ from dagster import (
     AssetsDefinition,
     MaterializeResult,
     MetadataValue,
-    RetryPolicy,
-    Backoff,
     asset,
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
 from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-
-
-_RETRY_POLICY = RetryPolicy(
-    max_retries=2,
-    delay=60,
-    backoff=Backoff.EXPONENTIAL,
-)
 
 
 # ---------------------------------------------------------------------------
