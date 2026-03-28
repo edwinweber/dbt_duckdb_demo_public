@@ -12,6 +12,7 @@ import pytest
 from unittest.mock import patch
 
 import ddd_python.ddd_dlt.export_main_silver_to_fabric_silver as silver_mod
+from ddd_python.ddd_utils import configuration_variables
 
 
 _ENV_PATCHES = {
@@ -123,6 +124,19 @@ def test_unexpected_error_is_raised(silver_connection, mock_fabric_clients):
         mock_dt.is_deltatable.side_effect = ConnectionError("network unreachable")
         with pytest.raises(ConnectionError, match="network unreachable"):
             silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+
+
+# ── Default table list ────────────────────────────────────────────────
+
+
+def test_default_tables_include_ddd_and_rfam():
+    """main() default table list must include both DDD and Rfam Silver models."""
+    ddd = configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+    rfam = configuration_variables.RFAM_MODELS_SILVER
+    default = ddd + rfam
+    assert all(t in default for t in ddd)
+    assert all(t in default for t in rfam)
+    assert len(default) == len(ddd) + len(rfam)
 
 
 # ── Rfam-specific tests (non-id primary key) ─────────────────────────

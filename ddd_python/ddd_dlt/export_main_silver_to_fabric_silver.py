@@ -106,7 +106,10 @@ def main() -> None:
     parser.add_argument("--tables", nargs="+", required=False, help="Tables to export (default: all Silver tables).")
     args = parser.parse_args()
 
-    tables = args.tables or configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+    tables = args.tables or (
+        configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+        + configuration_variables.RFAM_MODELS_SILVER
+    )
 
     connection = duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True)
     try:

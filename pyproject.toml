@@ -8,22 +8,23 @@ readme = "README.md"
 authors = [{name = "Edwin Weber"}]
 dependencies = [
     # Extraction & loading
-    "dlt>=1.17,<2",
-    "requests>=2.31",
+    "dlt>=1.24,<2",
+    "requests>=2.33",
     "python-dotenv>=1.0",
 
     # Azure / Fabric OneLake
-    "adlfs>=2024.7",
-    "azure-identity>=1.16",
-    "azure-storage-file-datalake>=12.15",
+    "adlfs>=2026.2",
+    "azure-identity>=1.25",
+    "azure-storage-file-datalake>=12.23",
 
     # Transformation
-    "dbt-core>=1.10,<2",
-    "dbt-duckdb>=1.9,<2",
+    # dbt-core is capped at <1.12 — dagster-dbt 0.28.x hard limit
+    "dbt-core>=1.10,<1.12",
+    "dbt-duckdb>=1.10,<2",
     "duckdb>=1.5.1,<1.6",
 
     # Export to Delta Lake
-    "deltalake>=1.0",
+    "deltalake>=1.5",
     "pyarrow>=17",
 
     # SQL source pipeline (used by dlt_pipeline_execution_functions.py)
@@ -38,8 +39,9 @@ Issues = "https://github.com/edwinweber/dbt_duckdb_demo/issues"
 
 [project.optional-dependencies]
 dagster = [
-    "dagster>=1.7,<2",
-    "dagster-webserver>=1.7,<2",
+    # dagster, dagster-webserver, and dagster-dbt must stay in lockstep (0.28.x = 1.12.x)
+    "dagster>=1.12,<2",
+    "dagster-webserver>=1.12,<2",
     "dagster-dbt>=0.28,<0.29",
 ]
 dev = [

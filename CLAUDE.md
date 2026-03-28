@@ -18,13 +18,13 @@ exports the result as Delta Lake tables to Microsoft Fabric OneLake.
 | Layer           | Technology                                           |
 |-----------------|------------------------------------------------------|
 | Language        | Python ≥3.12                                         |
-| Orchestration   | Dagster ≥1.7 (software-defined assets)               |
-| Extraction      | dlt ≥1.17 (Data Load Tool)                           |
-| Transformation  | dbt-core ≥1.10 + dbt-duckdb ≥1.9                    |
+| Orchestration   | Dagster ≥1.12 (software-defined assets)              |
+| Extraction      | dlt ≥1.24 (Data Load Tool)                           |
+| Transformation  | dbt-core ≥1.10,<1.12 + dbt-duckdb ≥1.10             |
 | Query engine    | DuckDB ≥1.5.1,<1.6                                   |
 | Data quality    | dbt-utils 1.3.0, dbt-expectations 0.10.4             |
 | Cloud storage   | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake)    |
-| Export          | deltalake ≥1.0, PyArrow ≥17                          |
+| Export          | deltalake ≥1.5, PyArrow ≥17                          |
 | SQL source      | SQLAlchemy ≥2.0, PyMySQL ≥1.1                        |
 | Container       | Docker + Docker Compose                               |
 | Testing         | pytest ≥8.0                                          |

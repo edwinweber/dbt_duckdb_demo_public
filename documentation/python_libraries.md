@@ -8,7 +8,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Extraction & Loading
 
-#### `dlt` (Data Load Tool) `>=1.17,<2`
+#### `dlt` (Data Load Tool) `>=1.24,<2`
 **Role:** Incremental data extraction from the Danish Parliament OData API and the Rfam MySQL database into local files or OneLake.
 
 **Why chosen:**
@@ -17,7 +17,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Supports multiple destinations (filesystem, databases, cloud storage) via a unified interface — the same pipeline code works whether writing locally or to OneLake.
 - Actively maintained with a large community; widely adopted in the modern data engineering ecosystem.
 
-#### `requests` `>=2.31`
+#### `requests` `>=2.33`
 **Role:** HTTP client used internally by `dlt` for OData API calls, and directly in any custom API probing code.
 
 **Why chosen:**
@@ -36,21 +36,21 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Azure / Fabric OneLake
 
-#### `adlfs` `>=2024.7`
+#### `adlfs` `>=2026.2`
 **Role:** Filesystem abstraction over Azure Data Lake Storage Gen2 (ADLS Gen2), used by `dlt` and `pyarrow` to read/write files on OneLake transparently.
 
 **Why chosen:**
 - Implements the `fsspec` interface, meaning any library that accepts a filesystem object (dlt, PyArrow, pandas) can address OneLake paths as if they were local paths.
 - The canonical fsspec-compatible ADLS driver — no alternative has comparable adoption for this use case.
 
-#### `azure-identity` `>=1.16`
+#### `azure-identity` `>=1.25`
 **Role:** Provides credential objects (service principal, managed identity, interactive browser) for authenticating to Azure services.
 
 **Why chosen:**
 - Official Microsoft SDK; supports the full range of authentication flows with a single `ClientSecretCredential` or `DefaultAzureCredential` object.
 - Integrates directly with `adlfs`, `azure-storage-file-datalake`, and the DuckDB `azure` extension.
 
-#### `azure-storage-file-datalake` `>=12.15`
+#### `azure-storage-file-datalake` `>=12.23`
 **Role:** Azure SDK client for ADLS Gen2 file-system operations — listing directories, reading file properties, and writing log files to OneLake.
 
 **Why chosen:**
@@ -60,15 +60,17 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Transformation
 
-#### `dbt-core` `>=1.10,<2`
+#### `dbt-core` `>=1.10,<1.12`
+
 **Role:** SQL transformation framework that runs the Bronze → Silver → Gold models, enforces tests, and manages model dependencies via a DAG.
 
 **Why chosen:**
 - The industry standard for SQL-based data transformation; widely adopted across data teams and cloud platforms.
 - Supports incremental materializations, macros (Jinja templating), data tests, and documentation generation out of the box.
-- Version-pinned below 2.0 to ensure stability; `dbt-core` 1.x has a stable, well-understood API for the macro patterns used here.
+- Upper-bound set to `<1.12` because `dagster-dbt 0.28.x` (the Dagster integration layer) declares `dbt-core<1.12` as a hard dependency constraint.
 
-#### `dbt-duckdb` `>=1.9,<2`
+#### `dbt-duckdb` `>=1.10,<2`
+
 **Role:** DuckDB adapter for dbt-core — connects dbt to a local `.duckdb` file (or MotherDuck) and enables DuckDB-specific SQL features.
 
 **Why chosen:**
@@ -89,7 +91,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Export to Delta Lake
 
-#### `deltalake` `>=1.0`
+#### `deltalake` `>=1.5`
 **Role:** Writes Delta Lake tables from PyArrow `RecordBatch` objects to OneLake (Silver incremental export and Gold full-overwrite export).
 
 **Why chosen:**
@@ -129,16 +131,18 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Orchestration (`[dagster]`)
 
-#### `dagster` `>=1.7,<2`
+#### `dagster` `>=1.12,<2`
+
 **Role:** Orchestration framework — defines assets, jobs, schedules, and sensors; provides the Dagster UI for monitoring pipeline runs.
 
 **Why chosen:**
 - Asset-based orchestration model maps naturally to the medallion architecture: each Bronze, Silver, and Gold model is a software-defined asset with explicit lineage.
 - Built-in support for retries, partitions, run history, and alerting without external infrastructure.
 - `dagster-dbt` integration represents dbt models as Dagster assets, enabling mixed Python/SQL pipelines in a single DAG.
-- Version-pinned below 2.0 for API stability.
+- Lower bound set to `>=1.12` to match the lockstep versioning with `dagster-dbt 0.28.x` (0.28.x = 1.12.x by Dagster's offset convention).
 
-#### `dagster-webserver` `>=1.7,<2`
+#### `dagster-webserver` `>=1.12,<2`
+
 **Role:** Serves the Dagster UI (`http://localhost:3000`) for local development and monitoring.
 
 **Why chosen:** Ships with Dagster; the standard way to run the web UI locally.

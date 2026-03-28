@@ -11,7 +11,7 @@ Dagster ``@asset`` that writes the corresponding Delta Lake table to OneLake.
   Each asset depends on its corresponding dbt Gold model.
 
 The factory pattern mirrors ``assets.py`` (extraction assets) to keep the
-definitions DRY across 18 Silver tables and 9 Gold tables.
+definitions DRY across 25 Silver tables (18 DDD + 7 Rfam) and 9 Gold tables.
 """
 
 from datetime import datetime, timezone
@@ -159,10 +159,13 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
 # Materialise asset lists from configuration
 # ---------------------------------------------------------------------------
 
-#: Silver export assets — one per table in DANISH_DEMOCRACY_MODELS_SILVER.
+#: Silver export assets — one per table in DANISH_DEMOCRACY_MODELS_SILVER + RFAM_MODELS_SILVER.
 export_silver_assets: list[AssetsDefinition] = [
     _make_export_silver_asset(name)
-    for name in configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+    for name in (
+        configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+        + configuration_variables.RFAM_MODELS_SILVER
+    )
 ]
 
 #: Gold export assets — one per table in DANISH_DEMOCRACY_MODELS_GOLD.
