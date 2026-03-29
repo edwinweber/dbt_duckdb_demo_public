@@ -13,6 +13,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
+
 from ddd_python.ddd_utils import get_variables_from_env
 
 logger = logging.getLogger(__name__)

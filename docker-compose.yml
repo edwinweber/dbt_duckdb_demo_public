@@ -5,6 +5,7 @@
 x-path-overrides: &path-overrides
   DANISH_DEMOCRACY_BASE_URL: "https://oda.ft.dk/api"
   DANISH_DEMOCRACY_DATA_SOURCE: /data/local/Files/Bronze/DDD
+  RFAM_DATA_SOURCE: /data/local/Files/Bronze/RFAM
   DLT_PIPELINES_DIR: /data/dlt_pipelines
   DUCKDB_DATABASE_LOCATION: /data/duckdb/danish_democracy_data.duckdb
   DUCKDB_DATABASE: danish_democracy_data

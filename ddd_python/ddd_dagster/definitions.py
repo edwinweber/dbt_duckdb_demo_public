@@ -87,6 +87,10 @@ Resources
     path is read from the environment by dbt itself.
 """
 
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
+
 from dagster import Definitions
 from dagster_dbt import DbtCliResource
 

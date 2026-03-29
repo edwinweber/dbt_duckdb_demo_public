@@ -10,7 +10,7 @@ if [ "$STORAGE" = "local" ]; then
     # ── Local storage mode ──────────────────────────────────────────────
     echo "[entrypoint] Storage mode: local"
     LOCAL_BASE="${LOCAL_STORAGE_PATH:-/data/local}"
-    mkdir -p "$LOCAL_BASE/Files/Bronze/DDD" "$(dirname "$DB_PATH")"
+    mkdir -p "$LOCAL_BASE/Files/Silver" "$LOCAL_BASE/Files/Gold" "$(dirname "$DB_PATH")"
     echo "[entrypoint] Local storage directories ready at $LOCAL_BASE"
 
 elif [ "$STORAGE" = "onelake" ]; then

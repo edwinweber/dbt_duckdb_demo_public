@@ -53,11 +53,24 @@ produce this file automatically.  During local development::
     cd dbt && dbt parse
 """
 
+import os
 from pathlib import Path
 from typing import Any
 
-from dagster import AssetExecutionContext, AssetKey, AssetSpec
+from dagster import AssetExecutionContext, AssetKey, AssetSpec, Config
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
+
+# Write dbt logs to the mounted volume so they persist across container restarts.
+_DBT_LOG_PATH = os.getenv("DBT_LOGS_DIRECTORY", "/data/dbt_logs")
+
+
+class DbtSilverConfig(Config):
+    """Per-run configuration for Silver dbt assets.
+
+    Set ``full_refresh: true`` in the Launchpad to pass ``--full-refresh`` to
+    dbt, rebuilding all Silver tables from scratch instead of incrementally.
+    """
+    full_refresh: bool = False
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -153,7 +166,7 @@ def dbt_seeds_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     loaded into the ``main`` schema.  Run this job whenever the CSV files
     change or on initial setup.
     """
-    yield from dbt.cli(["seed"], context=context).stream()
+    yield from dbt.cli(["seed", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +191,7 @@ def dbt_bronze_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     Sources are mapped to dlt extraction asset keys via ``DddDbtTranslator``,
     creating lineage edges:  dlt:afstemning → dbt:bronze/bronze_afstemning.
     """
-    yield from dbt.cli(["build"], context=context).stream()
+    yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
 # ---------------------------------------------------------------------------
@@ -192,16 +205,17 @@ def dbt_bronze_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     name="dbt_silver_assets",
     dagster_dbt_translator=_translator,
 )
-def dbt_silver_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def dbt_silver_assets(context: AssetExecutionContext, dbt: DbtCliResource, config: DbtSilverConfig):
     """Run all dbt Silver models (incremental CDC tables + current-version views).
 
     Executes ``dbt build --select silver`` against the local DuckDB target,
     reading from the Bronze views and writing to incremental Silver tables.
 
-    The ``dbt build`` command runs models and their associated tests together,
-    so Silver data quality tests execute as part of this asset materialisation.
+    Set ``full_refresh: true`` in the Launchpad to rebuild all Silver tables
+    from scratch (passes ``--full-refresh`` to dbt).
     """
-    yield from dbt.cli(["build"], context=context).stream()
+    args = ["build", "--full-refresh"] if config.full_refresh else ["build"]
+    yield from dbt.cli(args + ["--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
 # ---------------------------------------------------------------------------
@@ -228,4 +242,4 @@ def dbt_gold_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     This asset set must run **after** ``dbt_silver_assets`` — the job
     sequencing in ``jobs.py`` enforces this order.
     """
-    yield from dbt.cli(["build"], context=context).stream()
+    yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()

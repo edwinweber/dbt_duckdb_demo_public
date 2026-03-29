@@ -64,6 +64,29 @@ from dagster import (
 )
 from dagster_dbt import build_dbt_asset_selection
 
+# Default Launchpad configs for incremental jobs.
+# date_to_load_from defaults to null so normal runs use today - lookback days
+# (31 for DDD, 365 for RFAM). Set an explicit date only for backfills.
+_DDD_INCREMENTAL_CONFIG = {
+    "ops": {
+        f"ingestion__DDD__{name}": {"config": {"date_to_load_from": None}}
+        for name in ["aktoer", "moede", "sag", "sagstrin", "sagstrinaktoer", "stemme"]
+    }
+}
+
+_RFAM_INCREMENTAL_CONFIG = {
+    "ops": {
+        f"ingestion__RFAM__{name}": {"config": {"date_to_load_from": None}}
+        for name in ["family", "genome"]
+    }
+}
+
+_DBT_SILVER_DEFAULT_CONFIG = {
+    "ops": {
+        "dbt_silver_assets": {"config": {"full_refresh": False}}
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Shared executor: 4-way concurrency, mirrors ThreadPoolExecutor(max_workers=4)
 # ---------------------------------------------------------------------------
@@ -78,6 +101,7 @@ danish_parliament_incremental_job = define_asset_job(
     name="danish_parliament_incremental_job",
     selection=AssetSelection.groups("ingestion_DDD_incremental"),
     executor_def=_concurrent_executor,
+    config=_DDD_INCREMENTAL_CONFIG,
     description=(
         "Incrementally extracts the 6 Danish Parliament resources that support "
         "OData date filtering (opdateringsdato).  Runs daily; date lower-bound "
@@ -111,6 +135,7 @@ danish_parliament_all_job = define_asset_job(
     name="danish_parliament_all_job",
     selection=AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract"),
     executor_def=_concurrent_executor,
+    config=_DDD_INCREMENTAL_CONFIG,
     description=(
         "Runs all 18 Danish Parliament extraction assets — incremental and "
         "full-extract — in a single job.  Intended for initial backfills and "
@@ -131,6 +156,7 @@ rfam_incremental_job = define_asset_job(
     name="rfam_incremental_job",
     selection=AssetSelection.groups("ingestion_RFAM_incremental"),
     executor_def=_concurrent_executor,
+    config=_RFAM_INCREMENTAL_CONFIG,
     description=(
         "Incrementally extracts Rfam tables that support date filtering via "
         "the ``updated`` timestamp column (family, genome)."
@@ -161,6 +187,7 @@ rfam_all_job = define_asset_job(
     name="rfam_all_job",
     selection=AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract"),
     executor_def=_concurrent_executor,
+    config=_RFAM_INCREMENTAL_CONFIG,
     description=(
         "Runs all 7 Rfam extraction assets — incremental and full-extract — "
         "in a single job."
@@ -304,8 +331,10 @@ dbt_silver_job = define_asset_job(
     name="dbt_silver_job",
     selection=_silver_selection(),
     executor_def=in_process_executor,
+    config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs all dbt Silver models for all source systems (DDD + RFAM).  "
+        "Set ``full_refresh: true`` in the Launchpad to rebuild all tables from scratch.  "
         "Use ``dbt_silver_ddd_job`` or ``dbt_silver_rfam_job`` to run a "
         "single source system."
     ),
@@ -320,9 +349,11 @@ dbt_silver_ddd_job = define_asset_job(
     name="dbt_silver_ddd_job",
     selection=_silver_ddd_selection(),
     executor_def=in_process_executor,
+    config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs dbt Silver models for the DDD (Danish Parliament) source system "
-        "only.  Selects ``silver_ddd_*`` models."
+        "only.  Selects ``silver_ddd_*`` models.  "
+        "Set ``full_refresh: true`` in the Launchpad to rebuild from scratch."
     ),
     tags={
         "team": "data-engineering",
@@ -335,9 +366,11 @@ dbt_silver_rfam_job = define_asset_job(
     name="dbt_silver_rfam_job",
     selection=_silver_rfam_selection(),
     executor_def=in_process_executor,
+    config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs dbt Silver models for the RFAM source system only.  "
-        "Selects ``silver_rfam_*`` models."
+        "Selects ``silver_rfam_*`` models.  "
+        "Set ``full_refresh: true`` in the Launchpad to rebuild from scratch."
     ),
     tags={
         "team": "data-engineering",
@@ -421,6 +454,7 @@ full_pipeline_job = define_asset_job(
     name="full_pipeline_job",
     selection=_full_pipeline_selection(),
     executor_def=_concurrent_executor,
+    config={"ops": {**_DDD_INCREMENTAL_CONFIG["ops"], **_RFAM_INCREMENTAL_CONFIG["ops"], **_DBT_SILVER_DEFAULT_CONFIG["ops"]}},
     description=(
         "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
         "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, then "

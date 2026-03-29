@@ -32,6 +32,7 @@ ARG DBT_PARSE_DB=/tmp/dbt_parse.duckdb
 RUN DUCKDB_DATABASE_LOCATION=${DBT_PARSE_DB} \
     STORAGE_TARGET=local \
     DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
+    RFAM_DATA_SOURCE=/data/local/Files/Bronze/RFAM \
     sh -c 'cd dbt && dbt deps && dbt parse' && \
     rm -f ${DBT_PARSE_DB}
 
@@ -47,6 +48,7 @@ RUN groupadd --gid 1000 appuser && \
 ENV STORAGE_TARGET=local \
     LOCAL_STORAGE_PATH=/data/local \
     DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
+    RFAM_DATA_SOURCE=/data/local/Files/Bronze/RFAM \
     DLT_PIPELINES_DIR=/data/dlt_pipelines \
     DUCKDB_DATABASE_LOCATION=/data/duckdb/danish_democracy_data.duckdb \
     DUCKDB_DATABASE=danish_democracy_data \
