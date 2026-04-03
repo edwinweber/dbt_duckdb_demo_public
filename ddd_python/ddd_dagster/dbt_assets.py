@@ -280,12 +280,12 @@ def dbt_data_engineering_assets(context: AssetExecutionContext, dbt: DbtCliResou
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
-# Variant of dbt_data_engineering_assets with barrier_all_gold_exported as an
-# upstream dep on every spec — used exclusively by full_pipeline_job so that
-# the data engineering layer runs after all Gold exports have completed.
-# The base dbt_data_engineering_assets has no barrier so it can run standalone
-# (e.g. from dbt_data_engineering_job or its daily schedule).
+# Add barrier_all_gold_exported as an upstream dep on every data_engineering
+# asset spec so that full_pipeline_job runs this layer after all Gold exports
+# have completed. When dbt_data_engineering_job runs standalone, Dagster
+# ignores deps that are not in the job's selection — so this does not block
+# standalone or scheduled execution.
 _barrier_key = AssetKey(["export", "barrier_all_gold_exported"])
-dbt_data_engineering_assets_in_pipeline = dbt_data_engineering_assets.map_asset_specs(
+dbt_data_engineering_assets = dbt_data_engineering_assets.map_asset_specs(
     lambda spec: spec.merge_attributes(deps=[_barrier_key])
 )

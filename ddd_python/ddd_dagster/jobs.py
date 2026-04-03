@@ -271,11 +271,6 @@ def _data_engineering_selection():
     return build_dbt_asset_selection([dbt_data_engineering_assets])
 
 
-def _data_engineering_pipeline_selection():
-    from ddd_python.ddd_dagster.dbt_assets import dbt_data_engineering_assets_in_pipeline
-    return build_dbt_asset_selection([dbt_data_engineering_assets_in_pipeline])
-
-
 dbt_seeds_job = define_asset_job(
     name="dbt_seeds_job",
     selection=_seeds_selection(),
@@ -478,7 +473,7 @@ def _full_pipeline_selection():
         | _silver_selection()
         | _gold_selection()
         | AssetSelection.groups("export_silver", "export_gold")
-        | _data_engineering_pipeline_selection()
+        | _data_engineering_selection()
     )
 
 

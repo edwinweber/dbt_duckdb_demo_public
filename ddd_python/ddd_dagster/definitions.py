@@ -96,7 +96,7 @@ from dagster_dbt import DbtCliResource
 
 from ddd_python.ddd_dagster.assets import all_extraction_assets
 from ddd_python.ddd_dagster.rfam_assets import all_rfam_extraction_assets
-from ddd_python.ddd_dagster.dbt_assets import _DBT_PROJECT_DIR, dbt_bronze_assets, dbt_data_engineering_assets, dbt_data_engineering_assets_in_pipeline, dbt_gold_assets, dbt_seeds_assets, dbt_silver_assets
+from ddd_python.ddd_dagster.dbt_assets import _DBT_PROJECT_DIR, dbt_bronze_assets, dbt_data_engineering_assets, dbt_gold_assets, dbt_seeds_assets, dbt_silver_assets
 from ddd_python.ddd_dagster.export_assets import all_export_assets
 from ddd_python.ddd_dagster.jobs import (
     danish_parliament_all_job,
@@ -134,7 +134,6 @@ defs = Definitions(
         dbt_silver_assets,
         dbt_gold_assets,
         dbt_data_engineering_assets,
-        dbt_data_engineering_assets_in_pipeline,
         *all_export_assets,
     ],
     jobs=[
