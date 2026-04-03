@@ -30,7 +30,7 @@ def silver_connection():
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
     conn.execute("""
-        CREATE TABLE main_silver.silver_aktoer AS
+        CREATE TABLE main_silver.silver_ddd_aktoer AS
         SELECT 1 AS id, '2024-01-01'::TIMESTAMP AS LKHS_date_valid_from, 'Alice' AS name
         UNION ALL
         SELECT 2, '2024-01-02'::TIMESTAMP, 'Bob'
@@ -70,7 +70,7 @@ def test_incremental_append_finds_new_rows(silver_connection, mock_fabric_client
     ):
         mock_dt.is_deltatable.return_value = True
         mock_dt.return_value.to_pyarrow_table.return_value = existing
-        rows = silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+        rows = silver_mod.export_single_silver_table(silver_connection, "silver_ddd_aktoer")
 
     assert rows == 1  # only Charlie is new
     mock_write.assert_called_once()
@@ -94,7 +94,7 @@ def test_incremental_no_new_rows_skips_write(silver_connection, mock_fabric_clie
     ):
         mock_dt.is_deltatable.return_value = True
         mock_dt.return_value.to_pyarrow_table.return_value = existing
-        rows = silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+        rows = silver_mod.export_single_silver_table(silver_connection, "silver_ddd_aktoer")
 
     assert rows == 0
     mock_write.assert_not_called()
@@ -108,7 +108,7 @@ def test_first_load_creates_table(silver_connection, mock_fabric_clients):
         patch.object(silver_mod, "write_deltalake") as mock_write,
     ):
         mock_dt.is_deltatable.return_value = False
-        rows = silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+        rows = silver_mod.export_single_silver_table(silver_connection, "silver_ddd_aktoer")
 
     assert rows == 3  # all rows written
     mock_write.assert_called_once()
@@ -123,7 +123,7 @@ def test_unexpected_error_is_raised(silver_connection, mock_fabric_clients):
     ):
         mock_dt.is_deltatable.side_effect = ConnectionError("network unreachable")
         with pytest.raises(ConnectionError, match="network unreachable"):
-            silver_mod.export_single_silver_table(silver_connection, "silver_aktoer")
+            silver_mod.export_single_silver_table(silver_connection, "silver_ddd_aktoer")
 
 
 # ── Default table list ────────────────────────────────────────────────
