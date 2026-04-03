@@ -6,9 +6,9 @@ to verify the incremental append and first-load overwrite logic.
 """
 
 import duckdb
-import pandas as pd
 import pyarrow as pa
 import pytest
+from datetime import datetime
 from unittest.mock import patch
 
 import ddd_python.ddd_dlt.export_main_silver_to_fabric_silver as silver_mod
@@ -59,7 +59,7 @@ def test_incremental_append_finds_new_rows(silver_connection, mock_fabric_client
     """When an existing Delta table has rows 1 and 2, only row 3 should be appended."""
     existing = pa.table({
         "id": [1, 2],
-        "LKHS_date_valid_from": pa.array(pd.to_datetime(["2024-01-01", "2024-01-02"])),
+        "LKHS_date_valid_from": pa.array([datetime(2024, 1, 1), datetime(2024, 1, 2)], type=pa.timestamp("us")),
         "name": ["Alice", "Bob"],
     })
 
@@ -82,7 +82,7 @@ def test_incremental_no_new_rows_skips_write(silver_connection, mock_fabric_clie
     existing = pa.table({
         "id": [1, 2, 3],
         "LKHS_date_valid_from": pa.array(
-            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            [datetime(2024, 1, 1), datetime(2024, 1, 2), datetime(2024, 1, 3)], type=pa.timestamp("us"),
         ),
         "name": ["Alice", "Bob", "Charlie"],
     })
@@ -163,7 +163,7 @@ def test_rfam_incremental_append_uses_real_pk(rfam_silver_connection, mock_fabri
     """Rfam tables use rfam_acc (not id) — only rows with new PK+date should be appended."""
     existing = pa.table({
         "rfam_acc": ["RF00001", "RF00002"],
-        "LKHS_date_valid_from": pa.array(pd.to_datetime(["2024-01-01", "2024-01-02"])),
+        "LKHS_date_valid_from": pa.array([datetime(2024, 1, 1), datetime(2024, 1, 2)], type=pa.timestamp("us")),
         "rfam_id": ["family_a", "family_b"],
     })
 

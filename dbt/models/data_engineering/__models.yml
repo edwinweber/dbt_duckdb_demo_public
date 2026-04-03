@@ -1,0 +1,199 @@
+version: 2
+
+models:
+  # ---------------------------------------------------------------------------
+  # Dimension — Dagster jobs
+  # ---------------------------------------------------------------------------
+  - name: dagster_job
+    description: >
+      One row per unique Dagster job name ever observed in pipeline runs.
+      Surrogate key derived from job_name via hash, consistent with the gold layer pattern.
+    columns:
+      - name: job_key
+        description: Surrogate key — hash of job_name.
+        data_tests:
+          - not_null
+          - unique
+      - name: job_name
+        description: Dagster job name.
+        data_tests:
+          - not_null
+          - unique
+
+  # ---------------------------------------------------------------------------
+  # Staging — Dagster event log consolidation (TABLE)
+  # ---------------------------------------------------------------------------
+  - name: dagster_event_logs
+    description: >
+      One row per ASSET_MATERIALIZATION event, read from the Dagster consolidated
+      SQLite event index at $DAGSTER_HOME/history/runs/index.db. Metadata fields
+      (records_written, duration_seconds, etc.) are extracted and flattened from
+      the nested JSON event payload via a generate_series lateral join.
+    columns:
+      - name: run_id
+        description: Dagster run UUID — foreign key to dagster_pipeline_runs.
+        data_tests:
+          - not_null
+      - name: event_timestamp
+        description: Unix epoch seconds (float) when the materialization was recorded.
+        data_tests:
+          - not_null
+      - name: step_key
+        description: Dagster step key — unique within a run.
+        data_tests:
+          - not_null
+      - name: asset_key_group
+        description: >
+          First path segment of the Dagster asset key — the high-level group:
+          ingestion | bronze | silver | gold | export.
+      - name: asset_key_layer
+        description: Second path segment (e.g. DDD, RFAM, bronze_aktoer).
+      - name: asset_key_name
+        description: Last path segment — the specific asset name.
+      - name: asset_key_full
+        description: Full asset key path joined with '/'.
+
+  # ---------------------------------------------------------------------------
+  # Staging — Dagster pipeline runs (VIEW)
+  # ---------------------------------------------------------------------------
+  - name: dagster_pipeline_runs
+    description: >
+      One row per Dagster pipeline run. Reads directly from the Dagster SQLite
+      runs database ($DAGSTER_HOME/history/runs.db) via DuckDB's sqlite_scan.
+    columns:
+      - name: run_id
+        description: Dagster run UUID — primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: job_name
+        description: Name of the Dagster job that produced this run.
+      - name: run_status
+        description: Terminal status — SUCCESS, FAILURE, CANCELED, etc.
+      - name: run_duration_seconds
+        description: Wall-clock time from start to end of the run in seconds.
+
+  # ---------------------------------------------------------------------------
+  # Dimension — Run (v2, Dagster storage/ layout)
+  # ---------------------------------------------------------------------------
+  - name: dagster_run
+    description: >
+      One row per Dagster run. Builds on dagster_pipeline_runs and dagster_event_logs
+      so all SQLite access stays in one place.
+      Joins: job_sk → dagster_job; start/end date/time FKs → gold.date / gold.time.
+    columns:
+      - name: run_sk
+        description: Surrogate key — hash of run_id.
+        data_tests:
+          - not_null
+          - unique
+      - name: job_sk
+        description: FK to dagster_job — hash of job_name.
+      - name: start_date_sk
+        description: FK to gold.date (date_day) for the run start.
+      - name: start_time_sk
+        description: FK to gold.time (time_key = TIME 'HH:MM:00', truncated to the minute) for the run start.
+      - name: end_date_sk
+        description: FK to gold.date (date_day) for the run end. NULL while the run is in progress.
+      - name: end_time_sk
+        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the run end. NULL while the run is in progress.
+      - name: run_id
+        description: Dagster natural run UUID.
+        data_tests:
+          - not_null
+          - unique
+      - name: status
+        description: Run terminal status — SUCCESS, FAILURE, CANCELED, etc.
+      - name: created_at
+        description: Timestamp when the run was created.
+      - name: started_at
+        description: Timestamp when execution started.
+      - name: ended_at
+        description: Timestamp when execution ended. NULL while in progress.
+      - name: duration_seconds
+        description: Wall-clock duration from start to end in seconds.
+      - name: rows_processed
+        description: Total rows across all ASSET_MATERIALIZATION events in the run.
+      - name: assets_materialized
+        description: Count of ASSET_MATERIALIZATION events within the run.
+
+  # ---------------------------------------------------------------------------
+  # Dimension — Asset (v2, Dagster storage/ layout)
+  # ---------------------------------------------------------------------------
+  - name: dagster_asset
+    description: >
+      One row per unique Dagster asset key ever materialized.
+      Parses the raw asset_key JSON path ({"path": ["group","layer","name"]})
+      into individual path segments. Surrogate key asset_sk is consistent with
+      fct_asset_materialization.asset_sk.
+    columns:
+      - name: asset_sk
+        description: Surrogate key — hash of asset_key_raw.
+        data_tests:
+          - not_null
+          - unique
+      - name: asset_key_raw
+        description: Raw asset key JSON string from Dagster event_logs.
+      - name: asset_key_group
+        description: First path segment — high-level group (ingestion, bronze, silver, gold, export).
+      - name: asset_key_layer
+        description: Second path segment — sub-group or source layer.
+      - name: asset_key_name
+        description: Last path segment — specific asset name.
+      - name: asset_key_full
+        description: Full asset key path joined with '/'.
+
+  # ---------------------------------------------------------------------------
+  # Fact — Asset materialization (v2, Dagster storage/ layout)
+  # ---------------------------------------------------------------------------
+  - name: dagster_asset_materialization
+    description: >
+      One row per ASSET_MATERIALIZATION event from $DAGSTER_HOME/storage/event_log.db.
+      Step duration is derived by joining STEP_START and STEP_SUCCESS/FAILURE events.
+      Date FK joins gold.date (date_day); time FK joins gold.time (time_key = minute of day).
+    data_tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 1
+    columns:
+      - name: materialization_id
+        description: Dagster event_logs PK (id column).
+        data_tests:
+          - not_null
+          - unique
+      - name: asset_sk
+        description: Surrogate key — hash of asset_key.
+      - name: run_sk
+        description: FK to fct_run — hash of run_id.
+      - name: job_sk
+        description: FK to dim_dagster_job — hash of pipeline_name.
+      - name: start_date_sk
+        description: FK to gold.date (date_day) for the step start.
+      - name: start_time_sk
+        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the step start.
+      - name: end_date_sk
+        description: FK to gold.date (date_day) for the step end.
+      - name: end_time_sk
+        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the step end.
+      - name: run_id
+        description: Dagster run UUID.
+        data_tests:
+          - not_null
+      - name: asset_key_raw
+        description: Raw asset key string from Dagster.
+      - name: step_key
+        description: Dagster step key — unique within a run.
+      - name: partition_key
+        description: Partition key if the asset is partitioned.
+      - name: step_started_at
+        description: Timestamp when the step started (from STEP_START event).
+      - name: step_ended_at
+        description: Timestamp when the step ended (from STEP_SUCCESS/FAILURE event).
+      - name: materialized_at
+        description: Timestamp of the ASSET_MATERIALIZATION event itself.
+      - name: duration_seconds
+        description: Wall-clock step duration in seconds.
+      - name: rows_processed
+        description: Row count from dagster/row_count metadata, if emitted.
+      - name: step_outcome
+        description: Step terminal event — STEP_SUCCESS | STEP_FAILURE | STEP_SKIPPED.
+

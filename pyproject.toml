@@ -46,8 +46,6 @@ dagster = [
 ]
 dev = [
     "pytest>=8.0",
-    # Test-only dependency (used by test_export_silver.py)
-    "pandas>=2.0",
 ]
 
 [tool.setuptools.packages.find]

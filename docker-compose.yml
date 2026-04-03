@@ -36,10 +36,10 @@ services:
     container_name: ddd-run
     command: ["python", "-m"]
     volumes:
-      - dlt_pipelines:/data/dlt_pipelines
-      - duckdb_data:/data/duckdb
-      - dbt_logs:/data/dbt_logs
-      - local_storage:/data/local
+      - /data/dlt_pipelines:/data/dlt_pipelines
+      - /data/duckdb:/data/duckdb
+      - /data/dbt_logs:/data/dbt_logs
+      - /data/local:/data/local
 
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
@@ -50,11 +50,11 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - dlt_pipelines:/data/dlt_pipelines
-      - duckdb_data:/data/duckdb
-      - dbt_logs:/data/dbt_logs
-      - dagster_data:/data/dagster
-      - local_storage:/data/local
+      - /data/dlt_pipelines:/data/dlt_pipelines
+      - /data/duckdb:/data/duckdb
+      - /data/dbt_logs:/data/dbt_logs
+      - /data/dagster:/data/dagster
+      - /data/local:/data/local
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
@@ -62,15 +62,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-volumes:
-  dlt_pipelines:
-    driver: local
-  duckdb_data:
-    driver: local
-  dbt_logs:
-    driver: local
-  dagster_data:
-    driver: local
-  local_storage:
-    driver: local

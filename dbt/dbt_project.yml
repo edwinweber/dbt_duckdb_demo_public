@@ -45,3 +45,7 @@ models:
       +schema: gold
       +materialized: view
       +tags: ['gold']
+    data_engineering:
+      +schema: data_engineering
+      +materialized: view
+      +tags: ['data_engineering']

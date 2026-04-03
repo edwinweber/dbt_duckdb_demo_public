@@ -138,7 +138,7 @@ class DddDbtTranslator(DagsterDbtTranslator):
         if resource_type == "seed":
             return "ingestion_seeds"
         fqn: list[str] = dbt_resource_props.get("fqn", [])
-        # fqn = ['danish_democracy_data', 'bronze'/'silver'/'gold', 'model_name']
+        # fqn = ['danish_democracy_data', 'bronze'/'silver'/'gold'/'data_engineering', 'model_name']
         layer = fqn[1] if len(fqn) >= 2 else None
         return self._LAYER_TO_GROUP.get(layer or "", layer)
 
@@ -243,3 +243,49 @@ def dbt_gold_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     sequencing in ``jobs.py`` enforces this order.
     """
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
+
+
+# ---------------------------------------------------------------------------
+# dbt assets — Data Engineering layer
+# ---------------------------------------------------------------------------
+
+@dbt_assets(
+    manifest=dbt_project.manifest_path,
+    project=dbt_project,
+    select="data_engineering",
+    name="dbt_data_engineering_assets",
+    dagster_dbt_translator=_translator,
+)
+def dbt_data_engineering_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+    """Run all dbt Data Engineering models (Dagster observability layer).
+
+    Executes ``dbt build --select data_engineering`` against the local DuckDB
+    target.  All models are VIEWs that read directly from Dagster's SQLite
+    databases via ``sqlite_scan()``:
+
+    Staging (reads SQLite):
+    * ``dagster_pipeline_runs``        — runs from ``$DAGSTER_HOME/history/runs.db``
+    * ``dagster_event_logs``           — ASSET_MATERIALIZATION events from ``history/runs/index.db``
+
+    Dimensions:
+    * ``dim_job``                      — one row per unique Dagster job name
+    * ``dim_run``                      — one row per run (descriptive attributes)
+    * ``dim_asset``                    — one row per unique asset key (parsed path)
+
+    Facts:
+    * ``fct_run``                      — one row per run with aggregated measures
+    * ``fct_asset_materialization``    — one row per ASSET_MATERIALIZATION event
+                                         with step timing (PLANNED → MATERIALIZED)
+    """
+    yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
+
+
+# Variant of dbt_data_engineering_assets with barrier_all_gold_exported as an
+# upstream dep on every spec — used exclusively by full_pipeline_job so that
+# the data engineering layer runs after all Gold exports have completed.
+# The base dbt_data_engineering_assets has no barrier so it can run standalone
+# (e.g. from dbt_data_engineering_job or its daily schedule).
+_barrier_key = AssetKey(["export", "barrier_all_gold_exported"])
+dbt_data_engineering_assets_in_pipeline = dbt_data_engineering_assets.map_asset_specs(
+    lambda spec: spec.merge_attributes(deps=[_barrier_key])
+)

@@ -10,7 +10,17 @@ if [ "$STORAGE" = "local" ]; then
     # ── Local storage mode ──────────────────────────────────────────────
     echo "[entrypoint] Storage mode: local"
     LOCAL_BASE="${LOCAL_STORAGE_PATH:-/data/local}"
-    mkdir -p "$LOCAL_BASE/Files/Silver" "$LOCAL_BASE/Files/Gold" "$(dirname "$DB_PATH")"
+    DAGSTER_HOME="${DAGSTER_HOME:-/data/dagster}"
+    mkdir -p "$LOCAL_BASE/Files/Silver" "$LOCAL_BASE/Files/Gold" "$(dirname "$DB_PATH")" "$DAGSTER_HOME"
+    # Write dagster.yaml only if not already present, so run history persists across restarts.
+    if [ ! -f "$DAGSTER_HOME/dagster.yaml" ]; then
+        cat > "$DAGSTER_HOME/dagster.yaml" <<YAML
+storage:
+  sqlite:
+    base_dir: ${DAGSTER_HOME}
+YAML
+        echo "[entrypoint] Created $DAGSTER_HOME/dagster.yaml"
+    fi
     echo "[entrypoint] Local storage directories ready at $LOCAL_BASE"
 
 elif [ "$STORAGE" = "onelake" ]; then

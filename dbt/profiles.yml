@@ -11,6 +11,7 @@ danish_democracy_data:
         - httpfs
         - parquet
         - delta
+        - sqlite
       external_root: 'data/curated'
 
     onelake:
@@ -21,6 +22,7 @@ danish_democracy_data:
         - parquet
         - azure
         - delta
+        - sqlite
       settings:
         azure_transport_option_type: 'curl'
       secrets:

@@ -96,7 +96,7 @@ from dagster_dbt import DbtCliResource
 
 from ddd_python.ddd_dagster.assets import all_extraction_assets
 from ddd_python.ddd_dagster.rfam_assets import all_rfam_extraction_assets
-from ddd_python.ddd_dagster.dbt_assets import _DBT_PROJECT_DIR, dbt_bronze_assets, dbt_gold_assets, dbt_seeds_assets, dbt_silver_assets
+from ddd_python.ddd_dagster.dbt_assets import _DBT_PROJECT_DIR, dbt_bronze_assets, dbt_data_engineering_assets, dbt_data_engineering_assets_in_pipeline, dbt_gold_assets, dbt_seeds_assets, dbt_silver_assets
 from ddd_python.ddd_dagster.export_assets import all_export_assets
 from ddd_python.ddd_dagster.jobs import (
     danish_parliament_all_job,
@@ -106,6 +106,7 @@ from ddd_python.ddd_dagster.jobs import (
     dbt_bronze_ddd_job,
     dbt_bronze_job,
     dbt_bronze_rfam_job,
+    dbt_data_engineering_job,
     dbt_gold_job,
     dbt_seeds_job,
     dbt_silver_ddd_job,
@@ -118,7 +119,7 @@ from ddd_python.ddd_dagster.jobs import (
     rfam_incremental_job,
 )
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
-from ddd_python.ddd_dagster.schedules import danish_parliament_full_pipeline_schedule
+from ddd_python.ddd_dagster.schedules import danish_parliament_full_pipeline_schedule, dbt_data_engineering_schedule
 from ddd_python.ddd_dagster.sensors import (
     danish_parliament_run_failure_sensor,
     danish_parliament_run_success_sensor,
@@ -132,6 +133,8 @@ defs = Definitions(
         dbt_bronze_assets,
         dbt_silver_assets,
         dbt_gold_assets,
+        dbt_data_engineering_assets,
+        dbt_data_engineering_assets_in_pipeline,
         *all_export_assets,
     ],
     jobs=[
@@ -148,6 +151,8 @@ defs = Definitions(
         dbt_silver_ddd_job,
         dbt_silver_rfam_job,
         dbt_gold_job,
+        # observability layer
+        dbt_data_engineering_job,
         # Delta Lake export jobs (DuckDB → OneLake)
         export_silver_job,
         export_gold_job,
@@ -160,6 +165,7 @@ defs = Definitions(
     ],
     schedules=[
         danish_parliament_full_pipeline_schedule,
+        dbt_data_engineering_schedule,
     ],
     sensors=[
         danish_parliament_run_success_sensor,

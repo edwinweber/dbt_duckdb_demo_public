@@ -292,9 +292,12 @@ dagster job launch -w workspace.yaml --job full_pipeline_job
 
 ### Daily Incremental Runs
 
-The schedule `danish_parliament_full_pipeline_schedule` fires at **06:00 UTC**
-daily. It is **disabled by default** — enable it in the Dagster UI under
-**Automation → Schedules** when you're ready to run it regularly.
+Two schedules run daily (both disabled by default — enable under **Automation → Schedules**):
+
+| Schedule | Time (Europe/Copenhagen) | Job |
+| --- | --- | --- |
+| `danish_parliament_full_pipeline_schedule` | 06:00 | `full_pipeline_job` — extraction → Bronze → Silver → Gold → export |
+| `dbt_data_engineering_schedule` | 08:00 | `dbt_data_engineering_job` — Dagster observability layer refresh |
 
 For a manual incremental run (the 6 date-filterable entities only):
 
@@ -395,6 +398,7 @@ dagster job launch -w workspace.yaml --job dbt_silver_job   # DDD + Rfam silver
 | `dbt_silver_ddd_job` | DDD Silver models only | in-process |
 | `dbt_silver_rfam_job` | Rfam Silver models only | in-process |
 | `dbt_gold_job` | All Gold models (DDD only) | in-process |
+| `dbt_data_engineering_job` | Dagster observability layer | in-process |
 | `export_silver_job` | Silver → OneLake Delta Lake | multiprocess (max 4) |
 | `export_gold_job` | Gold → OneLake Delta Lake | multiprocess (max 4) |
 
@@ -508,6 +512,73 @@ Clean English-named views built on top of Silver `_cv` views:
 Surrogate keys are generated using DuckDB's built-in `hash()` function (64-bit),
 mapped from unsigned to signed `BIGINT` via the `cast_hash_to_bigint` macro for
 Power BI compatibility. Each Gold table also has a `_cv` view.
+
+---
+
+## Dagster Observability Layer
+
+One of the distinguishing features of this project is that **the pipeline observes itself**.
+A dedicated dbt layer (`data_engineering` schema) reads directly from Dagster's own
+SQLite databases — the same databases the Dagster UI reads — and materialises the results
+into DuckDB. This means every run leaves behind a queryable, structured record of what
+happened, how long it took, and whether it succeeded.
+
+### How It Works
+
+Dagster persists its event log and run metadata in SQLite files under `DAGSTER_HOME`:
+
+| SQLite file | Contains |
+| --- | --- |
+| `$DAGSTER_HOME/history/runs/index.db` | Consolidated event log — all `ASSET_MATERIALIZATION`, `STEP_START`, `STEP_SUCCESS`, `STEP_FAILURE`, and related events across all runs |
+| `$DAGSTER_HOME/history/runs/{run_id}.db` | Per-run event log — individual files, one per pipeline run |
+| `$DAGSTER_HOME/history/runs.db` | Run metadata — status, job name, start/end times, duration |
+
+DuckDB's `sqlite_scan()` function reads these files directly, so no ETL
+step is needed. The dbt models query them as if they were native DuckDB tables.
+
+### Models
+
+| Model | Materialization | Description |
+| --- | --- | --- |
+| `dagster_pipeline_runs` | view | One row per Dagster run — status, job name, start/end times, duration. Reads from `runs.db`. |
+| `dagster_event_logs` | view | One row per `ASSET_MATERIALIZATION` event. Flattens nested JSON metadata (records written, rows written) via a `generate_series` lateral join. Staging model used by `dagster_run` and `dagster_asset_materialization`. |
+| `dagster_job` | view | Dimension — one row per unique Dagster job name ever observed. Surrogate key consistent with the Gold layer pattern. |
+| `dagster_asset` | view | Dimension — one row per unique asset key ever materialized. Parses the raw asset key JSON path into `asset_key_group` / `asset_key_layer` / `asset_key_name` path segments. |
+| `dagster_run` | view | One row per run with full context: surrogate keys, job/date/time foreign keys, all timestamps, duration, and aggregated measures (`rows_processed`, `assets_materialized`). The main run-level fact. |
+| `dagster_asset_materialization` | **table** | One row per `ASSET_MATERIALIZATION` event with step-level timing (step start → materialization), surrogate keys, date/time FKs, row counts, and step outcome (`STEP_SUCCESS` / `STEP_FAILURE`). Materialised as a table so downstream tools (DBeaver, Power BI) can query it without access to the SQLite file path. |
+| `dagster_step_failures_raw` | **table** (Python model) | One row per failed asset per run. Reads `STEP_FAILURE` events from individual per-run SQLite files (not present in the consolidated index), then expands each failure to one row per planned asset via `ASSET_MATERIALIZATION_PLANNED` events. Implemented as a dbt Python model using PyArrow. |
+| `dagster_step_failure` | view | Enriched version of `dagster_step_failures_raw` — adds surrogate keys, date/time FKs, and job name by joining to `dagster_pipeline_runs`. |
+
+### What You Can Answer
+
+Once `dbt_data_engineering_job` has run, you can query the DuckDB `data_engineering`
+schema to answer questions like:
+
+- **How long did each asset take to materialize in yesterday's run?**
+  → join `dagster_asset_materialization` on `run_id` and order by `duration_seconds`
+- **Which assets fail most often?**
+  → group `dagster_step_failure` by `asset_key`
+- **How many rows did the Silver layer process over the last 30 runs?**
+  → filter `dagster_run` by `start_date_sk` and sum `rows_processed`
+- **Did any run finish without materializing all expected assets?**
+  → compare `assets_materialized` in `dagster_run` against the expected count
+
+### Scheduling
+
+The observability layer has its own daily schedule (`dbt_data_engineering_schedule`)
+that fires at **08:00 Europe/Copenhagen** — after the 06:00 full pipeline has had
+time to complete. It runs `dbt_data_engineering_job` independently, with no
+dependency on the Gold export step. When triggered as part of `full_pipeline_job`
+(the end-to-end pipeline), the layer runs after all Gold exports have finished,
+so it captures the complete picture of that run.
+
+Both schedules default to **STOPPED** — enable them in the Dagster UI under
+**Automation → Schedules**.
+
+```bash
+# Run the observability layer manually
+dagster job launch -w workspace.yaml --job dbt_data_engineering_job
+```
 
 ---
 

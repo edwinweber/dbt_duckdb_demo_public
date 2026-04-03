@@ -3,12 +3,25 @@
 Each Silver and Gold table in DuckDB is represented as a single
 Dagster ``@asset`` that writes the corresponding Delta Lake table to OneLake.
 
+Execution order enforced by two ordering barriers:
+
+    dbt Gold (all models)
+        ↓
+    barrier_dbt_gold_complete   ← no-op; gates Silver exports
+        ↓
+    export Silver (all 25 tables)
+        ↓
+    barrier_all_silver_exported ← no-op; gates Gold exports
+        ↓
+    export Gold (all 9 tables)
+
 * **export/silver** — incremental append to OneLake Silver Delta tables.
-  Each asset depends on its corresponding dbt Silver model, so Dagster ensures
-  the dbt transformation completes before the export runs.
+  Each asset depends on its corresponding dbt Silver model and on
+  ``barrier_dbt_gold_complete``.
 
 * **export/gold** — full overwrite of OneLake Gold Delta tables.
-  Each asset depends on its corresponding dbt Gold model.
+  Each asset depends on its corresponding dbt Gold model and on
+  ``barrier_all_silver_exported``.
 
 The factory pattern mirrors ``assets.py`` (extraction assets) to keep the
 definitions DRY across 25 Silver tables (18 DDD + 7 Rfam) and 9 Gold tables.
@@ -31,6 +44,34 @@ from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
 from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
 
+# All Silver table names (DDD + Rfam) — used to build barrier deps.
+_ALL_SILVER_TABLES: list[str] = (
+    configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
+    + configuration_variables.RFAM_MODELS_SILVER
+)
+
+
+# ---------------------------------------------------------------------------
+# Barrier 1: wait for dbt Gold to finish before starting Silver exports
+# ---------------------------------------------------------------------------
+
+@asset(
+    name="barrier_dbt_gold_complete",
+    key_prefix=["export"],
+    group_name="export_silver",
+    deps=[
+        AssetKey(["gold", name])
+        for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
+    ],
+    description=(
+        "Ordering barrier: depends on every dbt Gold model.  "
+        "Silver exports depend on this asset so that dbt Gold completes "
+        "before any Silver export starts.  No data is written."
+    ),
+)
+def barrier_dbt_gold_complete() -> None:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Silver export asset factory
@@ -38,17 +79,16 @@ from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gol
 
 
 def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
-    """Return a Dagster asset that exports one Silver table to OneLake as Delta Lake.
-
-    The asset declares a dependency on the corresponding dbt Silver model so
-    that Dagster sequences the export after the transformation.
-    """
+    """Return a Dagster asset that exports one Silver table to OneLake as Delta Lake."""
 
     @asset(
         name=f"export_{table_name}",
         key_prefix=["export", "silver"],
         group_name="export_silver",
-        deps=[AssetKey(["silver", table_name])],
+        deps=[
+            AssetKey(["silver", table_name]),
+            AssetKey(["export", "barrier_dbt_gold_complete"]),
+        ],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Export **{table_name}** from DuckDB Silver to OneLake as a "
@@ -91,21 +131,43 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
 
 
 # ---------------------------------------------------------------------------
+# Barrier 2: wait for all Silver exports before starting Gold exports
+# ---------------------------------------------------------------------------
+
+@asset(
+    name="barrier_all_silver_exported",
+    key_prefix=["export"],
+    group_name="export_silver",
+    deps=[
+        AssetKey(["export", "silver", f"export_{name}"])
+        for name in _ALL_SILVER_TABLES
+    ],
+    description=(
+        "Ordering barrier: depends on every Silver export asset.  "
+        "Gold exports depend on this asset so that all Silver exports "
+        "complete before any Gold export starts.  No data is written."
+    ),
+)
+def barrier_all_silver_exported() -> None:
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Gold export asset factory
 # ---------------------------------------------------------------------------
 
 
 def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
-    """Return a Dagster asset that exports one Gold table to OneLake as Delta Lake.
-
-    The asset declares a dependency on the corresponding dbt Gold model.
-    """
+    """Return a Dagster asset that exports one Gold table to OneLake as Delta Lake."""
 
     @asset(
         name=f"export_{table_name}",
         key_prefix=["export", "gold"],
         group_name="export_gold",
-        deps=[AssetKey(["gold", table_name])],
+        deps=[
+            AssetKey(["gold", table_name]),
+            AssetKey(["export", "barrier_all_silver_exported"]),
+        ],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Export **{table_name}** from DuckDB Gold to OneLake as a "
@@ -154,10 +216,7 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
 #: Silver export assets — one per table in DANISH_DEMOCRACY_MODELS_SILVER + RFAM_MODELS_SILVER.
 export_silver_assets: list[AssetsDefinition] = [
     _make_export_silver_asset(name)
-    for name in (
-        configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
-        + configuration_variables.RFAM_MODELS_SILVER
-    )
+    for name in _ALL_SILVER_TABLES
 ]
 
 #: Gold export assets — one per table in DANISH_DEMOCRACY_MODELS_GOLD.
@@ -166,5 +225,34 @@ export_gold_assets: list[AssetsDefinition] = [
     for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
 ]
 
+# ---------------------------------------------------------------------------
+# Barrier 3: wait for all Gold exports before starting Data Engineering refresh
+# ---------------------------------------------------------------------------
+
+@asset(
+    name="barrier_all_gold_exported",
+    key_prefix=["export"],
+    group_name="export_gold",
+    deps=[
+        AssetKey(["export", "gold", f"export_{name}"])
+        for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
+    ],
+    description=(
+        "Ordering barrier: depends on every Gold export asset.  "
+        "The Data Engineering observability layer depends on this asset so that "
+        "all Gold exports complete before the observability models are rebuilt.  "
+        "No data is written."
+    ),
+)
+def barrier_all_gold_exported() -> None:
+    pass
+
+
 #: Combined list passed to ``Definitions(assets=...)``.
-all_export_assets: list[AssetsDefinition] = export_silver_assets + export_gold_assets
+all_export_assets: list[AssetsDefinition] = (
+    [barrier_dbt_gold_complete]
+    + export_silver_assets
+    + [barrier_all_silver_exported]
+    + export_gold_assets
+    + [barrier_all_gold_exported]
+)

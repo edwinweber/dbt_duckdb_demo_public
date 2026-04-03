@@ -54,6 +54,8 @@ Executor
 --------
 Extraction and export jobs use ``multiprocess_executor`` (``max_concurrent=4``).
 dbt jobs use ``in_process_executor`` (DuckDB single-writer constraint).
+``full_pipeline_job`` uses ``in_process_executor`` to enforce strict sequential
+ordering: ingestion → Bronze → Silver → Gold → export Silver → export Gold.
 """
 
 from dagster import (
@@ -264,6 +266,16 @@ def _gold_selection():
     return build_dbt_asset_selection([dbt_gold_assets])
 
 
+def _data_engineering_selection():
+    from ddd_python.ddd_dagster.dbt_assets import dbt_data_engineering_assets
+    return build_dbt_asset_selection([dbt_data_engineering_assets])
+
+
+def _data_engineering_pipeline_selection():
+    from ddd_python.ddd_dagster.dbt_assets import dbt_data_engineering_assets_in_pipeline
+    return build_dbt_asset_selection([dbt_data_engineering_assets_in_pipeline])
+
+
 dbt_seeds_job = define_asset_job(
     name="dbt_seeds_job",
     selection=_seeds_selection(),
@@ -396,6 +408,25 @@ dbt_gold_job = define_asset_job(
 )
 
 
+dbt_data_engineering_job = define_asset_job(
+    name="dbt_data_engineering_job",
+    selection=_data_engineering_selection(),
+    executor_def=in_process_executor,
+    description=(
+        "Refreshes the Data Engineering observability layer in DuckDB.  "
+        "Rebuilds all views that read from Dagster's own SQLite databases: "
+        "staging (dagster_pipeline_runs, dagster_event_logs), "
+        "dimensions (dim_job, dim_run, dim_asset), and "
+        "facts (fct_run, fct_asset_materialization).  "
+        "Run this job after any pipeline run to update the observability layer."
+    ),
+    tags={
+        "team": "data-engineering",
+        "layer": "data_engineering",
+    },
+)
+
+
 # ---------------------------------------------------------------------------
 # Export jobs — DuckDB → OneLake Delta Lake
 # ---------------------------------------------------------------------------
@@ -447,21 +478,23 @@ def _full_pipeline_selection():
         | _silver_selection()
         | _gold_selection()
         | AssetSelection.groups("export_silver", "export_gold")
+        | _data_engineering_pipeline_selection()
     )
 
 
 full_pipeline_job = define_asset_job(
     name="full_pipeline_job",
     selection=_full_pipeline_selection(),
-    executor_def=_concurrent_executor,
+    executor_def=in_process_executor,
     config={"ops": {**_DDD_INCREMENTAL_CONFIG["ops"], **_RFAM_INCREMENTAL_CONFIG["ops"], **_DBT_SILVER_DEFAULT_CONFIG["ops"]}},
     description=(
         "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
-        "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, then "
-        "exports Silver and Gold tables to OneLake as Delta Lake.  Extraction "
-        "and export assets run concurrently (max 4); dbt assets run "
-        "sequentially via asset dependencies and DuckDB's single-writer "
-        "constraint (threads: 1)."
+        "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, exports "
+        "Silver and Gold to OneLake as Delta Lake, then refreshes the Data "
+        "Engineering observability layer.  All steps run sequentially "
+        "(in_process_executor) to respect DuckDB's single-writer constraint: "
+        "ingestion → Bronze → Silver → Gold → export Silver → export Gold → "
+        "data_engineering."
     ),
     tags={
         "team": "data-engineering",

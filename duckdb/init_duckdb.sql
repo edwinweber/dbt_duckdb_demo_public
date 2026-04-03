@@ -16,14 +16,16 @@
 -- across Docker containers (default ~/.duckdb/stored_secrets/ is ephemeral).
 SET secret_directory = '/data/duckdb';
 
--- Install and load required extensions (parquet is built-in since DuckDB 1.0)
+
 INSTALL httpfs;
 INSTALL azure;
 INSTALL delta;
+INSTALL sqlite;
 
 LOAD httpfs;
 LOAD azure;
 LOAD delta;
+LOAD sqlite;
 
 -- Set Azure transport to curl (required for OneLake / ADLS Gen2 access).
 -- This is a session-level setting; dbt sets it via profiles.yml, but this
