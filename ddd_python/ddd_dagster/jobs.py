@@ -34,6 +34,9 @@ dbt transformation jobs
 
 ``dbt_gold_job``
 
+``dbt_data_engineering_job``
+    Refreshes the Dagster observability layer (reads from Dagster SQLite).
+
 Export jobs
 ~~~~~~~~~~
 ``export_silver_job``
@@ -48,7 +51,7 @@ End-to-end pipeline
 ~~~~~~~~~~~~~~~~~~~
 ``full_pipeline_job``
     Runs all source system extractions (DDD + Rfam) → dbt Bronze → Silver →
-    Gold → export Silver → export Gold.
+    Gold → export Silver → export Gold → Data Engineering observability layer.
 
 Executor
 --------
@@ -409,10 +412,11 @@ dbt_data_engineering_job = define_asset_job(
     executor_def=in_process_executor,
     description=(
         "Refreshes the Data Engineering observability layer in DuckDB.  "
-        "Rebuilds all views that read from Dagster's own SQLite databases: "
+        "Rebuilds all models that read from Dagster's own SQLite databases: "
         "staging (dagster_pipeline_runs, dagster_event_logs), "
-        "dimensions (dim_job, dim_run, dim_asset), and "
-        "facts (fct_run, fct_asset_materialization).  "
+        "dimensions (dagster_job, dagster_asset), "
+        "facts (dagster_run, dagster_asset_materialization), and "
+        "failure tracking (dagster_step_failures_raw, dagster_step_failure).  "
         "Run this job after any pipeline run to update the observability layer."
     ),
     tags={

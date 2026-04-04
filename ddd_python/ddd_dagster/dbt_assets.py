@@ -26,15 +26,19 @@ Lineage chain
 
 Jobs
 ----
-Two dbt run jobs are exposed via ``dbt_silver_job`` and ``dbt_gold_job``
-(defined in ``jobs.py``):
+The dbt assets defined here are used by several jobs (see ``jobs.py``):
 
-* ``dbt_silver_job`` — selects ``tag:silver`` (all silver + silver_cv models).
-* ``dbt_gold_job``   — selects ``tag:gold`` (all gold + gold_cv models).
+* ``dbt_seeds_job``                — runs all dbt seeds.
+* ``dbt_bronze_job``               — selects all Bronze models.
+* ``dbt_silver_job``               — selects all Silver models + ``_cv`` views.
+* ``dbt_gold_job``                 — selects all Gold models + ``_cv`` views.
+* ``dbt_data_engineering_job``     — selects all Data Engineering models.
+* ``full_pipeline_job``            — end-to-end: extraction → all dbt layers → export.
 
-Both are sequenced: silver must complete before gold.  The combined schedule
-``dbt_silver_gold_schedule`` runs both in the correct order daily at 07:00 UTC
-(after the 06:00 dlt extraction schedule has finished).
+Two schedules are defined in ``schedules.py`` (both default to STOPPED):
+
+* ``danish_parliament_full_pipeline_schedule`` — 06:00 Europe/Copenhagen
+* ``dbt_data_engineering_schedule``            — 08:00 Europe/Copenhagen
 
 Resource key
 ------------
@@ -260,22 +264,25 @@ def dbt_data_engineering_assets(context: AssetExecutionContext, dbt: DbtCliResou
     """Run all dbt Data Engineering models (Dagster observability layer).
 
     Executes ``dbt build --select data_engineering`` against the local DuckDB
-    target.  All models are VIEWs that read directly from Dagster's SQLite
-    databases via ``sqlite_scan()``:
+    target.  Models read directly from Dagster's SQLite databases via
+    ``sqlite_scan()``:
 
     Staging (reads SQLite):
     * ``dagster_pipeline_runs``        — runs from ``$DAGSTER_HOME/history/runs.db``
     * ``dagster_event_logs``           — ASSET_MATERIALIZATION events from ``history/runs/index.db``
 
     Dimensions:
-    * ``dim_job``                      — one row per unique Dagster job name
-    * ``dim_run``                      — one row per run (descriptive attributes)
-    * ``dim_asset``                    — one row per unique asset key (parsed path)
+    * ``dagster_job``                  — one row per unique Dagster job name
+    * ``dagster_asset``                — one row per unique asset key (parsed path)
 
     Facts:
-    * ``fct_run``                      — one row per run with aggregated measures
-    * ``fct_asset_materialization``    — one row per ASSET_MATERIALIZATION event
+    * ``dagster_run``                  — one row per run with aggregated measures
+    * ``dagster_asset_materialization``— one row per ASSET_MATERIALIZATION event
                                          with step timing (PLANNED → MATERIALIZED)
+
+    Failure tracking:
+    * ``dagster_step_failures_raw``    — Python model: one row per failed asset per run
+    * ``dagster_step_failure``         — enriched view with surrogate keys and FKs
     """
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 

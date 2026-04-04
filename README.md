@@ -31,7 +31,7 @@ single environment variable:
 
 ```text
   ┌──────────────────────────────────────────────────────────────────────┐
-  │  Dagster  (schedule 06:00 UTC daily · disabled by default)           │
+  │  Dagster  (schedule 06:00 Europe/Copenhagen daily · disabled by default) │
    │  └── full_pipeline_job                                              │
   └──────────────────────────────┬───────────────────────────────────────┘
                                  │ orchestrates
@@ -296,7 +296,7 @@ Two schedules run daily (both disabled by default — enable under **Automation 
 
 | Schedule | Time (Europe/Copenhagen) | Job |
 | --- | --- | --- |
-| `danish_parliament_full_pipeline_schedule` | 06:00 | `full_pipeline_job` — extraction → Bronze → Silver → Gold → export |
+| `danish_parliament_full_pipeline_schedule` | 06:00 | `full_pipeline_job` — extraction → Bronze → Silver → Gold → export → data engineering |
 | `dbt_data_engineering_schedule` | 08:00 | `dbt_data_engineering_job` — Dagster observability layer refresh |
 
 For a manual incremental run (the 6 date-filterable entities only):
@@ -355,6 +355,8 @@ full_pipeline_job
 │       └── dbt_silver_rfam_job                 (7 Rfam silver tables + _cv views)
 ├── dbt Gold
 │   └── dbt_gold_job                            (10 Gold models — DDD only)
+├── Data Engineering
+│   └── dbt_data_engineering_job                 (8 observability models)
 └── Export
     ├── export_silver_job                       (DuckDB Silver → OneLake Delta)
     └── export_gold_job                         (DuckDB Gold → OneLake Delta)
@@ -383,7 +385,7 @@ dagster job launch -w workspace.yaml --job dbt_silver_job   # DDD + Rfam silver
 
 | Job | Scope | Executor |
 | --- | --- | --- |
-| `full_pipeline_job` | End-to-end: extract → Bronze → Silver → Gold → export | multiprocess (max 4) |
+| `full_pipeline_job` | End-to-end: extract → Bronze → Silver → Gold → export → data engineering | in-process |
 | `danish_parliament_incremental_job` | 6 DDD incremental entities | multiprocess (max 4) |
 | `danish_parliament_full_extract_job` | 12 DDD full-extract entities | multiprocess (max 4) |
 | `danish_parliament_all_job` | All 18 DDD entities | multiprocess (max 4) |
@@ -473,7 +475,7 @@ local paths — the Bronze models work identically in both cases.
 | Category | Tables | Primary Key |
 | --- | --- | --- |
 | **Incremental** (date-filtered) | family, genome | `rfam_acc`, `upid` |
-| **Full-extract** | clan, clan_membership, author, literature_reference, dead_family | `clan_acc`, (`clan_acc`, `rfam_acc`), `author_id`, `pmid`, `rfam_acc` |
+| **Full-extract** | clan, clan_membership, author, literature_reference, dead_family | `clan_acc`, `rfam_acc`, `author_id`, `pmid`, `rfam_acc` |
 
 ### Silver Layer — SCD Type 2
 
@@ -503,15 +505,17 @@ Clean English-named views built on top of Silver `_cv` views:
 | `actor` | Politicians and organisations |
 | `actor_type` | Actor category lookup |
 | `case` | Parliamentary cases and bills |
+| `individual_votes` | One row per MP per vote — the fact table |
 | `meeting` | Plenary meeting sessions |
 | `meeting_status` / `meeting_type` | Meeting dimension lookups |
 | `vote` | Voting results per case |
 | `vote_type` | Vote category lookup |
 | `date` | Date dimension (from seed) |
+| `time` | Time-of-day dimension |
 
 Surrogate keys are generated using DuckDB's built-in `hash()` function (64-bit),
 mapped from unsigned to signed `BIGINT` via the `cast_hash_to_bigint` macro for
-Power BI compatibility. Each Gold table also has a `_cv` view.
+Power BI compatibility. Most Gold dimension tables also have a `_cv` (current-version) view.
 
 ---
 
@@ -615,11 +619,11 @@ without running the pipeline first.
 **Browse the committed docs** — open `documentation/dbt-docs/index.html` in
 your browser. The documentation covers:
 
-- All 121 models across Bronze, Silver, and Gold layers
+- All 130 models across Bronze, Silver, Gold, and Data Engineering layers
 - Column-level lineage and data types via the catalog
 - The full DAG (directed acyclic graph) showing dependencies between
   models, seeds, sources, and tests
-- 264 data quality tests defined across the project
+- 284 data quality tests defined across the project
 
 **Regenerate after changes:**
 

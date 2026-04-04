@@ -43,7 +43,7 @@ Gold (DuckDB views — facts & dimensions)
 OneLake / local filesystem
 ```
 
-Orchestrated by **Dagster** (daily 06:00 UTC schedule, disabled by default).
+Orchestrated by **Dagster** (two daily schedules: 06:00 + 08:00 Europe/Copenhagen, disabled by default).
 
 ## Directory Structure
 
@@ -54,13 +54,14 @@ Orchestrated by **Dagster** (daily 06:00 UTC schedule, disabled by default).
 │   ├── ddd_dbt/                 dbt model generator + dbt runner + DuckDB init
 │   └── ddd_utils/               Configuration, env vars, Azure/Fabric clients
 ├── dbt/                         dbt project
-│   ├── models/bronze/           ~48 views (read_json_auto over raw files)
-│   ├── models/silver/           ~56 models (CDC tables + _cv views)
-│   ├── models/gold/             ~20 models (star-schema views)
+│   ├── models/bronze/           53 views (read_json_auto over raw files)
+│   ├── models/silver/           50 models (CDC tables + _cv views)
+│   ├── models/gold/             19 models (star-schema views)
+│   ├── models/data_engineering/ 8 observability models (Dagster SQLite)
 │   ├── macros/                  9 Jinja macros (model factories, hash, CDC)
 │   ├── seeds/                   Seed CSVs (date dimension, source registry)
 │   └── dbt_project.yml          Project config + variables
-├── tests/                       pytest tests (12 modules, 92 tests)
+├── tests/                       pytest tests (12 modules, 93 tests)
 ├── duckdb/                      DuckDB init scripts (extensions + Azure secret)
 ├── dlt/pipelines_dir/           dlt incremental state (git-ignored)
 ├── data/                        Local storage root (git-ignored)
@@ -128,12 +129,13 @@ on first access.
 
 - **assets.py** — DDD extraction (18× asset factory with retry policy)
 - **rfam_assets.py** — Rfam extraction (7× asset factory)
-- **dbt_assets.py** — dagster-dbt integration for Bronze/Silver/Gold
+- **dbt_assets.py** — dagster-dbt integration for Bronze/Silver/Gold/Data Engineering + seeds
 - **export_assets.py** — Silver (incremental) + Gold (full overwrite) → Delta Lake
+- **sensors.py** — Run-status sensors (success/failure) that log summaries to OneLake
 - **jobs.py** — Pipelines (incremental, full-extract, all, full-pipeline)
   - dbt jobs: `in_process_executor` (DuckDB single-writer constraint)
   - Extraction/export: `multiprocess_executor` (max_concurrent=4)
-- **schedules.py** — Daily 06:00 UTC (disabled by default)
+- **schedules.py** — Two daily schedules (06:00 full pipeline + 08:00 data engineering, Europe/Copenhagen, disabled by default)
 
 ### `ddd_dlt/` — Extraction & export
 
@@ -200,7 +202,7 @@ All data-warehouse tracking columns use the `LKHS_` prefix:
 
 - **Bronze:** 53 views (18 DDD + 7 Rfam = 25 entities × main + `_latest` + 3 utility)
 - **Silver:** 50 models (25 CDC tables + 25 `_cv` current-version views)
-- **Gold:** 18 models (10 star-schema views + `_cv` views + handcrafted)
+- **Gold:** 19 models (10 star-schema views + 8 `_cv` views + `time` utility)
 
 ## Naming Conventions
 
@@ -325,7 +327,7 @@ pytest -v -k "incremental"                     # keyword filter
 | `test_scrub_secrets.py`           | Sensitive data masking                              |
 | `test_serialize_trace.py`         | Request tracing serialization                       |
 
-**Total: 92 tests across 12 modules** (unit + integration).
+**Total: 93 tests across 12 modules** (unit + integration).
 
 ## DuckDB Initialization
 

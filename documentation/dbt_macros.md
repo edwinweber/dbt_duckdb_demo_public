@@ -1,6 +1,6 @@
 # dbt Macros — Reference Documentation
 
-Last updated: March 2026
+Last updated: April 2026
 
 This document describes all 9 Jinja macros in `dbt/macros/`. They are the core
 building blocks of the pipeline: every Bronze view, every Silver CDC table, and
@@ -65,7 +65,7 @@ CAST(
 ```
 
 **Used by:** Gold layer models to generate surrogate dimension keys (e.g.,
-`dim_actor.actor_key`).
+`actor.actor_key`).
 
 **Trade-offs:** The remapping is not a true modular reduction — two distinct
 `UBIGINT` values can theoretically produce the same `BIGINT`. In practice,
@@ -243,9 +243,10 @@ the CDC logic and the critical operational rules around Bronze file management.
 ) }}
 ```
 
-**Used for:** The 12 full-extract entities (static reference tables where every
-extraction contains the complete current dataset). Examples: `afstemningstype`,
-`mødestatus`, `periode`, all Rfam tables except `family` and `genome`.
+**Used for:** The 17 full-extract entities (12 DDD + 5 Rfam — static reference
+tables where every extraction contains the complete current dataset). DDD
+examples: `afstemningstype`, `mødestatus`, `periode`. Rfam: `clan`,
+`clan_membership`, `author`, `literature_reference`, `dead_family`.
 
 **Parameters:**
 
@@ -301,9 +302,11 @@ duplicate rows if the model is re-run over the same file.
 ) }}
 ```
 
-**Used for:** The 6 incrementally extracted entities (high-volume, frequently
-changing tables filtered by `opdateringsdato` at extraction time). Examples:
-`aktør`, `møde`, `sag`, `sagstrin`, `sagstrinaktør`, `stemme`.
+**Used for:** The 8 incrementally extracted entities (6 DDD + 2 Rfam —
+high-volume, frequently changing tables filtered by a date column at extraction
+time). DDD examples (filtered by `opdateringsdato`): `aktør`, `møde`, `sag`,
+`sagstrin`, `sagstrinaktør`, `stemme`. Rfam (filtered by `updated`): `family`,
+`genome`.
 
 **Parameters:** Same signature as `generate_model_silver_full_extraction`.
 

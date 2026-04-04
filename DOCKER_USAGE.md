@@ -1,6 +1,6 @@
 # Docker Usage
 
-Last updated: March 2026
+Last updated: April 2026
 
 ## Prerequisites
 
@@ -26,12 +26,11 @@ into the Docker volumes so containers start with your current state:
 
 ## Running Services
 
-Three services cover all use cases:
+Two services cover all use cases:
 
 | Service | Purpose |
 | --- | --- |
 | `run` | Generic Python runner for one-off pipeline steps |
-| `duckdb-init` | Installs DuckDB extensions and creates a persistent Azure secret |
 | `dagster` | Dagster webserver + daemon, or one-off job execution |
 
 ### Pipeline Steps (via `run`)
@@ -58,17 +57,12 @@ docker compose run --rm run ddd_python.ddd_dlt.export_main_silver_to_fabric_silv
 docker compose run --rm run ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
 ```
 
-### Initialize DuckDB (via `duckdb-init`)
+### Initialize DuckDB (Automatic)
 
-Installs DuckDB extensions (httpfs, azure, delta) and creates a persistent Azure
-service principal secret via the DuckDB CLI. Use this **only** if you need the
-secret before running dbt (e.g., for ad-hoc CLI queries). Otherwise, the first
-`dbt build` or Dagster run creates the persistent secret automatically via
-`profiles.yml`.
-
-```bash
-docker compose run --rm duckdb-init
-```
+When `STORAGE_TARGET=onelake`, the Docker entrypoint automatically installs
+DuckDB extensions (httpfs, azure, delta) and creates a persistent Azure service
+principal secret. No separate command is needed — the first `dbt build` or
+Dagster run handles initialization transparently via `docker-entrypoint.sh`.
 
 ### Full Pipeline via Dagster (Single Command)
 

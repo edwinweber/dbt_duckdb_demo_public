@@ -24,8 +24,8 @@ Architecture summary
 
     ┌─────────────────────────────────────────────────────────────┐
     │  Schedule (disabled by default)                             │
-    │  └── 06:00 UTC daily → full_pipeline_job                    │
-    │      Layer ordering enforced by asset dependencies          │
+    │  └── 06:00 Europe/Copenhagen daily → full_pipeline_job       │
+    │      08:00 Europe/Copenhagen daily → dbt_data_engineering_job │
     └───────────────────────┬─────────────────────────────────────┘
                             │ triggers
     ┌───────────────────────▼─────────────────────────────────────┐
@@ -52,14 +52,14 @@ Architecture summary
     └──────────┬────────────────────────────────────┬─────────────┘
                │                                    │
     ┌──────────▼──────────────────────┐  ┌──────────▼─────────────┐
-    │  export_silver_job (18 assets)  │  │  dbt Gold models       │
+    │  export_silver_job (25 assets)  │  │  dbt Gold models       │
     │  DuckDB Silver → OneLake Delta  │  │  (group: ddd_gold)     │
     │  Incremental append             │  │  Star-schema views     │
     └─────────────────────────────────┘  └──────────┬─────────────┘
                                                     │
                                          ┌──────────▼─────────────┐
                                          │  export_gold_job       │
-                                         │  (9 assets)            │
+                                         │  (10 assets)           │
                                          │  DuckDB Gold → OneLake │
                                          │  Delta (full overwrite)│
                                          └────────────────────────┘

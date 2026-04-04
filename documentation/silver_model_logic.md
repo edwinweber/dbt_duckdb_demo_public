@@ -1,6 +1,6 @@
 # Silver Model Logic — SCD Type 2 via CDC
 
-Last updated: March 2026
+Last updated: April 2026
 
 This document explains the two Silver model macros used in this project. Both implement **Slowly Changing Dimension Type 2** (SCD Type 2) by detecting Insert, Update, and Delete operations through **Change Data Capture** (CDC) logic. The key difference is how they detect **deletes**, because the two Bronze extraction patterns provide different information.
 
@@ -15,8 +15,8 @@ This document explains the two Silver model macros used in this project. Both im
 | Aspect | Full Bronze Refresh | Incremental Bronze Refresh |
 | -------- | ------------------- | ------------------------- |
 | Macro | `generate_model_silver_full_extraction` | `generate_model_silver_incr_extraction` |
-| Bronze entities | 12 static/reference tables (aktoertype, moedestatus, periode, etc.) | 6 frequently changing tables (aktoer, moede, sag, sagstrin, sagstrinaktoer, stemme) |
-| Bronze data | Every extraction contains **all** records | Each extraction contains only **changed** records (filtered by `opdateringsdato`) |
+| Bronze entities | 17 static/reference tables (12 DDD: aktoertype, moedestatus, periode, etc. + 5 Rfam: clan, clan_membership, author, literature_reference, dead_family) | 8 frequently changing tables (6 DDD: aktoer, moede, sag, sagstrin, sagstrinaktoer, stemme + 2 Rfam: family, genome) |
+| Bronze data | Every extraction contains **all** records | Each extraction contains only **changed** records (filtered by `opdateringsdato` for DDD, `updated` for Rfam) |
 | Insert detection | Record exists in file N but not in file N-1 | First occurrence of a record (no previous hash) |
 | Update detection | Hash changed between file N-1 and file N | Hash changed between consecutive files for same id |
 | Delete detection | Record exists in file N but **not** in file N+1 | Only on `--full-refresh`: compare current version against latest Bronze file |

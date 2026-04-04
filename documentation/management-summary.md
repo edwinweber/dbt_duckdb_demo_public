@@ -1,10 +1,10 @@
 # Danish Democracy Data Pipeline — Technical Summary
 
-Last updated: March 2026
+Last updated: April 2026
 
 ## What This Project Is
 
-This is a **demo project** that builds a modern data engineering pipeline using low-cost tooling. It extracts open data from the Danish Parliament (Folketing) — 18 entities including members of parliament, meetings, cases, and votes — from the official OData REST API at `oda.ft.dk`, and transforms it through a medallion architecture (Bronze → Silver → Gold).
+This is a **demo project** that builds a modern data engineering pipeline using low-cost tooling. It extracts open data from two sources — the Danish Parliament (Folketing) (18 OData entities including members of parliament, meetings, cases, and votes) from the official REST API at `oda.ft.dk`, and the Rfam public MySQL database (7 tables of RNA family data) at EBI — and transforms it through a medallion architecture (Bronze → Silver → Gold).
 
 The pipeline supports two storage backends, switched via a single environment variable: **local storage** (free, fully offline — either Docker volumes or a plain local folder without Docker) or **Microsoft Fabric OneLake** (cloud, pay-per-use). The extraction, transformation, and orchestration layers are all open-source; Fabric is the only commercial component.
 
@@ -15,14 +15,15 @@ The pipeline supports two storage backends, switched via a single environment va
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         DAGSTER ORCHESTRATOR                            │
-│                   (daily schedule · 06:00 UTC)                          │
+│              (daily schedule · 06:00 Europe/Copenhagen)                 │
 │                                                                         │
 │  ┌─────────────┐     ┌──────────────────────┐     ┌──────────────────┐ │
 │  │  EXTRACT     │     │  TRANSFORM           │     │  EXPORT          │ │
 │  │  (dlt + py)  │────▶│  (dbt + DuckDB)      │────▶│  (deltalake +   │ │
 │  │              │     │                      │     │   pyarrow)       │ │
-│  │  18 entities │     │  SQL models          │     │  Delta Lake      │ │
-│  │  from API    │     │  + macros            │     │  tables          │ │
+│  │  25 entities  │     │  SQL models          │     │  Delta Lake      │ │
+│  │  from API +   │     │  + macros            │     │  tables          │ │
+│  │  SQL database │     │                      │     │                 │ │
 │  └──────┬───────┘     └──────────┬───────────┘     └────────┬─────────┘ │
 └─────────┼────────────────────────┼──────────────────────────┼───────────┘
           │                        │                          │
@@ -31,7 +32,7 @@ The pipeline supports two storage backends, switched via a single environment va
 │   BRONZE        │   │   SILVER              │   │   GOLD                │
 │   (JSON files)  │   │   (SCD Type 2 tables) │   │   (Analytic views)    │
 │                 │   │   CDC with hash-based  │   │   English names,      │
-│   18 entities   │   │   change detection     │   │   surrogate keys,     │
+│   25 entities   │   │   change detection     │   │   surrogate keys,     │
 │   as raw JSON   │   │   Full history kept    │   │   XML parsing         │
 └─────────────────┘   └───────────────────────┘   └───────────────────────┘
           │                        │                          │
@@ -52,7 +53,7 @@ The pipeline supports two storage backends, switched via a single environment va
 
 | Step | Tool | What Happens |
 | --- | --- | --- |
-| **Extract** | Python + dlt | 18 entities fetched from Danish Parliament API (6 incremental, 12 full). Written as timestamped JSON. |
+| **Extract** | Python + dlt | 18 entities fetched from Danish Parliament API (6 incremental, 12 full) + 7 tables from Rfam MySQL database (2 incremental, 5 full). Written as timestamped JSON. |
 | **Bronze** | dbt views | Raw JSON exposed as queryable views via DuckDB. |
 | **Silver** | dbt incremental tables | SCD Type 2 history with hash-based change detection. Inserts, updates, and deletes tracked. |
 | **Gold** | dbt views | Business-friendly English names, surrogate keys (signed BIGINT for Power BI compatibility), XML biography parsing, current-version views. |
@@ -62,7 +63,7 @@ The pipeline supports two storage backends, switched via a single environment va
 
 ## What It Demonstrates
 
-- **Medallion architecture** with full SCD Type 2 historical tracking across all 18 entities
+- **Medallion architecture** with full SCD Type 2 historical tracking across all 25 entities (18 DDD + 7 Rfam)
 - **Runs anywhere**: entirely on a laptop with Docker (free), or connected to Microsoft Fabric — same codebase
 - **Daily automation** via Dagster with health checks, sensors, and per-run log files
 - **Code-generated models**: dbt SQL models generated from macros and a Python generator for consistency
@@ -72,7 +73,6 @@ The pipeline supports two storage backends, switched via a single environment va
 
 This is a demo, not a production system. It demonstrates real-world patterns but does not include:
 
-- **Production hardening** — no comprehensive error handling, retry logic, or operational runbooks
 - **Real-time data** — batch only, daily schedule
 - **Alerting** — no email, Slack, or PagerDuty notifications
 - **Dashboards** — produces analytics-ready tables but no BI layer
@@ -112,14 +112,16 @@ This is a demo, not a production system. It demonstrates real-world patterns but
 
 ## Key Numbers
 
-As of March 2026:
+As of April 2026:
 
 | Metric | Value |
 | --- | --- |
-| Data source entities | 18 |
-| Incremental entities | 6 (date-filtered) |
-| Full-refresh entities | 12 |
-| Docker services | 3 (runner + DuckDB init + Dagster UI) |
+| Data source entities | 25 (18 DDD + 7 Rfam) |
+| DDD incremental entities | 6 (date-filtered) |
+| DDD full-refresh entities | 12 |
+| Rfam incremental tables | 2 (date-filtered) |
+| Rfam full-extract tables | 5 |
+| Docker services | 2 (runner + Dagster UI) |
 | License | MIT |
 
 > Model and macro counts change as the project evolves. Run `find dbt/models -name '*.sql' | wc -l` and `ls dbt/macros/*.sql | wc -l` for current counts.

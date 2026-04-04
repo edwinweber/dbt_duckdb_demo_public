@@ -22,8 +22,9 @@ danish_parliament_full_pipeline_schedule = ScheduleDefinition(
     execution_timezone="Europe/Copenhagen",
     description=(
         "Daily full pipeline at 06:00 Europe/Copenhagen — runs extraction → "
-        "dbt Bronze → Silver → Gold → export Silver → export Gold.  Layer "
-        "ordering is enforced by Dagster asset dependencies, not time offsets."
+        "dbt Bronze → Silver → Gold → export Silver → export Gold → Data "
+        "Engineering observability layer.  Layer ordering is enforced by "
+        "Dagster asset dependencies, not time offsets."
     ),
     default_status=DefaultScheduleStatus.STOPPED,
 )

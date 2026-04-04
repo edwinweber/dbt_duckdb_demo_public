@@ -1,8 +1,9 @@
 # Danish Democracy Data — dbt Project
 
-Last updated: March 2026
+Last updated: April 2026
 
-dbt transformation layer for the Danish Parliament (Folketing) open data pipeline.
+dbt transformation layer for the Danish Parliament (Folketing) open data and
+Rfam RNA family database pipeline.
 
 > For full project documentation — including extraction, orchestration, Docker usage,
 > and environment setup — see the [project README](../README.md).
@@ -11,7 +12,7 @@ dbt transformation layer for the Danish Parliament (Folketing) open data pipelin
 
 Medallion architecture with three layers:
 
-- **Bronze** (`+schema: bronze`, views) — Raw JSON ingested from the Danish Parliament OData API, read via DuckDB's `read_json_auto()` from local storage or OneLake (controlled by `STORAGE_TARGET`).
+- **Bronze** (`+schema: bronze`, views) — Raw JSON ingested from the Danish Parliament OData API and the Rfam public MySQL database, read via DuckDB's `read_json_auto()` from local storage or OneLake (controlled by `STORAGE_TARGET`).
 - **Silver** (`+schema: silver`, incremental append) — SCD Type 2 history with hash-based Change Data Capture (CDC). Each entity tracks inserts, updates, and deletes.
 - **Gold** (`+schema: gold`, views) — Business-friendly English names, surrogate keys, and star-schema dimensions/facts.
 

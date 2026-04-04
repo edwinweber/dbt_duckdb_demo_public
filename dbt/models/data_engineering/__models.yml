@@ -125,7 +125,7 @@ models:
       One row per unique Dagster asset key ever materialized.
       Parses the raw asset_key JSON path ({"path": ["group","layer","name"]})
       into individual path segments. Surrogate key asset_sk is consistent with
-      fct_asset_materialization.asset_sk.
+      dagster_asset_materialization.asset_sk.
     columns:
       - name: asset_sk
         description: Surrogate key — hash of asset_key_raw.
@@ -163,9 +163,9 @@ models:
       - name: asset_sk
         description: Surrogate key — hash of asset_key.
       - name: run_sk
-        description: FK to fct_run — hash of run_id.
+        description: FK to dagster_run — hash of run_id.
       - name: job_sk
-        description: FK to dim_dagster_job — hash of pipeline_name.
+        description: FK to dagster_job — hash of pipeline_name.
       - name: start_date_sk
         description: FK to gold.date (date_day) for the step start.
       - name: start_time_sk

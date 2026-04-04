@@ -152,14 +152,14 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 **Why chosen:**
 - Official integration maintained by the Dagster team; provides `DbtCliResource` and `@dbt_assets` decorator.
-- Version-pinned to `0.28.x` (matching `dagster 1.7.x`) to ensure compatibility.
+- Version-pinned to `0.28.x` (matching `dagster 1.12.x`) to ensure compatibility.
 
 ---
 
 ### Development & Testing (`[dev]`)
 
 #### `pytest` `>=8.0`
-**Role:** Test runner for all 92 tests across 12 modules (unit, integration, and end-to-end).
+**Role:** Test runner for all 93 tests across 12 modules (unit, integration, and end-to-end).
 
 **Why chosen:**
 - The dominant Python test framework; fixture system, parametrization, and plugin ecosystem make it suitable for both unit and integration tests.
@@ -170,7 +170,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 **Why chosen:**
 - Convenient for creating in-memory tabular data in tests; `pandas` DataFrame ↔ PyArrow Table conversion is lossless.
-- Kept as a `[dev]`-only dependency so the production image does not carry its weight.
+- Not declared as an explicit `[dev]` dependency in `pyproject.toml`; available as a transitive dependency of other packages. Used only in tests.
 
 ---
 
