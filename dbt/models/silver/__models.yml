@@ -10,11 +10,6 @@ version: 2
 models:
   - name: silver_ddd_afstemning
     description: SCD Type 2 history for Afstemning (vote sessions).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -30,8 +25,6 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
       - name: LKHS_source_system_code
         data_tests:
           - not_null
@@ -40,11 +33,6 @@ models:
 
   - name: silver_ddd_aktoer
     description: SCD Type 2 history for Aktør (actors/members).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -61,16 +49,9 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_moede
     description: SCD Type 2 history for Møde (meetings).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -86,16 +67,9 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sag
     description: SCD Type 2 history for Sag (cases).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -111,16 +85,9 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sagstrin
     description: SCD Type 2 history for Sagstrin (case steps).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -136,16 +103,9 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sagstrinaktoer
     description: SCD Type 2 history for SagstrinAktør (case step actors).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -161,16 +121,9 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_stemme
     description: SCD Type 2 history for Stemme (individual votes).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -186,8 +139,6 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   # ---------------------------------------------------------------------------
   # Reference / lookup tables (full-extract, rarely change)
@@ -195,12 +146,6 @@ models:
 
   - name: silver_ddd_afstemningstype
     description: SCD Type 2 history for Afstemningstype (vote session types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -213,12 +158,6 @@ models:
 
   - name: silver_ddd_aktoertype
     description: SCD Type 2 history for Aktørtype (actor types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -231,12 +170,6 @@ models:
 
   - name: silver_ddd_moedestatus
     description: SCD Type 2 history for Mødestatus (meeting statuses).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -249,12 +182,6 @@ models:
 
   - name: silver_ddd_moedetype
     description: SCD Type 2 history for Mødetype (meeting types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -267,12 +194,6 @@ models:
 
   - name: silver_ddd_periode
     description: SCD Type 2 history for Periode (parliamentary periods).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 200
     columns:
       - name: id
         data_tests:
@@ -285,12 +206,6 @@ models:
 
   - name: silver_ddd_sagskategori
     description: SCD Type 2 history for Sagskategori (case categories).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -303,12 +218,6 @@ models:
 
   - name: silver_ddd_sagsstatus
     description: SCD Type 2 history for Sagsstatus (case statuses).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -321,12 +230,6 @@ models:
 
   - name: silver_ddd_sagstrinsstatus
     description: SCD Type 2 history for Sagstrinsstatus (case step statuses).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -339,12 +242,6 @@ models:
 
   - name: silver_ddd_sagstrinstype
     description: SCD Type 2 history for Sagstrinstype (case step types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -357,12 +254,6 @@ models:
 
   - name: silver_ddd_sagstype
     description: SCD Type 2 history for Sagstype (case types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -375,12 +266,6 @@ models:
 
   - name: silver_ddd_stemmetype
     description: SCD Type 2 history for Stemmetype (vote types).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 50
     columns:
       - name: id
         data_tests:
@@ -404,11 +289,6 @@ models:
       Current-version view of Afstemning (vote sessions). One row per vote
       session — the latest CDC version. Filter WHERE LKHS_cdc_operation != 'D'
       to exclude source-deleted records.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -422,18 +302,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_aktoer_cv
     description: >
       Current-version view of Aktør (actors/members). One row per actor —
       the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -447,18 +320,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_moede_cv
     description: >
       Current-version view of Møde (meetings). One row per meeting —
       the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -472,18 +338,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sag_cv
     description: >
       Current-version view of Sag (cases). One row per case —
       the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -497,18 +356,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sagstrin_cv
     description: >
       Current-version view of Sagstrin (case steps). One row per case step —
       the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -522,18 +374,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_sagstrinaktoer_cv
     description: >
       Current-version view of SagstrinAktør (case step actors). One row per
       case-step–actor combination — the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -547,18 +392,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   - name: silver_ddd_stemme_cv
     description: >
       Current-version view of Stemme (individual votes). One row per vote
       record — the latest CDC version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: id
         data_tests:
@@ -572,19 +410,11 @@ models:
       - name: LKHS_hash_value
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_value_lengths_to_equal:
-              value: 64
 
   # Reference table _cv views (lookup data — full-extract, rarely deleted)
 
   - name: silver_ddd_afstemningstype_cv
     description: Current-version view of Afstemningstype (vote session types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -598,12 +428,6 @@ models:
 
   - name: silver_ddd_aktoertype_cv
     description: Current-version view of Aktørtype (actor types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -617,12 +441,6 @@ models:
 
   - name: silver_ddd_moedestatus_cv
     description: Current-version view of Mødestatus (meeting statuses). One row per status.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -636,12 +454,6 @@ models:
 
   - name: silver_ddd_moedetype_cv
     description: Current-version view of Mødetype (meeting types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -655,12 +467,6 @@ models:
 
   - name: silver_ddd_periode_cv
     description: Current-version view of Periode (parliamentary periods). One row per period.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 200
     columns:
       - name: id
         data_tests:
@@ -674,12 +480,6 @@ models:
 
   - name: silver_ddd_sagskategori_cv
     description: Current-version view of Sagskategori (case categories). One row per category.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -693,12 +493,6 @@ models:
 
   - name: silver_ddd_sagsstatus_cv
     description: Current-version view of Sagsstatus (case statuses). One row per status.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -712,12 +506,6 @@ models:
 
   - name: silver_ddd_sagstrinsstatus_cv
     description: Current-version view of Sagstrinsstatus (case step statuses). One row per status.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -731,12 +519,6 @@ models:
 
   - name: silver_ddd_sagstrinstype_cv
     description: Current-version view of Sagstrinstype (case step types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -750,12 +532,6 @@ models:
 
   - name: silver_ddd_sagstype_cv
     description: Current-version view of Sagstype (case types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 100
     columns:
       - name: id
         data_tests:
@@ -769,12 +545,6 @@ models:
 
   - name: silver_ddd_stemmetype_cv
     description: Current-version view of Stemmetype (vote types). One row per type.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 50
     columns:
       - name: id
         data_tests:

@@ -61,8 +61,18 @@ import os
 from pathlib import Path
 from typing import Any
 
-from dagster import AssetExecutionContext, AssetKey, AssetSpec, Config
-from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
+from dagster import AssetExecutionContext, AssetIn, AssetKey, Config, multi_asset
+from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject
+from dagster_dbt.asset_utils import (
+    DAGSTER_DBT_EXCLUDE_METADATA_KEY,
+    DAGSTER_DBT_SELECT_METADATA_KEY,
+    DAGSTER_DBT_SELECTOR_METADATA_KEY,
+    DBT_DEFAULT_EXCLUDE,
+    DBT_DEFAULT_SELECTOR,
+    build_dbt_specs,
+)
+from dagster_dbt.dagster_dbt_translator import validate_translator
+from dagster_dbt.dbt_manifest import validate_manifest
 
 # Write dbt logs to the mounted volume so they persist across container restarts.
 _DBT_LOG_PATH = os.getenv("DBT_LOGS_DIRECTORY", "/data/dbt_logs")
@@ -149,20 +159,53 @@ class DddDbtTranslator(DagsterDbtTranslator):
 
 # Shared translator instance used by all asset sets below
 _translator = DddDbtTranslator()
+_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
+
+
+def _dbt_multi_asset_with_metabase(*, select: str, name: str, extra_deps: list[AssetKey] | None = None):
+    manifest = validate_manifest(dbt_project.manifest_path)
+    translator = validate_translator(_translator)
+    specs, check_specs = build_dbt_specs(
+        translator=translator,
+        manifest=manifest,
+        select=select,
+        exclude=DBT_DEFAULT_EXCLUDE,
+        selector=DBT_DEFAULT_SELECTOR,
+        io_manager_key=None,
+        project=dbt_project,
+    )
+    merged_deps = [_STOP_METABASE_KEY, *(extra_deps or [])]
+    specs = [spec.merge_attributes(deps=merged_deps) for spec in specs]
+    op_tags = {
+        DAGSTER_DBT_SELECT_METADATA_KEY: select,
+        DAGSTER_DBT_EXCLUDE_METADATA_KEY: DBT_DEFAULT_EXCLUDE,
+        DAGSTER_DBT_SELECTOR_METADATA_KEY: DBT_DEFAULT_SELECTOR,
+    }
+
+    return multi_asset(
+        name=name,
+        specs=specs,
+        check_specs=check_specs,
+        can_subset=True,
+        op_tags=op_tags,
+        ins={"stop_metabase_asset": AssetIn(key=_STOP_METABASE_KEY)},
+        allow_arbitrary_check_specs=True,
+    )
 
 
 # ---------------------------------------------------------------------------
 # dbt assets — Seeds
 # ---------------------------------------------------------------------------
 
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    project=dbt_project,
+@_dbt_multi_asset_with_metabase(
     select="resource_type:seed",
     name="dbt_seeds_assets",
-    dagster_dbt_translator=_translator,
 )
-def dbt_seeds_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def dbt_seeds_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    stop_metabase_asset,
+):
     """Load all dbt seeds (static CSV reference data) into DuckDB.
 
     Executes ``dbt seed`` against the local DuckDB target.  Seeds are static
@@ -173,18 +216,24 @@ def dbt_seeds_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     yield from dbt.cli(["seed", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
+dbt_seeds_assets = dbt_seeds_assets.map_asset_specs(
+    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
+)
+
+
 # ---------------------------------------------------------------------------
 # dbt assets — Bronze layer
 # ---------------------------------------------------------------------------
 
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    project=dbt_project,
+@_dbt_multi_asset_with_metabase(
     select="bronze",
     name="dbt_bronze_assets",
-    dagster_dbt_translator=_translator,
 )
-def dbt_bronze_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def dbt_bronze_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    stop_metabase_asset,
+):
     """Run all dbt Bronze models (views that read raw JSON from OneLake).
 
     Executes ``dbt build --select bronze`` against the local DuckDB target.
@@ -198,18 +247,25 @@ def dbt_bronze_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
+dbt_bronze_assets = dbt_bronze_assets.map_asset_specs(
+    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
+)
+
+
 # ---------------------------------------------------------------------------
 # dbt assets — Silver layer
 # ---------------------------------------------------------------------------
 
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    project=dbt_project,
+@_dbt_multi_asset_with_metabase(
     select="silver",
     name="dbt_silver_assets",
-    dagster_dbt_translator=_translator,
 )
-def dbt_silver_assets(context: AssetExecutionContext, dbt: DbtCliResource, config: DbtSilverConfig):
+def dbt_silver_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    config: DbtSilverConfig,
+    stop_metabase_asset,
+):
     """Run all dbt Silver models (incremental CDC tables + current-version views).
 
     Executes ``dbt build --select silver`` against the local DuckDB target,
@@ -222,18 +278,24 @@ def dbt_silver_assets(context: AssetExecutionContext, dbt: DbtCliResource, confi
     yield from dbt.cli(args + ["--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
+dbt_silver_assets = dbt_silver_assets.map_asset_specs(
+    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
+)
+
+
 # ---------------------------------------------------------------------------
 # dbt assets — Gold layer
 # ---------------------------------------------------------------------------
 
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    project=dbt_project,
+@_dbt_multi_asset_with_metabase(
     select="gold",
     name="dbt_gold_assets",
-    dagster_dbt_translator=_translator,
 )
-def dbt_gold_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def dbt_gold_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    stop_metabase_asset,
+):
     """Run all dbt Gold models (dimensional views + fact table).
 
     Executes ``dbt build --select gold`` against the local DuckDB target,
@@ -249,18 +311,25 @@ def dbt_gold_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
+dbt_gold_assets = dbt_gold_assets.map_asset_specs(
+    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
+)
+
+
 # ---------------------------------------------------------------------------
 # dbt assets — Data Engineering layer
 # ---------------------------------------------------------------------------
 
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    project=dbt_project,
+@_dbt_multi_asset_with_metabase(
     select="data_engineering",
     name="dbt_data_engineering_assets",
-    dagster_dbt_translator=_translator,
+    extra_deps=[AssetKey(["export", "barrier_all_gold_exported"])],
 )
-def dbt_data_engineering_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def dbt_data_engineering_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    stop_metabase_asset,
+):
     """Run all dbt Data Engineering models (Dagster observability layer).
 
     Executes ``dbt build --select data_engineering`` against the local DuckDB
@@ -287,12 +356,3 @@ def dbt_data_engineering_assets(context: AssetExecutionContext, dbt: DbtCliResou
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
-# Add barrier_all_gold_exported as an upstream dep on every data_engineering
-# asset spec so that full_pipeline_job runs this layer after all Gold exports
-# have completed. When dbt_data_engineering_job runs standalone, Dagster
-# ignores deps that are not in the job's selection — so this does not block
-# standalone or scheduled execution.
-_barrier_key = AssetKey(["export", "barrier_all_gold_exported"])
-dbt_data_engineering_assets = dbt_data_engineering_assets.map_asset_specs(
-    lambda spec: spec.merge_attributes(deps=[_barrier_key])
-)

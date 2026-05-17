@@ -1,12 +1,18 @@
 FROM python:3.12
 
+ARG DOCKER_COMPOSE_VERSION=v2.39.4
+
 LABEL maintainer="Edwin" \
       version="1.0.0" \
       description="Danish Democracy Data — dbt/DuckDB/Dagster pipeline"
 
 # System dependencies for DuckDB, Azure SDK, and dbt
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl unzip ca-certificates && \
+    apt-get install -y --no-install-recommends git curl unzip ca-certificates docker-cli && \
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
     rm -rf /var/lib/apt/lists/*
 
 

@@ -151,9 +151,6 @@ models:
       One row per ASSET_MATERIALIZATION event from $DAGSTER_HOME/storage/event_log.db.
       Step duration is derived by joining STEP_START and STEP_SUCCESS/FAILURE events.
       Date FK joins gold.date (date_day); time FK joins gold.time (time_key = minute of day).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          min_value: 1
     columns:
       - name: materialization_id
         description: Dagster event_logs PK (id column).

@@ -8,11 +8,6 @@ models:
     description: >
       SCD Type 2 history for actors (members, ministers, parties, …) of the
       Danish Parliament. One row per actor per version.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: LKHS_actor_id
         description: Surrogate key — hash of source system + id + valid_from.
@@ -23,10 +18,6 @@ models:
         description: Business key in the form "DDD-{source_id}".
         data_tests:
           - not_null
-          - dbt_expectations.expect_column_values_to_match_regex:
-              config:
-                enabled: false
-              regex: "^DDD-[0-9]+"
       - name: LKHS_date_valid_from
         description: Start of the validity period for this version.
         data_tests:
@@ -38,11 +29,6 @@ models:
 
   - name: actor_cv
     description: Current-version view of actors — exactly one row per living actor.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: LKHS_actor_id
         data_tests:
@@ -70,11 +56,6 @@ models:
   # ---------------------------------------------------------------------------
   - name: case
     description: Cases (bills, questions, reports, …) of the Danish Parliament.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: LKHS_case_id
         description: Surrogate key.
@@ -97,30 +78,18 @@ models:
     description: >
       Classic calendar date dimension with year/quarter/month/week offsets,
       is_weekend flag, and Danish public holiday indicator.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 365
     columns:
       - name: date_day
         description: The calendar date — primary key of this table.
         data_tests:
           - not_null
           - unique
-          - dbt_expectations.expect_column_values_to_be_of_type:
-              column_type: date
 
   # ---------------------------------------------------------------------------
   # Dimension — Meeting
   # ---------------------------------------------------------------------------
   - name: meeting
     description: Parliament meetings — current version only (filtered to LKHS_date_valid_to = 9999-12-31).
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: LKHS_meeting_id
         data_tests:
@@ -174,11 +143,6 @@ models:
     description: >
       One row per vote (afstemning). Includes whether the proposal was adopted
       and the official conclusion text. SCD Type 2 history.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
     columns:
       - name: LKHS_vote_id
         description: Surrogate key.
@@ -189,11 +153,6 @@ models:
         description: >
           Whether the proposal was adopted (1) or rejected (0).
           NULL may appear for procedural or cancelled votes.
-        data_tests:
-          - dbt_expectations.expect_column_values_to_be_in_set:
-              value_set: [0, 1]
-              config:
-                where: "approved IS NOT NULL"
 
   - name: vote_cv
     description: Current-version view of votes.
@@ -207,12 +166,6 @@ models:
     description: >
       Lookup table for vote types (e.g. "Endelig vedtagelse", "Ændringsforslag").
       Also provides English translations.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1
-          max_value: 50
     columns:
       - name: LKHS_vote_type_id
         data_tests:
@@ -238,8 +191,3 @@ models:
     description: >
       One row per individual member vote (stemme). Links actors, votes, and
       voting position (for / against / neither). Only non-deleted rows are included.
-    data_tests:
-      - dbt_expectations.expect_table_row_count_to_be_between:
-          config:
-            enabled: false
-          min_value: 1

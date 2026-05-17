@@ -1,6 +1,31 @@
 # Path variables (DAGSTER_HOME, DLT_PIPELINES_DIR, DUCKDB_DATABASE_LOCATION, etc.)
 # are set in .env with local paths. The environment: overrides below remap them
 # to the container volume mount paths, taking precedence over env_file values.
+#
+# ── Host directory permissions ───────────────────────────────────────────────
+# Containers run as non-root (dagster=UID 1000, metabase=UID 2000). Two
+# containers access the same bind-mounted directories, so permissions must
+# allow both UIDs. The chosen approach is to keep host-user ownership and
+# open the shared directories to other processes (o+rx / o+rwx). This is
+# safe on a single-user machine where no other accounts exist.
+#
+# Run once on the host after creating /data:
+#
+#   # Host user owns everything (private by default)
+#   sudo chown -R $USER:$USER /data
+#   chmod -R 750 /data
+#
+#   # Metabase (UID 2000) owns its own state directories
+#   sudo chown -R 2000:2000 /data/metabase
+#
+#   # Shared directories: readable by all container processes
+#   #   o+rx  — other processes can read and traverse
+#   #   o+rwx — also writable, required for WAL/lock files created by
+#   #           DuckDB and SQLite even during read-only queries
+#   chmod -R o+rx  /data/local
+#   chmod -R o+rwx /data/duckdb
+#   chmod -R o+rwx /data/dagster
+# ─────────────────────────────────────────────────────────────────────────────
 
 x-path-overrides: &path-overrides
   DANISH_DEMOCRACY_BASE_URL: "https://oda.ft.dk/api"
@@ -44,21 +69,79 @@ services:
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
   # Full job: docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
+  # Run individual DDD-extraction in Dagster Launchpad:
+  # ops: {"ingestion__DDD__stemme": {"config": {"date_to_load_from": "2025-01-01"}}}
+  # resources:
+  #  dlt_onelake:
+  #   config:
+  #    source_system_code: DDD
   dagster:
     <<: *common
     command: ["dagster", "dev", "-w", "workspace.yaml", "-h", "0.0.0.0", "-p", "3000"]
     ports:
       - "3000:3000"
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - /data/dlt_pipelines:/data/dlt_pipelines
       - /data/duckdb:/data/duckdb
       - /data/dbt_logs:/data/dbt_logs
       - /data/dagster:/data/dagster
       - /data/local:/data/local
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # ── Metabase: BI / dashboarding on DuckDB via MotherDuck driver ─────────
+  # UI: docker compose up metabase  →  http://localhost:3001
+  # In the Metabase setup wizard choose "DuckDB" and set the database path to:
+  #   /data/duckdb/danish_democracy_data.duckdb
+  # The init-script for the DuckDB connection is:
+  # INSTALL icu; LOAD icu;
+  # INSTALL httpfs; LOAD httpfs;
+  # INSTALL delta; LOAD delta;
+  # INSTALL sqlite; LOAD sqlite;
+  metabase:
+    build:
+      context: .
+      dockerfile: Dockerfile.metabase
+    image: ddd-metabase:latest
+    container_name: ddd-metabase
+    ports:
+      - "3001:3000"
+    volumes:
+      - /data/duckdb:/data/duckdb
+      - /data/dagster:/data/dagster
+      - /data/local:/data/local:ro
+      - /data/metabase/data:/metabase-data
+      - /data/metabase/duckdb-extensions:/home/metabase/.duckdb/extensions
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s

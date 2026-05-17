@@ -57,6 +57,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 import traceback
 import warnings
@@ -71,6 +72,7 @@ from sqlalchemy import create_engine, text
 logger = logging.getLogger(__name__)
 
 from ddd_python.ddd_utils import get_variables_from_env
+from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
 
 # Ensure the dlt state directory exists — critical when running in Docker with a
 # freshly-mounted volume where the path does not yet exist in the container FS.
@@ -86,6 +88,10 @@ os.environ.setdefault("DESTINATION__FILESYSTEM__ENABLE_DATASET_NAME_NORMALIZATIO
 
 # Keys whose values are redacted in run logs to prevent credential leakage.
 _SENSITIVE_KEYS = frozenset({"connection_string", "secret", "password", "token"})
+
+# Truncate fractional seconds to microsecond precision when API timestamps carry
+# more than 6 decimal digits (e.g. 2025-01-01T12:34:56.1234567).
+_TS_MICROSEC = re.compile(r"(\.\d{6})\d+")
 
 
 def _scrub_secrets(params: dict) -> dict:
@@ -380,7 +386,11 @@ def run_api_to_file_pipeline(
                 )
             records: list = body["value"]
             num_rows += len(records)
-            yield from records                       # individual records — dlt sees real schema
+            for record in records:
+                yield {
+                    normalize_danish_name(k): _TS_MICROSEC.sub(r'\1', v) if isinstance(v, str) else v
+                    for k, v in record.items()
+                }
             api_url = body.get("odata.nextLink")     # follow OData pagination
 
     # Two @dlt.resource definitions are necessary here: the incremental variant

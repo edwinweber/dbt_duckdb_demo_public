@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from dagster import (
     AssetExecutionContext,
+    AssetKey,
     AssetsDefinition,
     Config,
     MaterializeResult,
@@ -42,6 +43,7 @@ class RfamExtractionConfig(Config):
 
 _SOURCE_SYSTEM_CODE = "RFAM"
 _PIPELINE_TYPE = "sql_to_file"
+_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
 _INCREMENTAL_NAMES: frozenset[str] = frozenset(
     configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
@@ -61,6 +63,7 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_incremental",
+        deps=[_STOP_METABASE_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{table_name}** from the Rfam MySQL "
@@ -138,6 +141,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_full_extract",
+        deps=[_STOP_METABASE_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{table_name}** from the Rfam MySQL "

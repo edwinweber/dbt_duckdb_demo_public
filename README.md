@@ -94,6 +94,7 @@ single environment variable:
 | SQL source connector | SQLAlchemy + PyMySQL (Rfam MySQL) |
 | Cloud storage (optional) | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
 | Data quality | dbt built-in tests + dbt-expectations |
+| Data visualization | Metabase (connects to DuckDB directly) |
 | Language | Python 3.12+ |
 
 ---
@@ -103,15 +104,26 @@ single environment variable:
 The recommended way to run the pipeline is via Docker — no local Python setup required.
 
 ```bash
-# Build the image
+# Build both images (pipeline + Metabase)
 docker compose build
 
 # Run the full pipeline end-to-end via Dagster
 docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
 
-# Or start the Dagster UI at http://localhost:3000
+# Start the Dagster UI at http://localhost:3000
 docker compose up dagster
+
+# Start Metabase at http://localhost:3001 (independently or alongside Dagster)
+docker compose up metabase
 ```
+
+The three Docker services are:
+
+| Service | Port | Purpose |
+| --- | --- | --- |
+| `run` | — | One-off Python module runner (`docker compose run --rm run <module>`) |
+| `dagster` | 3000 | Dagster webserver + daemon (mounts `/var/run/docker.sock` to control Metabase) |
+| `metabase` | 3001 | Metabase BI — connects directly to the DuckDB file |
 
 See [DOCKER_USAGE.md](DOCKER_USAGE.md) for the full Docker reference including
 individual pipeline steps, volume management, and troubleshooting.
@@ -146,8 +158,11 @@ individual pipeline steps, volume management, and troubleshooting.
 │   └── dagster.yaml            SQLite run/event/schedule storage config
 ├── .env.example                Template — copy to .env and fill in values
 ├── workspace.yaml              Dagster workspace entry-point
-├── Dockerfile                  Container image definition
-├── docker-compose.yml          Service definitions (run, dagster)
+├── Dockerfile                  Container image for the pipeline (Python 3.12 + DuckDB CLI)
+├── Dockerfile.metabase         Container image for Metabase with DuckDB driver
+├── docker-compose.yml          Service definitions (run, dagster, metabase)
+├── start_metabase_and_wait.sh  Starts the Metabase container and waits 120 s for it to initialize
+├── stop_metabase_and_wait.sh   Stops the Metabase container and waits 120 s for locks to clear
 ├── DOCKER_USAGE.md             Docker usage reference
 └── pyproject.toml              Project metadata and dependencies
 ```
@@ -410,6 +425,11 @@ constraint. The model lists for per-source-system selections are driven from
 `configuration_variables.py`, so adding a new entity automatically includes it
 in the correct job.
 
+Every job automatically stops Metabase before any work begins and restarts it
+after the last asset completes (including on failure). This is implemented via
+`stop_metabase_asset` and `start_metabase_asset` — two Dagster assets added to
+every job selection by the `_with_metabase_control()` helper in `jobs.py`.
+
 ---
 
 ## Local Storage Layout
@@ -516,6 +536,66 @@ Clean English-named views built on top of Silver `_cv` views:
 Surrogate keys are generated using DuckDB's built-in `hash()` function (64-bit),
 mapped from unsigned to signed `BIGINT` via the `cast_hash_to_bigint` macro for
 Power BI compatibility. Most Gold dimension tables also have a `_cv` (current-version) view.
+
+---
+
+## Data Visualization — Metabase
+
+Metabase is included as a BI layer that connects directly to the DuckDB file,
+allowing you to build dashboards and explore the Gold layer without any
+additional export step.
+
+### Setup
+
+1. Start the Metabase container:
+
+   ```bash
+   docker compose up metabase
+   ```
+
+2. Open **<http://localhost:3001>** and complete the first-time setup wizard.
+
+3. When prompted to add a database, choose **DuckDB** and set the database path to:
+
+   ```text
+   /data/duckdb/danish_democracy_data.duckdb
+   ```
+
+4. In the DuckDB connection init script field, enter:
+
+   ```sql
+   INSTALL icu; LOAD icu;
+   INSTALL httpfs; LOAD httpfs;
+   INSTALL delta; LOAD delta;
+   INSTALL sqlite; LOAD sqlite;
+   ```
+
+After connecting, Metabase can query all schemas: `bronze`, `silver`, `gold`,
+and `data_engineering`. The Gold layer (`actor`, `vote`, `case`, `meeting`, etc.)
+is the most natural starting point for dashboards.
+
+### Metabase Lifecycle During Pipeline Runs
+
+DuckDB enforces a **single-writer** constraint: only one process may hold a
+read-write connection at a time. Because Metabase keeps an open connection to
+the DuckDB file, it must be stopped before a pipeline run writes new data and
+restarted afterward.
+
+This is handled automatically by two Dagster assets that bookend every job:
+
+| Asset | Behaviour |
+| --- | --- |
+| `stop_metabase_asset` | Stops the `ddd-metabase` Docker container and waits 120 s for existing connections and WAL locks to clear. Runs as the **first** asset in every job. |
+| `start_metabase_asset` | Starts the `ddd-metabase` container and waits 120 s for Metabase to initialize. Runs as the **last** asset in every job — including on failure, so Metabase is always brought back up. |
+
+The underlying shell scripts (`stop_metabase_and_wait.sh` /
+`start_metabase_and_wait.sh`) fall back to `sudo docker` automatically if the
+current user does not have direct Docker socket access. The Dagster container
+mounts `/var/run/docker.sock` so it can issue Docker commands to the host.
+
+The `_with_metabase_control()` helper in `jobs.py` wraps every job's
+`AssetSelection` with these two assets, so all 18 jobs benefit from the
+lifecycle management without any per-job boilerplate.
 
 ---
 
@@ -691,6 +771,7 @@ for a detailed walkthrough with compiled SQL examples.
 | Extraction | `multiprocess_executor (max 4)` | I/O bound — concurrent HTTP + file writes safe |
 | Export | `multiprocess_executor (max 4)` | I/O bound — concurrent Delta Lake writes safe |
 | dbt | `in_process_executor` | DuckDB single-writer constraint |
+| Metabase lifecycle | n/a — asset bookends | DuckDB single-writer: Metabase stopped before every job, restarted after |
 
 ---
 
@@ -724,6 +805,9 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 | dbt uses wrong output profile | `STORAGE_TARGET` mismatch | `dbt/profiles.yml` selects the `local` or `onelake` output based on `STORAGE_TARGET` — ensure `.env` is set correctly |
 | Azure credential errors in local mode | `STORAGE_TARGET=onelake` set accidentally | Set `STORAGE_TARGET=local` in `.env`; no Azure vars are needed |
 | dbt models missing (empty `models/` dir) | Model generation not run | Run `python -m ddd_python.ddd_dbt.generate_dbt_models` |
+| Metabase not reachable after a pipeline run | `start_metabase_asset` failed or container not started | Run `docker compose up metabase` or check the `start_metabase_asset` log in the Dagster UI |
+| DuckDB write error while Metabase is running | Metabase holds an open connection; `stop_metabase_asset` was not triggered | Stop Metabase manually (`docker stop ddd-metabase`) before writing, or run the job from the Dagster UI which manages this automatically |
+| `Permission denied` on `/var/run/docker.sock` | Dagster container cannot control Docker | Ensure the Dagster service's user belongs to the `docker` group, or that the socket is mounted with appropriate permissions |
 
 ---
 

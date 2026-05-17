@@ -45,6 +45,7 @@ from datetime import datetime, timedelta, timezone
 
 from dagster import (
     AssetExecutionContext,
+    AssetKey,
     AssetsDefinition,
     Config,
     MaterializeResult,
@@ -77,6 +78,7 @@ class ExtractionConfig(Config):
 
 _SOURCE_SYSTEM_CODE = "DDD"
 _PIPELINE_TYPE = "api_to_file"
+_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
 _INCREMENTAL_NAMES: frozenset[str] = frozenset(
     configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
@@ -128,6 +130,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_incremental",
+        deps=[_STOP_METABASE_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{api_resource}** from the Danish "
@@ -224,6 +227,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_full_extract",
+        deps=[_STOP_METABASE_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{api_resource}** from the Danish Parliament "

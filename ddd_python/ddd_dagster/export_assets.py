@@ -44,6 +44,8 @@ from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
 from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
 
+_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
+
 # All Silver table names (DDD + Rfam) — used to build barrier deps.
 _ALL_SILVER_TABLES: list[str] = (
     configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
@@ -59,7 +61,8 @@ _ALL_SILVER_TABLES: list[str] = (
     name="barrier_dbt_gold_complete",
     key_prefix=["export"],
     group_name="export_silver",
-    deps=[
+    deps=[_STOP_METABASE_KEY]
+    + [
         AssetKey(["gold", name])
         for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
     ],
@@ -86,6 +89,7 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
         key_prefix=["export", "silver"],
         group_name="export_silver",
         deps=[
+            _STOP_METABASE_KEY,
             AssetKey(["silver", table_name]),
             AssetKey(["export", "barrier_dbt_gold_complete"]),
         ],
@@ -138,7 +142,8 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
     name="barrier_all_silver_exported",
     key_prefix=["export"],
     group_name="export_silver",
-    deps=[
+    deps=[_STOP_METABASE_KEY]
+    + [
         AssetKey(["export", "silver", f"export_{name}"])
         for name in _ALL_SILVER_TABLES
     ],
@@ -165,6 +170,7 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
         key_prefix=["export", "gold"],
         group_name="export_gold",
         deps=[
+            _STOP_METABASE_KEY,
             AssetKey(["gold", table_name]),
             AssetKey(["export", "barrier_all_silver_exported"]),
         ],
@@ -233,7 +239,8 @@ export_gold_assets: list[AssetsDefinition] = [
     name="barrier_all_gold_exported",
     key_prefix=["export"],
     group_name="export_gold",
-    deps=[
+    deps=[_STOP_METABASE_KEY]
+    + [
         AssetKey(["export", "gold", f"export_{name}"])
         for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
     ],

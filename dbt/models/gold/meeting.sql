@@ -29,7 +29,7 @@ SELECT  meeting.LKHS_meeting_id
 ,       meeting.nummer                        AS meeting_number
 ,       meeting.offentlighedskode             AS public_code
 ,       meeting.opdateringsdato               AS meeting_updated_at
-,       meeting.starttidsbem_rkning           AS meeting_start_time_note
+,       meeting.starttidsbemaerkning          AS meeting_start_time_note
 ,       meeting.titel                         AS meeting_title
 ,       meeting_type.meeting_type_danish
 ,       meeting_type.meeting_type_english

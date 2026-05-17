@@ -92,19 +92,24 @@ _DBT_SILVER_DEFAULT_CONFIG = {
     }
 }
 
+
+def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
+    return (
+        AssetSelection.keys("stop_metabase_asset")
+        | selection
+        | AssetSelection.keys("start_metabase_asset")
+    )
+
 # ---------------------------------------------------------------------------
 # Shared executor: 4-way concurrency, mirrors ThreadPoolExecutor(max_workers=4)
 # ---------------------------------------------------------------------------
 
 _concurrent_executor = multiprocess_executor.configured({"max_concurrent": 4})
 
-# ---------------------------------------------------------------------------
-# Job definitions
-# ---------------------------------------------------------------------------
 
 danish_parliament_incremental_job = define_asset_job(
     name="danish_parliament_incremental_job",
-    selection=AssetSelection.groups("ingestion_DDD_incremental"),
+    selection=_with_metabase_control(AssetSelection.groups("ingestion_DDD_incremental")),
     executor_def=_concurrent_executor,
     config=_DDD_INCREMENTAL_CONFIG,
     description=(
@@ -121,7 +126,7 @@ danish_parliament_incremental_job = define_asset_job(
 
 danish_parliament_full_extract_job = define_asset_job(
     name="danish_parliament_full_extract_job",
-    selection=AssetSelection.groups("ingestion_DDD_full_extract"),
+    selection=_with_metabase_control(AssetSelection.groups("ingestion_DDD_full_extract")),
     executor_def=_concurrent_executor,
     description=(
         "Full extraction of the 12 Danish Parliament resources that are always "
@@ -138,7 +143,9 @@ danish_parliament_full_extract_job = define_asset_job(
 
 danish_parliament_all_job = define_asset_job(
     name="danish_parliament_all_job",
-    selection=AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract"),
+    selection=_with_metabase_control(
+        AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract")
+    ),
     executor_def=_concurrent_executor,
     config=_DDD_INCREMENTAL_CONFIG,
     description=(
@@ -159,7 +166,7 @@ danish_parliament_all_job = define_asset_job(
 
 rfam_incremental_job = define_asset_job(
     name="rfam_incremental_job",
-    selection=AssetSelection.groups("ingestion_RFAM_incremental"),
+    selection=_with_metabase_control(AssetSelection.groups("ingestion_RFAM_incremental")),
     executor_def=_concurrent_executor,
     config=_RFAM_INCREMENTAL_CONFIG,
     description=(
@@ -175,7 +182,7 @@ rfam_incremental_job = define_asset_job(
 
 rfam_full_extract_job = define_asset_job(
     name="rfam_full_extract_job",
-    selection=AssetSelection.groups("ingestion_RFAM_full_extract"),
+    selection=_with_metabase_control(AssetSelection.groups("ingestion_RFAM_full_extract")),
     executor_def=_concurrent_executor,
     description=(
         "Full extraction of the 5 small Rfam lookup tables that are always "
@@ -190,7 +197,9 @@ rfam_full_extract_job = define_asset_job(
 
 rfam_all_job = define_asset_job(
     name="rfam_all_job",
-    selection=AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract"),
+    selection=_with_metabase_control(
+        AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract")
+    ),
     executor_def=_concurrent_executor,
     config=_RFAM_INCREMENTAL_CONFIG,
     description=(
@@ -276,7 +285,7 @@ def _data_engineering_selection():
 
 dbt_seeds_job = define_asset_job(
     name="dbt_seeds_job",
-    selection=_seeds_selection(),
+    selection=_with_metabase_control(_seeds_selection()),
     executor_def=in_process_executor,
     description=(
         "Loads all dbt seeds (static CSV reference data) into local DuckDB "
@@ -292,7 +301,7 @@ dbt_seeds_job = define_asset_job(
 
 dbt_bronze_job = define_asset_job(
     name="dbt_bronze_job",
-    selection=_bronze_selection(),
+    selection=_with_metabase_control(_bronze_selection()),
     executor_def=in_process_executor,
     description=(
         "Runs all dbt Bronze models for all source systems (DDD + RFAM).  "
@@ -309,7 +318,7 @@ dbt_bronze_job = define_asset_job(
 
 dbt_bronze_ddd_job = define_asset_job(
     name="dbt_bronze_ddd_job",
-    selection=_bronze_ddd_selection(),
+    selection=_with_metabase_control(_bronze_ddd_selection()),
     executor_def=in_process_executor,
     description=(
         "Runs dbt Bronze models for the DDD (Danish Parliament) source system "
@@ -324,7 +333,7 @@ dbt_bronze_ddd_job = define_asset_job(
 
 dbt_bronze_rfam_job = define_asset_job(
     name="dbt_bronze_rfam_job",
-    selection=_bronze_rfam_selection(),
+    selection=_with_metabase_control(_bronze_rfam_selection()),
     executor_def=in_process_executor,
     description=(
         "Runs dbt Bronze models for the RFAM source system only.  "
@@ -339,7 +348,7 @@ dbt_bronze_rfam_job = define_asset_job(
 
 dbt_silver_job = define_asset_job(
     name="dbt_silver_job",
-    selection=_silver_selection(),
+    selection=_with_metabase_control(_silver_selection()),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
@@ -357,7 +366,7 @@ dbt_silver_job = define_asset_job(
 
 dbt_silver_ddd_job = define_asset_job(
     name="dbt_silver_ddd_job",
-    selection=_silver_ddd_selection(),
+    selection=_with_metabase_control(_silver_ddd_selection()),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
@@ -374,7 +383,7 @@ dbt_silver_ddd_job = define_asset_job(
 
 dbt_silver_rfam_job = define_asset_job(
     name="dbt_silver_rfam_job",
-    selection=_silver_rfam_selection(),
+    selection=_with_metabase_control(_silver_rfam_selection()),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
@@ -391,7 +400,7 @@ dbt_silver_rfam_job = define_asset_job(
 
 dbt_gold_job = define_asset_job(
     name="dbt_gold_job",
-    selection=_gold_selection(),
+    selection=_with_metabase_control(_gold_selection()),
     executor_def=in_process_executor,
     description=(
         "Runs all dbt Gold models (dimensional views and the individual_votes "
@@ -408,7 +417,7 @@ dbt_gold_job = define_asset_job(
 
 dbt_data_engineering_job = define_asset_job(
     name="dbt_data_engineering_job",
-    selection=_data_engineering_selection(),
+    selection=_with_metabase_control(_data_engineering_selection()),
     executor_def=in_process_executor,
     description=(
         "Refreshes the Data Engineering observability layer in DuckDB.  "
@@ -432,7 +441,7 @@ dbt_data_engineering_job = define_asset_job(
 
 export_silver_job = define_asset_job(
     name="export_silver_job",
-    selection=AssetSelection.groups("export_silver"),
+    selection=_with_metabase_control(AssetSelection.groups("export_silver")),
     executor_def=_concurrent_executor,
     description=(
         "Exports all Silver tables from DuckDB to OneLake as Delta "
@@ -448,7 +457,7 @@ export_silver_job = define_asset_job(
 
 export_gold_job = define_asset_job(
     name="export_gold_job",
-    selection=AssetSelection.groups("export_gold"),
+    selection=_with_metabase_control(AssetSelection.groups("export_gold")),
     executor_def=_concurrent_executor,
     description=(
         "Exports all Gold tables from DuckDB to OneLake as Delta "
@@ -483,7 +492,7 @@ def _full_pipeline_selection():
 
 full_pipeline_job = define_asset_job(
     name="full_pipeline_job",
-    selection=_full_pipeline_selection(),
+    selection=_with_metabase_control(_full_pipeline_selection()),
     executor_def=in_process_executor,
     config={"ops": {**_DDD_INCREMENTAL_CONFIG["ops"], **_RFAM_INCREMENTAL_CONFIG["ops"], **_DBT_SILVER_DEFAULT_CONFIG["ops"]}},
     description=(

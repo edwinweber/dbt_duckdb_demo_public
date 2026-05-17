@@ -46,9 +46,9 @@ LEFT JOIN individual_voting_type
 LEFT JOIN vote_silver
        ON individual_vote.afstemningid = vote_silver.id
 LEFT JOIN meeting
-       ON CONCAT(vote_silver.LKHS_source_system_code,'-',CAST(vote_silver.m_deid AS VARCHAR)) = meeting.meeting_bk
+       ON CONCAT(vote_silver.LKHS_source_system_code,'-',CAST(vote_silver.moedeid AS VARCHAR)) = meeting.meeting_bk
 LEFT JOIN actor
-       ON CONCAT(individual_vote.LKHS_source_system_code,'-',CAST(individual_vote.akt_rid AS VARCHAR)) = actor.actor_bk
+       ON CONCAT(individual_vote.LKHS_source_system_code,'-',CAST(individual_vote.aktoerid AS VARCHAR)) = actor.actor_bk
 LEFT JOIN case_gold
        ON CONCAT(vote_silver.LKHS_source_system_code,'-',CAST(vote_silver.sagstrinid AS VARCHAR)) = case_gold.case_bk
 LEFT JOIN vote

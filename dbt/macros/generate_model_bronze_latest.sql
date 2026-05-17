@@ -9,7 +9,7 @@ SELECT DISTINCT COLUMNS(c -> c != 'filename' AND NOT starts_with(c, '_dlt_'))
 ,      SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
 ,      '{{ source_system_code }}' AS LKHS_source_system_code
 ,      'N' AS LKHS_deleted_ind
-FROM   read_json_auto('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*', filename=True)
+FROM   read_json_auto('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*', filename=True, timestampformat='iso')
 WHERE  filename = (SELECT most_recent_file FROM cte_most_recent_file)
 {%- endmacro -%}
 
