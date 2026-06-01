@@ -62,8 +62,9 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
     glob_json = os.path.join(source_dir, "item", "item_*.json*")
 
     # Step 1: Create Bronze view
+    conn.execute("CREATE SCHEMA IF NOT EXISTS main_bronze")
     conn.execute(f"""
-        CREATE OR REPLACE VIEW bronze_item AS
+        CREATE OR REPLACE VIEW main_bronze.bronze_item AS
         SELECT DISTINCT
                COLUMNS(c -> c != 'filename' AND NOT starts_with(c, '_dlt_'))
         ,      SUBSTRING(filename,
@@ -82,7 +83,7 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
                    COALESCE(src.price::VARCHAR, '<NULL>'), ']##['
                )) AS LKHS_hash_value
         ,      CAST(MIN(src.updated) OVER (PARTITION BY src.id) AS DATETIME) AS LKHS_date_inserted_src
-        FROM   bronze_item src
+        FROM   main_bronze.bronze_item src
     )
     ,CTE_FILES AS (
         SELECT LKHS_filename
@@ -121,7 +122,8 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
                 WHEN b.LKHS_pk_prev IS NOT NULL AND b.LKHS_hash_value != b.LKHS_hash_value_previous THEN 'U'
             END IN ('I', 'U')
     """
-    conn.execute(f"CREATE TABLE silver_item AS ({cdc_sql})")
+    conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+    conn.execute(f"CREATE TABLE main_silver.silver_item AS ({cdc_sql})")
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -132,11 +134,11 @@ def test_e2e_bronze_to_silver_row_count(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    count = conn.execute("SELECT COUNT(*) FROM silver_item").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM main_silver.silver_item").fetchone()[0]
     assert count == 4
 
     ops = conn.execute(
-        "SELECT LKHS_cdc_operation, COUNT(*) FROM silver_item GROUP BY 1 ORDER BY 1"
+        "SELECT LKHS_cdc_operation, COUNT(*) FROM main_silver.silver_item GROUP BY 1 ORDER BY 1"
     ).fetchdf()
     op_dict = dict(zip(ops.iloc[:, 0], ops.iloc[:, 1]))
     assert op_dict["I"] == 3  # rows 1,2 from file1 + row 3 from file2
@@ -149,7 +151,7 @@ def test_e2e_silver_to_delta_first_load(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM main_silver.silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -165,7 +167,7 @@ def test_e2e_incremental_export_no_duplicates(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM main_silver.silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -179,7 +181,7 @@ def test_e2e_incremental_export_no_duplicates(e2e_fixture):
 
     new_rows = conn.execute("""
         SELECT src.*
-        FROM   silver_item src
+        FROM   main_silver.silver_item src
         LEFT JOIN target_table tgt
                ON src.id = tgt.id
               AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from
@@ -195,7 +197,7 @@ def test_e2e_incremental_export_appends_new_rows(e2e_fixture):
     conn = duckdb.connect(":memory:")
     _run_cdc_sql(conn, e2e_fixture["source_dir"])
 
-    arrow_table = conn.execute("SELECT * FROM silver_item").to_arrow_table()
+    arrow_table = conn.execute("SELECT * FROM main_silver.silver_item").to_arrow_table()
     delta_path = e2e_fixture["delta_dir"]
     os.makedirs(delta_path, exist_ok=True)
 
@@ -224,7 +226,7 @@ def test_e2e_incremental_export_appends_new_rows(e2e_fixture):
 
     new_rows = conn2.execute("""
         SELECT src.*
-        FROM   silver_item src
+        FROM   main_silver.silver_item src
         LEFT JOIN target_table tgt
                ON src.id = tgt.id
               AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from

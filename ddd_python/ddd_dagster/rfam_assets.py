@@ -12,7 +12,7 @@ The factory pattern mirrors ``assets.py`` (DDD) so the two source systems
 are architecturally consistent.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from dagster import (
     AssetExecutionContext,
@@ -25,7 +25,9 @@ from dagster import (
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY, build_bronze_destination_path
+from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 
 
@@ -82,11 +84,11 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
     ) -> MaterializeResult:
         logger = context.log
 
-        if config.date_to_load_from is not None:
-            date_from = config.date_to_load_from
-        else:
-            default_days = get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD
-            date_from = f"{datetime.now(timezone.utc) - timedelta(days=default_days):%Y-%m-%d}"
+        date_from = resolve_date_to_load_from(
+            config.date_to_load_from,
+            get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD,
+            datetime.now(timezone.utc),
+        )
 
         logger.info(
             "START incremental extraction — table=%s  date_from=%s",

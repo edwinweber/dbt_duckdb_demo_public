@@ -117,13 +117,14 @@ docker compose up dagster
 docker compose up metabase
 ```
 
-The three Docker services are:
+The four Docker services are:
 
 | Service | Port | Purpose |
 | --- | --- | --- |
 | `run` | — | One-off Python module runner (`docker compose run --rm run <module>`) |
 | `dagster` | 3000 | Dagster webserver + daemon (mounts `/var/run/docker.sock` to control Metabase) |
 | `metabase` | 3001 | Metabase BI — connects directly to the DuckDB file |
+| `backup` | — | One-off backup of Dagster and Metabase state (`docker compose run --rm backup`) |
 
 See [DOCKER_USAGE.md](DOCKER_USAGE.md) for the full Docker reference including
 individual pipeline steps, volume management, and troubleshooting.
@@ -160,7 +161,7 @@ individual pipeline steps, volume management, and troubleshooting.
 ├── workspace.yaml              Dagster workspace entry-point
 ├── Dockerfile                  Container image for the pipeline (Python 3.12 + DuckDB CLI)
 ├── Dockerfile.metabase         Container image for Metabase with DuckDB driver
-├── docker-compose.yml          Service definitions (run, dagster, metabase)
+├── docker-compose.yml          Service definitions (run, dagster, metabase, backup)
 ├── start_metabase_and_wait.sh  Starts the Metabase container and waits 120 s for it to initialize
 ├── stop_metabase_and_wait.sh   Stops the Metabase container and waits 120 s for locks to clear
 ├── DOCKER_USAGE.md             Docker usage reference
@@ -591,7 +592,8 @@ This is handled automatically by two Dagster assets that bookend every job:
 The underlying shell scripts (`stop_metabase_and_wait.sh` /
 `start_metabase_and_wait.sh`) fall back to `sudo docker` automatically if the
 current user does not have direct Docker socket access. The Dagster container
-mounts `/var/run/docker.sock` so it can issue Docker commands to the host.
+mounts `/var/run/docker.sock` and is added to the socket's group via
+`DOCKER_GID` in `.env` so the non-root `app` user can issue Docker commands.
 
 The `_with_metabase_control()` helper in `jobs.py` wraps every job's
 `AssetSelection` with these two assets, so all 18 jobs benefit from the
@@ -790,6 +792,181 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ---
 
+## Backup and Restore
+
+The platform includes a built-in backup system for the two stateful services:
+**Dagster** (run history, event logs, schedule state) and **Metabase** (dashboards,
+questions, user configuration). Each backup produces one timestamped zip archive
+per service, stored locally and optionally uploaded to a Hetzner StorageBox for
+off-site retention.
+
+Backups run inside the existing `backup` Docker Compose service — no Python or
+additional tooling is needed on the host, only Docker.
+
+### What Gets Backed Up
+
+| Target | Container name | Source directory | Local backup directory |
+| --- | --- | --- | --- |
+| `dagster` | `ddd-dagster` | `/data/dagster` | `/data_backup/dagster/` |
+| `metabase` | `ddd-metabase` | `/data/metabase/data` | `/data_backup/metabase/` |
+
+Archives are named `{target}_{YYYYMMDD_HHMMSS}.zip` — for example
+`dagster_20260526_020000.zip`. Each backup run also appends one NDJSON record
+per target to `/data_backup/logs/backup_log_{timestamp}.ndjson`.
+
+### Environment Variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DAGSTER_HOME` | All | Dagster data directory (backup source) — default `/data/dagster` |
+| `METABASE_DATA_DIR` | All | Metabase data directory (backup source) — default `/data/metabase/data` |
+| `ENVIRONMENT` | All | `DEV` or `PROD` — routes StorageBox uploads to the matching subdirectory |
+| `HETZNER_STORAGEBOX_HOST` | StorageBox | StorageBox hostname (upload skipped when absent) |
+| `HETZNER_STORAGEBOX_USER` | StorageBox | SSH user |
+| `HETZNER_STORAGEBOX_PORT` | StorageBox | SSH port — Hetzner always uses `23` |
+| `HETZNER_STORAGEBOX_REMOTE_DIR` | StorageBox | Base remote path; archives go to `<base>/<env>/` |
+| `HETZNER_STORAGEBOX_SSH_KEY` | StorageBox | Path to SSH private key inside the container (e.g. `/home/app/.ssh/id_ed25519`); falls back to the default key when absent. Set `HOST_SSH_DIR` in `.env` to the host directory containing the key — it is mounted at `/home/app/.ssh` |
+
+### Running a Backup
+
+```bash
+# Back up all targets (Dagster + Metabase)
+docker compose run --rm backup
+
+# Back up a single target
+docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets dagster
+docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets metabase
+```
+
+The backup:
+
+1. Checks which of the relevant containers (`ddd-dagster`, `ddd-metabase`) are running.
+2. Stops only the running ones gracefully (`docker stop`, waits for exit).
+3. Waits 30 seconds for databases to flush WAL to disk (`FLUSH_WAIT_SECONDS` env var overrides this; set to `0` for local/dev runs).
+4. Creates a deflate-compressed zip archive and verifies every entry for CRC errors.
+5. Uploads the archive to the Hetzner StorageBox via rsync/SSH (skipped when credentials are absent).
+6. Purges local archives older than 62 days.
+7. Restarts the containers that were stopped in step 2 — always, even on failure.
+
+### Scheduling with Cron
+
+Use `scripts/setup_backup_cron.sh` to install the cron entry on the host:
+
+```bash
+# Preview what will be added (dry run):
+scripts/setup_backup_cron.sh
+
+# Write to crontab:
+scripts/setup_backup_cron.sh --install
+```
+
+This installs a daily job at 02:00 UTC that runs `docker compose run --rm backup`
+from the repository directory and appends output to `/data_backup/logs/cron.log`.
+`DOCKER_HOST` is set inline in the cron entry so Docker is reachable without
+inheriting the shell environment.
+
+To install manually instead:
+
+```cron
+# Daily backup of all targets at 02:00 UTC
+0 2 * * * DOCKER_HOST=unix:///var/run/docker.sock cd "/path/to/repo" && docker compose run --rm backup >> /data_backup/logs/cron.log 2>&1
+```
+
+### Restoring From a Backup
+
+Restores also run via the `backup` service, which has all the necessary volume
+mounts (source directories, backup archives, Docker socket):
+
+```bash
+# Restore all targets from the most recent backup (interactive confirmation)
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform
+
+# Non-interactive (for scripted use)
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --yes
+
+# Restore a specific timestamp
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --timestamp 20260526_020000
+
+# Restore a single target
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --targets dagster --yes
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --targets metabase --yes
+```
+
+The restore script resolves all archive paths before touching any live data
+(fail-fast), then stops the relevant containers, extracts the zip archives
+in-place (overwriting existing files), and restarts the containers.
+
+Metabase data is owned by UID 2000 inside the container. The restore script
+handles this automatically by running the extraction inside a temporary Docker
+container as that UID, so restored files carry the correct ownership.
+
+### Retention
+
+| Location | Retention |
+| --- | --- |
+| Local (`/data_backup/`) | 62 days — older archives are pruned at the end of each backup run |
+| Hetzner StorageBox | Forever — archives are uploaded with rsync and never deleted remotely |
+
+### Querying the Backup Log
+
+Every backup run appends one NDJSON record per target to
+`/data_backup/logs/backup_log_{timestamp}.ndjson`. Query all runs with DuckDB:
+
+```sql
+SELECT
+    run_started_at,
+    target,
+    status,
+    archive_name,
+    archive_size_mb,
+    archive_verified,
+    uploaded_to_storagebox,
+    duration_seconds,
+    error_message
+FROM read_json_auto('/data_backup/logs/backup_log_*.ndjson')
+ORDER BY run_started_at DESC;
+```
+
+---
+
+## Production Infrastructure
+
+The production environment runs on a single [Hetzner Cloud](https://www.hetzner.com/cloud) server.
+
+### Server
+
+| Property | Value |
+| --- | --- |
+| Name | InsertNameHere |
+| Type | CPX42 |
+| Location | Nuremberg (nbg1) |
+| OS image | Hetzner "Docker CE" app image (Docker pre-installed) |
+
+### Storage Volumes
+
+Two persistent block volumes are attached and mounted at boot:
+
+| Mount point | Size | Purpose |
+| --- | --- | --- |
+| `/data` | 50 GB | Live data — DuckDB database, dlt state, dbt logs, Dagster home, Metabase state, Bronze/Silver/Gold files |
+| `/data_backup` | 50 GB | Local backup archives (62-day retention) and backup logs |
+
+### Firewall
+
+Firewall name: `InsertNameHere`
+
+Inbound access is restricted to two whitelisted IP addresses. Only the following ports are open:
+
+| Port | Service |
+| --- | --- |
+| 22 | SSH |
+| 3000 | Dagster UI |
+| 3001 | Metabase |
+
+All other inbound traffic is blocked.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -807,7 +984,7 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 | dbt models missing (empty `models/` dir) | Model generation not run | Run `python -m ddd_python.ddd_dbt.generate_dbt_models` |
 | Metabase not reachable after a pipeline run | `start_metabase_asset` failed or container not started | Run `docker compose up metabase` or check the `start_metabase_asset` log in the Dagster UI |
 | DuckDB write error while Metabase is running | Metabase holds an open connection; `stop_metabase_asset` was not triggered | Stop Metabase manually (`docker stop ddd-metabase`) before writing, or run the job from the Dagster UI which manages this automatically |
-| `Permission denied` on `/var/run/docker.sock` | Dagster container cannot control Docker | Ensure the Dagster service's user belongs to the `docker` group, or that the socket is mounted with appropriate permissions |
+| `Permission denied` on `/var/run/docker.sock` | `DOCKER_GID` in `.env` does not match the socket's group on the host | Run `stat -c '%g' /var/run/docker.sock` on the host and update `DOCKER_GID` in `.env`, then restart the affected container |
 
 ---
 

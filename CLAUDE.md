@@ -119,6 +119,24 @@ Key constants:
 - `RFAM_TABLE_PRIMARY_KEYS`, `RFAM_TABLE_DATE_COLUMNS`, `RFAM_TABLE_QUERIES`
 - `SILVER_TABLE_PRIMARY_KEYS` — combined DDD + Rfam Silver model → PK mapping
 
+### `ddd_utils/string_utils.py` — String and date utilities
+
+- `normalize_danish_name(name)` — converts Danish chars (ø→oe, æ→ae, å→aa) and
+  lowercases; used by every layer that maps API entity names to file-system/schema
+  identifiers. Single canonical implementation imported by all callers.
+- `resolve_date_to_load_from(date, default_days, reference_time)` — validates or
+  computes the `YYYY-MM-DD` lower-bound date for incremental extraction; used by
+  both dlt extraction scripts and both Dagster incremental-asset factories.
+
+### `ddd_utils/path_utils.py` — Storage path utilities
+
+- `build_bronze_destination_path(source_system_code, entity_name)` — returns the
+  Bronze directory path for dlt (relative for local, OneLake folder path for
+  OneLake). Also re-exported from `ddd_dagster/_constants.py` for backward compat.
+- `build_delta_export_path(layer, table)` — returns `(path, storage_options)` for
+  `write_deltalake`; handles local vs OneLake switch and `os.makedirs` for local.
+  Used by both Silver and Gold export scripts.
+
 ### `ddd_utils/get_variables_from_env.py` — Lazy environment loading
 
 Uses `__getattr__` so that importing the module for code generation or testing

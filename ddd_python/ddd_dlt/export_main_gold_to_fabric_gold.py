@@ -12,12 +12,12 @@ Usage::
 
 import argparse
 import logging
-import os
 
 import duckdb
 from deltalake.writer import write_deltalake
 
 from ddd_python.ddd_utils import get_variables_from_env, configuration_variables
+from ddd_python.ddd_utils.path_utils import build_delta_export_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +30,7 @@ def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) 
     Returns:
         Number of rows written.
     """
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        target_table_path = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/Files/Gold/{table}/"
-        os.makedirs(target_table_path, exist_ok=True)
-        storage_options = {}
-    else:
-        from ddd_python.ddd_utils import get_fabric_onelake_clients
-        token = get_fabric_onelake_clients.get_fabric_token()
-        target_table_path = (
-            f"abfss://{get_variables_from_env.FABRIC_WORKSPACE}"
-            f"@{get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT}"
-            f".dfs.fabric.microsoft.com/{get_variables_from_env.FABRIC_ONELAKE_FOLDER_GOLD}/{table}/"
-        )
-        storage_options = {"bearer_token": token, "use_fabric_endpoint": "true"}
+    target_table_path, storage_options = build_delta_export_path("gold", table)
     query = f"SELECT * FROM {get_variables_from_env.DUCKDB_DATABASE}.main_gold.{table}"
     result = connection.execute(query)
     df = result.to_arrow_table()

@@ -3,28 +3,37 @@
 # to the container volume mount paths, taking precedence over env_file values.
 #
 # ── Host directory permissions ───────────────────────────────────────────────
-# Containers run as non-root (dagster=UID 1000, metabase=UID 2000). Two
-# containers access the same bind-mounted directories, so permissions must
-# allow both UIDs. The chosen approach is to keep host-user ownership and
-# open the shared directories to other processes (o+rx / o+rwx). This is
-# safe on a single-user machine where no other accounts exist.
+# All pipeline containers (run, dagster, backup) run as app (UID 1000).
+# Metabase runs as UID 2000. Both UIDs access shared bind-mounted directories,
+# so permissions must allow each UID to read/write what it needs.
 #
-# Run once on the host after creating /data:
+# Run ONCE on the host before the first container start:
 #
-#   # Host user owns everything (private by default)
-#   sudo chown -R $USER:$USER /data
-#   chmod -R 750 /data
+#   # Create directories
+#   sudo mkdir -p /data/{dlt_pipelines,duckdb,dbt_logs,dagster,local,metabase/data,metabase/duckdb-extensions}
+#   sudo mkdir -p /data_backup/{dagster,metabase,logs}
 #
-#   # Metabase (UID 2000) owns its own state directories
-#   sudo chown -R 2000:2000 /data/metabase
+#   # app (UID 1000) owns the pipeline and backup directories
+#   sudo chown -R 1000:1000 /data/dlt_pipelines /data/dbt_logs /data/dagster /data/local
+#   sudo chown -R 1000:1000 /data/duckdb /data_backup
 #
-#   # Shared directories: readable by all container processes
-#   #   o+rx  — other processes can read and traverse
-#   #   o+rwx — also writable, required for WAL/lock files created by
-#   #           DuckDB and SQLite even during read-only queries
-#   chmod -R o+rx  /data/local
+#   # Metabase (UID 2000) owns its state directories
+#   sudo chown -R 2000:2000 /data/metabase/data /data/metabase/duckdb-extensions
+#
+#   # DuckDB creates WAL/lock files even during read-only queries (Metabase reads
+#   # the .duckdb file). o+rwx lets UID 2000 write into the UID-1000-owned dir.
 #   chmod -R o+rwx /data/duckdb
-#   chmod -R o+rwx /data/dagster
+#
+#   # backup (UID 1000) reads Metabase data (owned by UID 2000) to create archives
+#   chmod -R o+rX /data/metabase/data
+#
+# ── Docker socket access ──────────────────────────────────────────────────────
+# Services that talk to Docker (dagster, backup) need to be in the socket's
+# group.  DOCKER_GID must match the GID of /var/run/docker.sock on the host.
+# Add it to .env once:
+#
+#   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+#
 # ─────────────────────────────────────────────────────────────────────────────
 
 x-path-overrides: &path-overrides
@@ -66,6 +75,39 @@ services:
       - /data/dbt_logs:/data/dbt_logs
       - /data/local:/data/local
 
+  # ── Backup: one-off backup of platform databases ────────────────────────
+  # Usage:  docker compose run --rm backup
+  #         docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets dagster
+  #         docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform
+  #
+  # Source dirs and backup output dirs are bind-mounted from the host so the
+  # container shares exactly the same paths the backup Python code expects.
+  # The Docker socket is mounted so the backup script can stop/start the
+  # other containers without needing docker on the host.
+  # HOST_SSH_DIR is mounted read-only for rsync/SSH uploads to Hetzner StorageBox.
+  backup:
+    <<: *common
+    container_name: ddd-backup
+    # Default command: back up all targets. Override the whole python invocation
+    # when passing --targets, e.g. via `docker compose run --rm backup python -m ...`
+    command: ["python", "-m", "ddd_python.ddd_utils.backup_platform"]
+    group_add:
+      - "${DOCKER_GID:-999}"
+    environment:
+      <<: *path-overrides
+      METABASE_DATA_DIR: /data/metabase/data
+      BACKUP_LOG_DIR: /data_backup/logs
+      DAGSTER_BACKUP_DIR: /data_backup/dagster
+      METABASE_BACKUP_DIR: /data_backup/metabase
+      DUCKDB_BACKUP_DIR: /data_backup/duckdb
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /data/dagster:/data/dagster
+      - /data/metabase/data:/data/metabase/data
+      - /data/duckdb:/data/duckdb
+      - /data_backup:/data_backup
+      - ${HOST_SSH_DIR:-/root/.ssh}:/home/app/.ssh:ro
+
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
   # Full job: docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
@@ -77,7 +119,12 @@ services:
   #    source_system_code: DDD
   dagster:
     <<: *common
+    container_name: ddd-dagster
     command: ["dagster", "dev", "-w", "workspace.yaml", "-h", "0.0.0.0", "-p", "3000"]
+    # Docker socket: Dagster jobs stop/start the Metabase container around dbt
+    # runs to satisfy DuckDB's single-writer constraint.
+    group_add:
+      - "${DOCKER_GID:-999}"
     ports:
       - "3000:3000"
     volumes:
@@ -125,7 +172,7 @@ services:
       - /data/duckdb:/data/duckdb
       - /data/dagster:/data/dagster
       - /data/local:/data/local:ro
-      - /data/metabase/data:/metabase-data
+      - ${METABASE_DATA_DIR:-/data/metabase/data}:/metabase-data
       - /data/metabase/duckdb-extensions:/home/metabase/.duckdb/extensions
     environment:
       MB_DB_FILE: /metabase-data/metabase.db

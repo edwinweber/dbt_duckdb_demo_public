@@ -12,7 +12,7 @@ import logging
 import os
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 logger = logging.getLogger(__name__)
 

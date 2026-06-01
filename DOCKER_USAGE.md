@@ -1,6 +1,6 @@
 # Docker Usage
 
-Last updated: April 2026
+Last updated: May 2026
 
 ## Prerequisites
 
@@ -8,6 +8,36 @@ Last updated: April 2026
 2. Copy `.env.example` to `.env` and fill in your values. See the
    [environment variable reference](README.md#environment-variable-reference)
    for required values per storage mode.
+
+## One-Time Host Setup
+
+Run these commands once on the host **before** starting any container.
+They create the bind-mount directories with the correct ownership so the
+non-root container user (`app`, UID 1000) can write to them.
+
+```bash
+# Create all data and backup directories
+sudo mkdir -p /data/{dlt_pipelines,duckdb,dbt_logs,dagster,local,metabase/data,metabase/duckdb-extensions}
+sudo mkdir -p /data_backup/{dagster,metabase,logs}
+
+# app user (UID 1000) owns the pipeline and backup directories
+sudo chown -R 1000:1000 /data/dlt_pipelines /data/dbt_logs /data/dagster /data/local
+sudo chown -R 1000:1000 /data/duckdb /data_backup
+
+# Metabase (UID 2000) owns its own state directories
+sudo chown -R 2000:2000 /data/metabase/data /data/metabase/duckdb-extensions
+
+# DuckDB creates WAL/lock files even during read-only queries.
+# o+rwx lets Metabase (UID 2000) write into the UID-1000-owned /data/duckdb directory.
+chmod -R o+rwx /data/duckdb
+
+# backup (UID 1000) reads Metabase data (owned by UID 2000) to create archives
+chmod -R o+rX /data/metabase/data
+
+# Add the Docker socket GID to .env so the dagster and backup containers can
+# reach the socket as non-root.
+echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+```
 
 ## Build the Image
 
@@ -26,12 +56,14 @@ into the Docker volumes so containers start with your current state:
 
 ## Running Services
 
-Two services cover all use cases:
+Four services cover all use cases:
 
 | Service | Purpose |
 | --- | --- |
 | `run` | Generic Python runner for one-off pipeline steps |
 | `dagster` | Dagster webserver + daemon, or one-off job execution |
+| `metabase` | Metabase BI — connects directly to the DuckDB file |
+| `backup` | One-off backup (and restore) of Dagster and Metabase state |
 
 ### Pipeline Steps (via `run`)
 
@@ -144,6 +176,61 @@ database and Delta Lake tables.
 docker compose build
 ```
 
+## Backup and Restore
+
+The `backup` service runs the backup and restore Python modules inside the
+pipeline container. No Python or extra tooling is needed on the host — only
+Docker.
+
+```bash
+# Back up all targets (Dagster + Metabase)
+docker compose run --rm backup
+
+# Back up a single target
+docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets dagster
+docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets metabase
+
+# Restore from the most recent backup (interactive — prompts for confirmation)
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform
+
+# Restore non-interactively (for scripted use)
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --yes
+
+# Restore a specific timestamp
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --timestamp 20260526_020000
+
+# Restore a single target
+docker compose run --rm backup python -m ddd_python.ddd_utils.restore_platform --targets dagster
+```
+
+### Cron Setup
+
+Install the nightly cron entry (02:00 UTC) on the host with the helper script:
+
+```bash
+scripts/setup_backup_cron.sh            # preview
+scripts/setup_backup_cron.sh --install  # write to crontab
+```
+
+Backup archives and logs are written to `/data_backup/` on the host:
+
+| Path | Contents |
+| --- | --- |
+| `/data_backup/dagster/` | Timestamped zip archives of the Dagster home directory |
+| `/data_backup/metabase/` | Timestamped zip archives of the Metabase data directory |
+| `/data_backup/logs/cron.log` | Stdout/stderr from cron-triggered runs |
+| `/data_backup/logs/backup_log_*.ndjson` | Structured per-run backup records (queryable with DuckDB) |
+| `/data_backup/logs/restore_log_*.ndjson` | Structured per-run restore records (queryable with DuckDB) |
+
+Query all backup runs with DuckDB:
+
+```sql
+SELECT * FROM read_json_auto('/data_backup/logs/backup_log_*.ndjson')
+ORDER BY run_started_at DESC;
+```
+
+---
+
 ## Troubleshooting
 
 ### Run a Shell Inside the Container
@@ -151,3 +238,24 @@ docker compose build
 ```bash
 docker compose run --rm --entrypoint bash run
 ```
+
+### Verify the Container Runs as Non-Root
+
+```bash
+docker compose run --rm --entrypoint id run
+# Expected: uid=1000(app) gid=1000(app) groups=1000(app),<DOCKER_GID>(docker)
+```
+
+### Docker Socket Permission Denied
+
+If backup or Dagster jobs fail with `permission denied` on `/var/run/docker.sock`:
+
+```bash
+# Check the socket GID on the host
+stat -c '%g' /var/run/docker.sock
+
+# Make sure .env contains the right value
+grep DOCKER_GID .env
+```
+
+Update `DOCKER_GID` in `.env` to match, then restart the affected containers.

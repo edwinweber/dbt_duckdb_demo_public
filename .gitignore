@@ -20,6 +20,7 @@ dlt/.dlt/secrets.toml
 dlt/.dlt/config.toml
 .venv/
 .env
+.env.deploy
 *.duckdb
 data/
 export_environment_variables.sh

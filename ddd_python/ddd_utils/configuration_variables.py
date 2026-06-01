@@ -2,18 +2,7 @@
 # DANISH_DEMOCRACY_BASE_URL and DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD are
 # defined in .env and loaded via get_variables_from_env.
 
-
-def normalize_danish_name(name: str) -> str:
-    """Convert a Danish entity name to a filesystem-safe ASCII identifier.
-
-    Replaces the three Danish characters that are unsupported in DuckDB
-    schema names, dbt model names, and OneLake / local file-system paths:
-    ø → oe, æ → ae, å → aa.  The result is also lowercased.
-
-    This is the single canonical implementation; every other module that
-    needs this normalisation imports and calls this function.
-    """
-    return name.replace("ø", "oe").replace("æ", "ae").replace("å", "aa").lower()
+from ddd_python.ddd_utils.string_utils import normalize_danish_name  # noqa: F401 — re-exported for callers that import from here
 
 # All 18 API entity names to retrieve data from.
 DANISH_DEMOCRACY_FILE_NAMES = [
@@ -50,46 +39,16 @@ DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL = [
     "Stemme",
 ]
 
-DANISH_DEMOCRACY_MODELS_BRONZE = [
-    "bronze_ddd_afstemning",
-    "bronze_ddd_afstemningstype",
-    "bronze_ddd_aktoertype",
-    "bronze_ddd_aktoer",
-    "bronze_ddd_moedestatus",
-    "bronze_ddd_moedetype",
-    "bronze_ddd_moede",
-    "bronze_ddd_periode",
-    "bronze_ddd_sag",
-    "bronze_ddd_sagskategori",
-    "bronze_ddd_sagsstatus",
-    "bronze_ddd_sagstrin",
-    "bronze_ddd_sagstrinaktoer",
-    "bronze_ddd_sagstrinsstatus",
-    "bronze_ddd_sagstrinstype",
-    "bronze_ddd_sagstype",
-    "bronze_ddd_stemmetype",
-    "bronze_ddd_stemme",
+# Derived from DANISH_DEMOCRACY_FILE_NAMES — one Bronze model per entity.
+DANISH_DEMOCRACY_MODELS_BRONZE: list[str] = [
+    f"bronze_ddd_{normalize_danish_name(name)}"
+    for name in DANISH_DEMOCRACY_FILE_NAMES
 ]
 
-DANISH_DEMOCRACY_MODELS_SILVER = [
-    "silver_ddd_afstemning",
-    "silver_ddd_afstemningstype",
-    "silver_ddd_aktoertype",
-    "silver_ddd_aktoer",
-    "silver_ddd_moedestatus",
-    "silver_ddd_moedetype",
-    "silver_ddd_moede",
-    "silver_ddd_periode",
-    "silver_ddd_sag",
-    "silver_ddd_sagskategori",
-    "silver_ddd_sagsstatus",
-    "silver_ddd_sagstrin",
-    "silver_ddd_sagstrinaktoer",
-    "silver_ddd_sagstrinsstatus",
-    "silver_ddd_sagstrinstype",
-    "silver_ddd_sagstype",
-    "silver_ddd_stemmetype",
-    "silver_ddd_stemme",
+# Derived from DANISH_DEMOCRACY_MODELS_BRONZE — parallel Silver models.
+DANISH_DEMOCRACY_MODELS_SILVER: list[str] = [
+    m.replace("bronze_", "silver_", 1)
+    for m in DANISH_DEMOCRACY_MODELS_BRONZE
 ]
 
 # Primary key column name per DDD table.  Used by the dbt model generator
@@ -151,24 +110,16 @@ RFAM_TABLE_NAMES_INCREMENTAL = [
     "genome",
 ]
 
-RFAM_MODELS_BRONZE = [
-    "bronze_rfam_family",
-    "bronze_rfam_genome",
-    "bronze_rfam_clan",
-    "bronze_rfam_clan_membership",
-    "bronze_rfam_author",
-    "bronze_rfam_literature_reference",
-    "bronze_rfam_dead_family",
+# Derived from RFAM_TABLE_NAMES — one Bronze model per table.
+RFAM_MODELS_BRONZE: list[str] = [
+    f"bronze_rfam_{name}"
+    for name in RFAM_TABLE_NAMES
 ]
 
-RFAM_MODELS_SILVER = [
-    "silver_rfam_family",
-    "silver_rfam_genome",
-    "silver_rfam_clan",
-    "silver_rfam_clan_membership",
-    "silver_rfam_author",
-    "silver_rfam_literature_reference",
-    "silver_rfam_dead_family",
+# Derived from RFAM_MODELS_BRONZE — parallel Silver models.
+RFAM_MODELS_SILVER: list[str] = [
+    m.replace("bronze_", "silver_", 1)
+    for m in RFAM_MODELS_BRONZE
 ]
 
 # Primary key column name per Rfam table.  Used by the dbt model generator

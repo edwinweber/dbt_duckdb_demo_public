@@ -41,7 +41,7 @@ Design notes
   ``ThreadPoolExecutor(max_workers=4)``).
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from dagster import (
     AssetExecutionContext,
@@ -54,8 +54,9 @@ from dagster import (
 )
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY, build_bronze_destination_path
+from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 
 
@@ -155,11 +156,11 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         logger = context.log
 
         # Resolve date_to_load_from — mirrors the original script's logic exactly.
-        if config.date_to_load_from is not None:
-            date_from = config.date_to_load_from
-        else:
-            default_days = get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD
-            date_from = f"{datetime.now(timezone.utc) - timedelta(days=default_days):%Y-%m-%d}"
+        date_from = resolve_date_to_load_from(
+            config.date_to_load_from,
+            get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD,
+            datetime.now(timezone.utc),
+        )
 
         logger.info(
             "START incremental extraction — resource=%s  date_from=%s",

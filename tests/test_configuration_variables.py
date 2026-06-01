@@ -1,6 +1,7 @@
 """Tests for configuration_variables — entity list consistency."""
 
 from ddd_python.ddd_utils import configuration_variables as cv
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 
 def test_file_names_has_18_entities():
@@ -19,8 +20,7 @@ def test_incremental_has_6_entities():
 
 def test_bronze_models_match_file_names():
     """Each file name should have a corresponding bronze model."""
-    expected = {f"bronze_ddd_{n.replace('ø','oe').replace('æ','ae').replace('å','aa').lower()}"
-                for n in cv.DANISH_DEMOCRACY_FILE_NAMES}
+    expected = {f"bronze_ddd_{normalize_danish_name(n)}" for n in cv.DANISH_DEMOCRACY_FILE_NAMES}
     actual = set(cv.DANISH_DEMOCRACY_MODELS_BRONZE)
     assert actual == expected, f"Mismatch: {actual.symmetric_difference(expected)}"
 

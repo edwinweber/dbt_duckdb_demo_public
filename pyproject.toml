@@ -39,10 +39,10 @@ Issues = "https://github.com/edwinweber/dbt_duckdb_demo/issues"
 
 [project.optional-dependencies]
 dagster = [
-    # dagster, dagster-webserver, and dagster-dbt must stay in lockstep (0.28.x = 1.12.x)
+    # dagster, dagster-webserver, and dagster-dbt must stay in lockstep (0.29.x = 1.13.x)
     "dagster>=1.12,<2",
     "dagster-webserver>=1.12,<2",
-    "dagster-dbt>=0.28,<0.29",
+    "dagster-dbt>=0.29,<0.30",
 ]
 dev = [
     "pytest>=8.0",

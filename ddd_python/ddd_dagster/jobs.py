@@ -69,20 +69,25 @@ from dagster import (
 )
 from dagster_dbt import build_dbt_asset_selection
 
+from ddd_python.ddd_utils import configuration_variables
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
+
 # Default Launchpad configs for incremental jobs.
 # date_to_load_from defaults to null so normal runs use today - lookback days
 # (31 for DDD, 365 for RFAM). Set an explicit date only for backfills.
+# Keys are derived from the canonical incremental lists in configuration_variables
+# so that adding a new incremental entity only requires updating that one file.
 _DDD_INCREMENTAL_CONFIG = {
     "ops": {
-        f"ingestion__DDD__{name}": {"config": {"date_to_load_from": None}}
-        for name in ["aktoer", "moede", "sag", "sagstrin", "sagstrinaktoer", "stemme"]
+        f"ingestion__DDD__{normalize_danish_name(name)}": {"config": {"date_to_load_from": None}}
+        for name in configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
     }
 }
 
 _RFAM_INCREMENTAL_CONFIG = {
     "ops": {
         f"ingestion__RFAM__{name}": {"config": {"date_to_load_from": None}}
-        for name in ["family", "genome"]
+        for name in configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
     }
 }
 

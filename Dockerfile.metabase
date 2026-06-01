@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 FROM eclipse-temurin:21-jre-noble
 
-ARG METABASE_VERSION=v0.60.1.4
-ARG DUCKDB_DRIVER_VERSION=1.5.2.0
+ARG METABASE_VERSION=v0.60.7.x
+ARG DUCKDB_DRIVER_VERSION=1.5.3.0
 
 LABEL org.opencontainers.image.title="metabase-duckdb" \
       org.opencontainers.image.description="Metabase with DuckDB community driver" \

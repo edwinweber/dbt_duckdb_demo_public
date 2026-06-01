@@ -246,11 +246,11 @@ class TestSilverCurrentVersionView:
         conn = duckdb.connect(":memory:")
         sql = _build_full_extract_cdc_sql(str(silver_fixture_dir))
 
-        # Materialise the Silver table, then apply the _cv pattern
-        conn.execute(f"CREATE TABLE silver_thing AS ({sql})")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+        conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({sql})")
         cv_df = conn.execute("""
             SELECT *
-            FROM   silver_thing src
+            FROM   main_silver.silver_thing src
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY src.id
                 ORDER BY src.LKHS_date_valid_from DESC
@@ -263,11 +263,12 @@ class TestSilverCurrentVersionView:
         """For row 1, the _cv view should return the Delete (latest operation)."""
         conn = duckdb.connect(":memory:")
         sql = _build_full_extract_cdc_sql(str(silver_fixture_dir))
-        conn.execute(f"CREATE TABLE silver_thing AS ({sql})")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+        conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({sql})")
 
         cv_df = conn.execute("""
             SELECT *
-            FROM   silver_thing src
+            FROM   main_silver.silver_thing src
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY src.id
                 ORDER BY src.LKHS_date_valid_from DESC
@@ -283,15 +284,14 @@ class TestSilverCurrentVersionView:
         in file 3 so it should be excluded; row 2 should remain."""
         conn = duckdb.connect(":memory:")
         sql = _build_full_extract_cdc_sql(str(silver_fixture_dir))
-        conn.execute(f"CREATE TABLE silver_thing AS ({sql})")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+        conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({sql})")
 
-        # Step 1: get current version (latest per PK)
-        # Step 2: exclude rows where the latest operation is D
         active_df = conn.execute("""
             SELECT *
             FROM (
                 SELECT *
-                FROM   silver_thing src
+                FROM   main_silver.silver_thing src
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY src.id
                     ORDER BY src.LKHS_date_valid_from DESC
@@ -314,15 +314,16 @@ class TestNotExistsDedup:
         sql = _build_full_extract_cdc_sql(str(silver_fixture_dir))
 
         # First load: materialise all CDC rows
-        conn.execute(f"CREATE TABLE silver_thing AS ({sql})")
-        initial_count = conn.execute("SELECT COUNT(*) FROM silver_thing").fetchone()[0]
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+        conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({sql})")
+        initial_count = conn.execute("SELECT COUNT(*) FROM main_silver.silver_thing").fetchone()[0]
 
         # Second load: simulate incremental with NOT EXISTS
         deduped_count = conn.execute(f"""
             SELECT COUNT(*)
             FROM ({sql}) cdc
             WHERE NOT EXISTS (
-                SELECT id FROM silver_thing
+                SELECT id FROM main_silver.silver_thing
                 WHERE  id = cdc.id
                 AND    LKHS_date_valid_from = cdc.LKHS_date_valid_from
             )

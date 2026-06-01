@@ -18,6 +18,7 @@ from ddd_python.ddd_dbt.generate_dbt_models import (
     generate_dbt_models_gold_cv,
 )
 from ddd_python.ddd_utils import configuration_variables as cv
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 _PATCH_TARGET = "ddd_python.ddd_dbt.generate_dbt_models.get_variables_from_env"
 
@@ -42,7 +43,7 @@ def dbt_models_tmpdir(tmp_path: Path):
 def test_incremental_silver_models_ddd_derived_from_config():
     """The DDD set should match the canonical incremental list, not a hardcoded one."""
     expected = {
-        f"silver_ddd_{n.replace('ø', 'oe').replace('æ', 'ae').replace('å', 'aa').lower()}"
+        f"silver_ddd_{normalize_danish_name(n)}"
         for n in cv.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
     }
     assert _INCREMENTAL_SILVER_MODELS_DDD == expected

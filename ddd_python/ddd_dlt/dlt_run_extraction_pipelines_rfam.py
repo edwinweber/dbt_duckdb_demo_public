@@ -27,9 +27,11 @@ import sys
 import time
 import traceback
 import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
 
 logger = logging.getLogger(__name__)
@@ -60,16 +62,11 @@ def run_extraction_pipelines_rfam(
     start_time = datetime.now(timezone.utc)
 
     # Resolve date_to_load_from
-    if date_to_load_from is None:
-        default_days = get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD
-        date_to_load_from = f"{start_time - timedelta(days=default_days):%Y-%m-%d}"
-    else:
-        try:
-            datetime.strptime(date_to_load_from, "%Y-%m-%d")
-        except ValueError:
-            raise ValueError(
-                f"date_to_load_from '{date_to_load_from}' must be in 'YYYY-MM-DD' format."
-            )
+    date_to_load_from = resolve_date_to_load_from(
+        date_to_load_from,
+        get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD,
+        start_time,
+    )
 
     # Resolve table_names_to_retrieve
     if table_names_to_retrieve is None:
@@ -98,14 +95,7 @@ def run_extraction_pipelines_rfam(
                 sql_params = {}
 
             destination_file_name = f"{table_name}_{start_time:%Y%m%d_%H%M%S}.json"
-
-            if get_variables_from_env.STORAGE_TARGET == "local":
-                dest_dir = f"Files/Bronze/{SOURCE_SYSTEM_CODE}/{table_name}"
-            else:
-                dest_dir = (
-                    f"{get_variables_from_env.FABRIC_ONELAKE_FOLDER_BRONZE}"
-                    f"/{SOURCE_SYSTEM_CODE}/{table_name}"
-                )
+            dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, table_name)
 
             future = executor.submit(
                 dpef.execute_pipeline,

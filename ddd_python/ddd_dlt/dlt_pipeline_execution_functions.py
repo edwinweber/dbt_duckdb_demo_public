@@ -72,7 +72,7 @@ from sqlalchemy import create_engine, text
 logger = logging.getLogger(__name__)
 
 from ddd_python.ddd_utils import get_variables_from_env
-from ddd_python.ddd_utils.configuration_variables import normalize_danish_name
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 # Ensure the dlt state directory exists — critical when running in Docker with a
 # freshly-mounted volume where the path does not yet exist in the container FS.

@@ -23,10 +23,11 @@ def gold_duckdb():
     - silver_fact: a simple fact reference (like stemme / individual vote)
     """
     conn = duckdb.connect(":memory:")
+    conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
 
     # ── Silver dimension: two versions of row 1, one version of row 2 ──
     conn.execute("""
-        CREATE TABLE silver_dimension AS
+        CREATE TABLE main_silver.silver_dimension AS
         SELECT * FROM (VALUES
             (1, 'Widget-A',   'DDD', '2024-01-01 12:00:00'::TIMESTAMP, 'I'),
             (1, 'Widget-A-v2','DDD', '2024-02-01 12:00:00'::TIMESTAMP, 'U'),
@@ -38,7 +39,7 @@ def gold_duckdb():
 
     # ── Silver fact table (like individual votes) ──
     conn.execute("""
-        CREATE TABLE silver_fact AS
+        CREATE TABLE main_silver.silver_fact AS
         SELECT * FROM (VALUES
             (101, 1, 'yes',   'DDD', '2024-01-15 12:00:00'::TIMESTAMP, 'I'),
             (102, 2, 'no',    'DDD', '2024-01-15 12:00:00'::TIMESTAMP, 'I'),
@@ -118,7 +119,7 @@ _DIMENSION_SQL = """
                 OVER (PARTITION BY src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_date_valid_to
         ,   ROW_NUMBER()
                 OVER (PARTITION BY src.LKHS_source_system_code, src.id ORDER BY src.LKHS_date_valid_from) AS LKHS_row_version
-        FROM silver_dimension src
+        FROM main_silver.silver_dimension src
     )
     SELECT  CTE_SRC.LKHS_dim_id
     ,       CTE_SRC.dim_bk
@@ -211,21 +212,8 @@ _DIMENSION_CV_SQL = f"""
 
 
 def test_cv_dimension_returns_latest_per_pk(gold_duckdb):
-    """The _cv view should return only the latest version of each dimension row.
-
-    DuckDB 1.5.x has a bug where QUALIFY on a top-level UNION ALL query crashes
-    with an InternalException. The workaround is to materialize the dimension
-    into a temp table first, then apply QUALIFY to the plain table.
-    """
-    gold_duckdb.execute(f"CREATE OR REPLACE TEMP TABLE _dim_mat AS {_DIMENSION_SQL}")
-    df = gold_duckdb.execute("""
-        SELECT * FROM _dim_mat
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY LKHS_source_system_code, id
-            ORDER BY LKHS_date_valid_from DESC
-        ) = 1
-    """).fetchdf()
-    gold_duckdb.execute("DROP TABLE _dim_mat")
+    """The _cv view should return only the latest version of each dimension row."""
+    df = gold_duckdb.execute(_DIMENSION_CV_SQL).fetchdf()
 
     # 3 PKs (1, 2, 3) + Unknown (0) = 4
     assert len(df) == 4
@@ -242,7 +230,7 @@ _FACT_SQL = f"""
     WITH dim_cv AS ({_DIMENSION_CV_SQL})
     , fact AS (
         SELECT src.*
-        FROM   silver_fact src
+        FROM   main_silver.silver_fact src
         WHERE  src.LKHS_cdc_operation != 'D'
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY src.LKHS_source_system_code, src.id
@@ -257,6 +245,7 @@ _FACT_SQL = f"""
     FROM      fact
     LEFT JOIN dim_cv
     ON        CONCAT(fact.LKHS_source_system_code, '-', CAST(fact.dimension_id AS VARCHAR)) = dim_cv.dim_bk
+
 """
 
 
@@ -283,7 +272,7 @@ def test_fact_coalesces_to_zero_for_missing_dimension(gold_duckdb):
     COALESCE should produce the unknown key (0)."""
     # Add a fact row referencing dimension_id=999 (doesn't exist)
     gold_duckdb.execute("""
-        INSERT INTO silver_fact VALUES
+        INSERT INTO main_silver.silver_fact VALUES
         (105, 999, 'unknown', 'DDD', '2024-05-01 12:00:00'::TIMESTAMP, 'I')
     """)
 

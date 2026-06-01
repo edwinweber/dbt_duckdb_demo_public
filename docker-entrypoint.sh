@@ -21,6 +21,19 @@ storage:
 YAML
         echo "[entrypoint] Created $DAGSTER_HOME/dagster.yaml"
     fi
+    for required_dir in \
+        "$DAGSTER_HOME" \
+        "$DAGSTER_HOME/history" \
+        "$DAGSTER_HOME/schedules" \
+        "$DAGSTER_HOME/storage"
+    do
+        mkdir -p "$required_dir"
+        if [ ! -w "$required_dir" ]; then
+            echo "[entrypoint] ERROR: $required_dir is not writable by $(id -u):$(id -g)." >&2
+            echo "[entrypoint] Run: sudo scripts/setup_host_permissions.sh" >&2
+            exit 1
+        fi
+    done
     echo "[entrypoint] Local storage directories ready at $LOCAL_BASE"
 
 elif [ "$STORAGE" = "onelake" ]; then
