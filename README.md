@@ -1,4 +1,4 @@
-# Danish Democracy Data — dbt + DuckDB Demo
+# End-to-end Open Source data engineering project using dbt, DuckDB, dlt, Dagster and Metabase
 
 A reference data pipeline that ingests, transforms, and publishes open data from
 the Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
