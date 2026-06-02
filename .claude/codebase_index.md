@@ -251,7 +251,7 @@ Python model: dagster_step_failures_raw.py
 
 ---
 
-## Tests (tests/) — 93 tests, 12 modules
+## Tests (tests/) — 125 tests, 14 modules
 
 | File | Key test functions |
 |------|--------------------|
@@ -268,6 +268,8 @@ Python model: dagster_step_failures_raw.py
 | test_require_env.py | lazy env var loading |
 | test_scrub_secrets.py | sensitive key redaction |
 | test_serialize_trace.py | dlt trace serialization |
+| test_path_utils.py | Bronze destination + Delta export path construction (local vs OneLake) |
+| test_string_utils.py | Danish name normalization + incremental load-date resolution |
 
 ---
 
@@ -313,7 +315,7 @@ Python model: dagster_step_failures_raw.py
 | pyproject.toml | deps: dlt≥1.24, dbt-core≥1.10<1.12, dbt-duckdb≥1.10, duckdb≥1.5.1<1.6, dagster≥1.12<2, deltalake≥1.5, pyarrow≥17 |
 | dbt/dbt_project.yml | dbt config, schema assignments, materialization defaults |
 | dbt/profiles.yml | local (DuckDB file) + onelake (DuckDB + Azure) targets |
-| dbt/packages.yml | dbt-utils 1.3.0, dbt-expectations 0.10.4 |
+| dbt/packages.yml | dbt-utils 1.3.0 |
 | dbt/seeds/LKHS_source_systems.csv | source system registry |
 | dbt/seeds/publicholiday_dk.csv | Danish public holidays |
 | dbt/tests/silver_no_duplicate_id_date_valid_from.sql | custom dbt test |
@@ -322,6 +324,6 @@ Python model: dagster_step_failures_raw.py
 | start_metabase_and_wait.sh | `docker start ddd-metabase` + wait 120 s; falls back to `sudo docker` if needed |
 | stop_metabase_and_wait.sh | `docker stop ddd-metabase` + wait 120 s; same sudo fallback |
 | workspace.yaml | Dagster workspace — loads ddd_dagster.definitions |
-| .github/workflows/ci.yml | CI pipeline |
+| scripts/deploy.sh | Production deploy — SSH to Hetzner, pull main, rebuild & restart containers |
 | documentation/silver_model_logic.md | Silver CDC logic documentation |
 | documentation/dbt_macros.md | macro documentation |

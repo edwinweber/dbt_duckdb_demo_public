@@ -1,20 +1,25 @@
 # Danish Democracy Data — dbt + DuckDB Demo
 
-A demo project that ingests, transforms, and publishes open data from the
-Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
+A reference data pipeline that ingests, transforms, and publishes open data from
+the Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
 
 > **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data),
 > which provides the initial foundation for working with Folketing open data.
 > This repository extends that foundation with a full medallion pipeline,
 > SCD Type 2 history, Dagster orchestration, and Microsoft Fabric / OneLake export.
 
-The goal is to demonstrate the capabilities achievable with a **low-cost,
-open-source stack** (DuckDB + dbt + dlt + Dagster) before requiring
-enterprise-grade commercial tooling. This is a learning and reference project
-demonstrating production-quality data engineering patterns. The pipeline runs
-daily against real data, and the codebase includes production-hardening measures
-(SQL injection defense, connection safety, non-root Docker, API response
-validation).
+It explores how far a **low-cost, open-source stack** (DuckDB + dbt + dlt +
+Dagster) can go before reaching for commercial tooling, and serves as a worked
+example of common data engineering patterns: a medallion architecture, hash-based
+CDC with SCD Type 2 history, models code-generated from a single source of truth,
+and a layer that lets the pipeline observe its own runs.
+
+It runs daily against real data on a single small server — see
+[Deployment](#deployment) for the setup and its trade-offs. The code applies a
+number of defensive practices (input validation on interpolated SQL, connection
+timeouts and cleanup, a non-root container, secret scrubbing in logs), while
+remaining a deliberately simple single-node design rather than a
+high-availability platform.
 
 The pipeline follows a **medallion architecture** (Bronze → Silver → Gold),
 orchestrated by Dagster. It supports two storage backends controlled by a
@@ -24,6 +29,23 @@ single environment variable:
 | --- | --- | --- |
 | `local` | `data/` directory in the repo (Docker volume) | Nothing — runs fully offline |
 | `onelake` | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) | Azure service principal |
+
+---
+
+## Documentation Map
+
+This README is the entry point. Deeper topics live in focused guides:
+
+| Topic | Document |
+| --- | --- |
+| One-page summary (audience: non-specialists, hiring managers) | [documentation/management-summary.md](documentation/management-summary.md) |
+| Docker usage reference | [DOCKER_USAGE.md](DOCKER_USAGE.md) |
+| Silver CDC / SCD Type 2 logic, with compiled SQL | [documentation/silver_model_logic.md](documentation/silver_model_logic.md) |
+| dbt macro reference | [documentation/dbt_macros.md](documentation/dbt_macros.md) |
+| Test strategy — what, how, why, and scope | [documentation/testing.md](documentation/testing.md) |
+| Dependency choices and rationale | [documentation/python_libraries.md](documentation/python_libraries.md) |
+| Production server, volumes, SSH keys, firewall | [documentation/hetzner_infrastructure.md](documentation/hetzner_infrastructure.md) |
+| Generated dbt model catalogue + lineage (browsable) | [documentation/dbt-docs/](documentation/dbt-docs/) |
 
 ---
 
@@ -93,7 +115,7 @@ single environment variable:
 | Query engine / local storage | DuckDB |
 | SQL source connector | SQLAlchemy + PyMySQL (Rfam MySQL) |
 | Cloud storage (optional) | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
-| Data quality | dbt built-in tests + dbt-expectations |
+| Data quality | dbt built-in tests + dbt-utils |
 | Data visualization | Metabase (connects to DuckDB directly) |
 | Language | Python 3.12+ |
 
@@ -148,8 +170,8 @@ individual pipeline steps, volume management, and troubleshooting.
 │   │   ├── silver/             SCD Type 2 incremental tables + _cv views
 │   │   └── gold/               Star-schema views + _cv (current-version) views
 │   ├── macros/                 Code-generation macros for Bronze, Silver & Gold
-│   ├── seeds/                  Date dimension + source system lookup
-│   └── packages.yml            dbt-utils + dbt-expectations
+│   ├── seeds/                  Danish public holidays + source system lookup
+│   └── packages.yml            dbt-utils
 ├── ddd_python/
 │   ├── ddd_dagster/            Dagster definitions, assets, jobs, schedules, sensors
 │   ├── ddd_dlt/                dlt pipeline runners + Delta Lake export functions
@@ -255,8 +277,10 @@ This writes `.sql` files into `dbt/models/bronze/`, `dbt/models/silver/`, and
 
 ### 6. Load dbt seeds
 
-Seeds are static CSV reference data (date dimension, source system lookup).
-Load them into DuckDB once:
+Seeds are static CSV reference data (Danish public holidays, source system
+lookup). The date dimension itself is **generated** at build time by
+`bronze_dates.sql` (via `dbt_utils.date_spine`) and joined to the holiday seed
+in `gold/date.sql` — it is not a seed. Load the seeds into DuckDB once:
 
 ```bash
 cd dbt && dbt seed --profiles-dir . && cd ..
@@ -531,7 +555,7 @@ Clean English-named views built on top of Silver `_cv` views:
 | `meeting_status` / `meeting_type` | Meeting dimension lookups |
 | `vote` | Voting results per case |
 | `vote_type` | Vote category lookup |
-| `date` | Date dimension (from seed) |
+| `date` | Date dimension — generated via `dbt_utils.date_spine`, enriched with public-holiday flags from the `publicholiday_dk` seed |
 | `time` | Time-of-day dimension |
 
 Surrogate keys are generated using DuckDB's built-in `hash()` function (64-bit),
@@ -699,13 +723,17 @@ lineage, and a dependency graph. A pre-generated copy is committed at
 without running the pipeline first.
 
 **Browse the committed docs** — open `documentation/dbt-docs/index.html` in
-your browser. The documentation covers:
+your browser. It covers:
 
-- All 130 models across Bronze, Silver, Gold, and Data Engineering layers
+- Every model across the Bronze, Silver, Gold, and Data Engineering layers
 - Column-level lineage and data types via the catalog
 - The full DAG (directed acyclic graph) showing dependencies between
   models, seeds, sources, and tests
-- 284 data quality tests defined across the project
+- The data-quality tests defined across the project
+
+The committed copy is a point-in-time snapshot and is the authoritative count of
+models and tests; regenerate it (below) after changing models so it stays in
+step with the project.
 
 **Regenerate after changes:**
 
@@ -726,6 +754,9 @@ cp dbt/target/{index.html,catalog.json,manifest.json} documentation/dbt-docs/
 ## Running Tests (pytest)
 
 No cloud credentials required — tests use in-memory DuckDB and mocked clients.
+The suite has **125 tests across 14 modules**. For the full strategy — what is
+tested, how, why, and what is intentionally out of scope (plus the dbt
+data-quality test layer) — see [documentation/testing.md](documentation/testing.md).
 
 ```bash
 pytest tests/ -v
@@ -745,6 +776,8 @@ pytest tests/ -v
 | `test_scrub_secrets.py` | Credential scrubbing in log output |
 | `test_require_env.py` | Missing env var handling |
 | `test_json_default.py` | JSON serialisation of custom types |
+| `test_path_utils.py` | Bronze destination + Delta export path construction (local vs OneLake) |
+| `test_string_utils.py` | Danish name normalisation + incremental load-date resolution |
 
 ---
 
@@ -933,12 +966,43 @@ ORDER BY run_started_at DESC;
 
 The production environment runs on a single [Hetzner Cloud](https://www.hetzner.com/cloud) server.
 
+### Deployment
+
+Deploys to production are performed with [`scripts/deploy.sh`](scripts/deploy.sh),
+run from an operator laptop. There is no CI/CD service and no container
+registry — the script pulls the latest `main` on the server and rebuilds the
+images in place over SSH.
+
+```bash
+# Configure once (copy the template and fill in your values)
+cp .env.deploy.example .env.deploy
+#   DEPLOY_HOST — server IP or hostname
+#   DEPLOY_USER — SSH user
+#   DEPLOY_PATH — absolute path to the repo on the server
+#   DEPLOY_KEY  — SSH private key (default: ~/.ssh/id_ed25519)
+#   DEPLOY_PORT — SSH port (default: 22)
+
+# Deploy the current main branch
+./scripts/deploy.sh
+```
+
+The script SSHes into the server and runs, in order:
+
+1. `git fetch origin main && git checkout main && git reset --hard origin/main` — sync to the latest `main`.
+2. `docker compose down --remove-orphans` — stop running containers.
+3. `docker compose build` — rebuild the pipeline and Metabase images.
+4. `docker compose up -d dagster metabase` — start the persistent services.
+
+The server must have read access to the GitHub repository (a deploy key) so the
+`git fetch` step runs unattended. See
+[documentation/hetzner_infrastructure.md](documentation/hetzner_infrastructure.md)
+for the full server, SSH-key, volume, and firewall reference.
+
 ### Server
 
 | Property | Value |
 | --- | --- |
-| Name | InsertNameHere |
-| Type | CPX42 |
+| Type | CPX42 (Hetzner Cloud) |
 | Location | Nuremberg (nbg1) |
 | OS image | Hetzner "Docker CE" app image (Docker pre-installed) |
 
@@ -953,9 +1017,8 @@ Two persistent block volumes are attached and mounted at boot:
 
 ### Firewall
 
-Firewall name: `InsertNameHere`
-
-Inbound access is restricted to two whitelisted IP addresses. Only the following ports are open:
+A Hetzner Cloud firewall restricts inbound access to a small set of whitelisted
+IP addresses. Only the following ports are open:
 
 | Port | Service |
 | --- | --- |

@@ -21,7 +21,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 **Role:** HTTP client used internally by `dlt` for OData API calls, and directly in any custom API probing code.
 
 **Why chosen:**
-- The de-facto standard Python HTTP library — readable, well-documented, and supported by virtually every tutorial and reference.
+- A widely used, well-documented Python HTTP library — readable and supported by virtually every tutorial and reference.
 - Simpler interface than `urllib` / `http.client` for REST API work; avoids the complexity of `httpx` or `aiohttp` when async is not required.
 
 #### `python-dotenv` `>=1.0`
@@ -65,16 +65,16 @@ This document describes every Python library declared in `pyproject.toml`, why i
 **Role:** SQL transformation framework that runs the Bronze → Silver → Gold models, enforces tests, and manages model dependencies via a DAG.
 
 **Why chosen:**
-- The industry standard for SQL-based data transformation; widely adopted across data teams and cloud platforms.
+- A widely adopted framework for SQL-based data transformation, used across many data teams and cloud platforms.
 - Supports incremental materializations, macros (Jinja templating), data tests, and documentation generation out of the box.
-- Upper-bound set to `<1.12` because `dagster-dbt 0.28.x` (the Dagster integration layer) declares `dbt-core<1.12` as a hard dependency constraint.
+- Upper-bound set to `<1.12` because `dagster-dbt 0.29.x` (the Dagster integration layer) declares `dbt-core<1.12` as a hard dependency constraint.
 
 #### `dbt-duckdb` `>=1.10,<2`
 
 **Role:** DuckDB adapter for dbt-core — connects dbt to a local `.duckdb` file (or MotherDuck) and enables DuckDB-specific SQL features.
 
 **Why chosen:**
-- The only maintained DuckDB adapter for dbt; developed in close coordination with the DuckDB project.
+- The standard DuckDB adapter for dbt; developed in close coordination with the DuckDB project.
 - Supports the `httpfs`, `delta`, `azure`, and `parquet` DuckDB extensions that are central to reading JSON from OneLake and writing Delta tables.
 - Makes it possible to run the full transformation stack locally without any cloud infrastructure.
 
@@ -84,7 +84,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 **Why chosen:**
 - Columnar, in-process OLAP database that requires zero server setup; ideal for a demo/reference project.
 - Native support for reading JSON, Parquet, and Delta Lake; integrates directly with PyArrow and cloud storage via extensions.
-- Exceptional performance for analytical workloads on a single machine.
+- Strong performance for analytical workloads on a single machine.
 - Version-pinned to `<1.6` to lock the extension ABI and avoid unexpected breaking changes in the DuckDB extension ecosystem.
 
 ---
@@ -139,7 +139,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Asset-based orchestration model maps naturally to the medallion architecture: each Bronze, Silver, and Gold model is a software-defined asset with explicit lineage.
 - Built-in support for retries, partitions, run history, and alerting without external infrastructure.
 - `dagster-dbt` integration represents dbt models as Dagster assets, enabling mixed Python/SQL pipelines in a single DAG.
-- Lower bound set to `>=1.12` to match the lockstep versioning with `dagster-dbt 0.28.x` (0.28.x = 1.12.x by Dagster's offset convention).
+- Lower bound set to `>=1.12` to match the lockstep versioning with `dagster-dbt 0.29.x` (0.29.x = 1.13.x by Dagster's offset convention).
 
 #### `dagster-webserver` `>=1.12,<2`
 
@@ -147,30 +147,30 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 **Why chosen:** Ships with Dagster; the standard way to run the web UI locally.
 
-#### `dagster-dbt` `>=0.28,<0.29`
+#### `dagster-dbt` `>=0.29,<0.30`
 **Role:** Dagster integration that wraps dbt models as Dagster software-defined assets, enabling dbt runs to be orchestrated alongside Python extraction and export assets.
 
 **Why chosen:**
 - Official integration maintained by the Dagster team; provides `DbtCliResource` and `@dbt_assets` decorator.
-- Version-pinned to `0.28.x` (matching `dagster 1.12.x`) to ensure compatibility.
+- Version-pinned to `0.29.x` (matching `dagster 1.13.x`) to ensure compatibility.
 
 ---
 
 ### Development & Testing (`[dev]`)
 
 #### `pytest` `>=8.0`
-**Role:** Test runner for all 93 tests across 12 modules (unit, integration, and end-to-end).
+**Role:** Test runner for all 125 tests across 14 modules (unit, integration, and end-to-end).
 
 **Why chosen:**
 - The dominant Python test framework; fixture system, parametrization, and plugin ecosystem make it suitable for both unit and integration tests.
 - Version 8.x brings improved error messages and performance over the 7.x series.
 
-#### `pandas` `>=2.0`
-**Role:** Used exclusively in `test_export_silver.py` to construct test DataFrames and verify Delta Lake round-trip correctness.
+#### `pandas` (transitive — not declared)
+**Role:** Never imported directly. DuckDB's `.fetchdf()` returns a pandas `DataFrame`, which the integration tests (`test_integration_bronze.py`, `test_integration_silver_cdc.py`, `test_integration_gold.py`, `test_integration_e2e_pipeline.py`) use to read query results and assert on them (e.g. `df["col"].tolist()`).
 
-**Why chosen:**
-- Convenient for creating in-memory tabular data in tests; `pandas` DataFrame ↔ PyArrow Table conversion is lossless.
-- Not declared as an explicit `[dev]` dependency in `pyproject.toml`; available as a transitive dependency of other packages. Used only in tests.
+**Why present:**
+- Not declared in `pyproject.toml` and carries no version pin here; it is available at runtime because DuckDB requires it for the `.fetchdf()` convenience method.
+- `DataFrame` indexing is an ergonomic way to assert on DuckDB query results in tests. (The export tests, by contrast, build their fixtures with PyArrow `pa.table(...)`, not pandas.)
 
 ---
 
@@ -179,6 +179,9 @@ This document describes every Python library declared in `pyproject.toml`, why i
 | Module | Usage |
 |---|---|
 | `concurrent.futures` | `ThreadPoolExecutor` for parallel extraction (max 4 workers) |
+| `argparse` | CLI argument parsing for the extraction, export, dbt-build, and backup/restore entry points |
+| `subprocess` | Running Docker and dbt commands — Metabase start/stop, backup/restore, and `dbt build` |
+| `zipfile` | Creating and verifying (and extracting, on restore) the backup zip archives |
 | `re` | Date-parameter validation against `\d{4}-\d{2}-\d{2}` before SQL interpolation |
 | `os` / `pathlib` | Path construction for local storage and dbt project directory |
 | `json` | Serializing pipeline run metadata and log records |

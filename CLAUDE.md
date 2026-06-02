@@ -11,7 +11,7 @@ exports the result as Delta Lake tables to Microsoft Fabric OneLake.
 - **Repo:** `edwinweber/dbt_duckdb_demo`
 - **Default branch:** `main`
 - **License:** see LICENSE file
-- A learning/reference project demonstrating production-quality data engineering patterns.
+- A learning/reference project demonstrating common data engineering patterns on a low-cost, open-source stack.
 
 ## Tech Stack
 
@@ -22,7 +22,7 @@ exports the result as Delta Lake tables to Microsoft Fabric OneLake.
 | Extraction      | dlt ≥1.24 (Data Load Tool)                           |
 | Transformation  | dbt-core ≥1.10,<1.12 + dbt-duckdb ≥1.10             |
 | Query engine    | DuckDB ≥1.5.1,<1.6                                   |
-| Data quality    | dbt-utils 1.3.0, dbt-expectations 0.10.4             |
+| Data quality    | dbt-utils 1.3.0 + dbt built-in tests                 |
 | Cloud storage   | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake)    |
 | Export          | deltalake ≥1.5, PyArrow ≥17                          |
 | SQL source      | SQLAlchemy ≥2.0, PyMySQL ≥1.1                        |
@@ -59,16 +59,16 @@ Orchestrated by **Dagster** (two daily schedules: 06:00 + 08:00 Europe/Copenhage
 │   ├── models/gold/             19 models (star-schema views)
 │   ├── models/data_engineering/ 8 observability models (Dagster SQLite)
 │   ├── macros/                  9 Jinja macros (model factories, hash, CDC)
-│   ├── seeds/                   Seed CSVs (date dimension, source registry)
+│   ├── seeds/                   Seed CSVs (Danish public holidays, source registry)
 │   └── dbt_project.yml          Project config + variables
-├── tests/                       pytest tests (12 modules, 93 tests)
+├── tests/                       pytest tests (14 modules, 125 tests)
 ├── duckdb/                      DuckDB init scripts (extensions + Azure secret)
 ├── dlt/pipelines_dir/           dlt incremental state (git-ignored)
 ├── data/                        Local storage root (git-ignored)
 │   └── Files/{Bronze,Silver,Gold}/
 ├── documentation/               Handbook markdown + build scripts
 ├── docker-compose.yml           Services: 'run' (one-off) + 'dagster' (UI)
-├── Dockerfile                   Python 3.12 + DuckDB CLI v1.5.1
+├── Dockerfile                   Python 3.12 + DuckDB CLI v1.5.3
 ├── pyproject.toml               Dependencies + build config
 ├── workspace.yaml               Dagster workspace (loads ddd_dagster.definitions)
 └── .env.example                 Template for environment variables
@@ -245,9 +245,10 @@ All data-warehouse tracking columns use the `LKHS_` prefix:
 9. **Generated SQL** — Bronze/Silver models auto-generated from config; Gold
    mostly generated, except `individual_votes.sql` (handcrafted)
 
-## Production Hardening
+## Defensive Practices
 
-The following measures are in place to make the pipeline production-quality:
+A few defensive measures applied throughout the codebase (it remains a
+single-node design, not a high-availability platform):
 
 - **SQL injection defense** — Date parameters validated with `re.fullmatch(r"\d{4}-\d{2}-\d{2}")`
   before interpolation into SQL queries (Rfam extraction + Dagster assets)
@@ -344,8 +345,10 @@ pytest -v -k "incremental"                     # keyword filter
 | `test_require_env.py`             | Lazy environment variable loading                   |
 | `test_scrub_secrets.py`           | Sensitive data masking                              |
 | `test_serialize_trace.py`         | Request tracing serialization                       |
+| `test_path_utils.py`              | Bronze destination + Delta export path construction (local vs OneLake) |
+| `test_string_utils.py`            | Danish name normalization + incremental load-date resolution |
 
-**Total: 93 tests across 12 modules** (unit + integration).
+**Total: 125 tests across 14 modules** (unit + integration).
 
 ## DuckDB Initialization
 

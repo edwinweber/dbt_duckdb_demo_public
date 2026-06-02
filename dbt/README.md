@@ -38,7 +38,7 @@ Medallion architecture with three layers:
    cd dbt && dbt deps --profiles-dir . && cd ..
    ```
 
-3. Load seed data (date dimension, source system lookup):
+3. Load seed data (Danish public holidays, source system lookup):
 
    ```bash
    cd dbt && dbt seed --profiles-dir . && cd ..

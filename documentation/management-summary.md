@@ -63,19 +63,22 @@ The pipeline supports two storage backends, switched via a single environment va
 
 ## What It Demonstrates
 
-- **Medallion architecture** with full SCD Type 2 historical tracking across all 25 entities (18 DDD + 7 Rfam)
+- **Medallion architecture** with SCD Type 2 historical tracking across all 25 entities (18 DDD + 7 Rfam)
 - **Runs anywhere**: entirely on a laptop with Docker (free), or connected to Microsoft Fabric — same codebase
 - **Daily automation** via Dagster with health checks, sensors, and per-run log files
 - **Code-generated models**: dbt SQL models generated from macros and a Python generator for consistency
-- **Cost-aware design**: built-in Fabric capacity pause/resume to minimize cloud spend
+- **Bundled BI layer**: Metabase connects directly to the DuckDB file for ad-hoc queries and dashboards
+- **Self-observability**: a dbt layer reads Dagster's own run history so the pipeline can report on its own runs
+- **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend
 
 ## What It Does Not Do
 
-This is a demo, not a production system. It demonstrates real-world patterns but does not include:
+It runs daily in a small single-server deployment, but it is a reference project
+rather than an enterprise platform, and intentionally leaves out:
 
 - **Real-time data** — batch only, daily schedule
-- **Alerting** — no email, Slack, or PagerDuty notifications
-- **Dashboards** — produces analytics-ready tables but no BI layer
+- **Alerting** — run-status sensors log summaries, but there is no email, Slack, or PagerDuty integration
+- **High availability** — a single server, no failover or horizontal scaling
 - **Multi-environment setup** — no dev/staging/prod separation
 - **Access control** — depends on the storage backend (Fabric permissions or local filesystem)
 
@@ -121,7 +124,7 @@ As of April 2026:
 | DDD full-refresh entities | 12 |
 | Rfam incremental tables | 2 (date-filtered) |
 | Rfam full-extract tables | 5 |
-| Docker services | 2 (runner + Dagster UI) |
+| Docker services | 4 (one-off runner, Dagster UI, Metabase, backup) |
 | License | MIT |
 
 > Model and macro counts change as the project evolves. Run `find dbt/models -name '*.sql' | wc -l` and `ls dbt/macros/*.sql | wc -l` for current counts.
