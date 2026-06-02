@@ -3,6 +3,8 @@
 A reference data pipeline that ingests, transforms, and publishes open data from
 the Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
 
+![Reference architecture: source systems feed dlt extraction, which lands Bronze files; dbt then builds Bronze views, Silver historized tables, and Gold dimensional models in DuckDB, with a Delta Lake export to Microsoft Fabric OneLake and Power BI / Metabase consumption.](documentation/assets/architecture-overview.svg)
+
 > **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data),
 > which provides the initial foundation for working with Folketing open data.
 > This repository extends that foundation with a full medallion pipeline,
@@ -20,6 +22,30 @@ number of defensive practices (input validation on interpolated SQL, connection
 timeouts and cleanup, a non-root container, secret scrubbing in logs), while
 remaining a deliberately simple single-node design rather than a
 high-availability platform.
+
+## What I built on top of the fork
+
+The fork supplied a starting point for talking to the Folketing OData API. The
+data-engineering platform around it is my work:
+
+- **Medallion pipeline (Bronze → Silver → Gold)** across two sources — 18 Danish
+  Parliament OData entities and 7 Rfam MySQL tables — with the dbt models
+  code-generated from a single source-of-truth entity list.
+- **Hash-based CDC with SCD Type 2 history** in Silver: SHA-256 change detection,
+  full row history, and `_cv` current-version views. This is the core of the
+  project — see the
+  [deep-dive with compiled SQL](documentation/silver_model_logic.md).
+- **Dagster orchestration** — software-defined assets, jobs, schedules, and
+  run-status sensors, plus an observability layer that lets the pipeline report
+  on its own runs.
+- **Dual-backend storage** — one environment variable (`STORAGE_TARGET`) swaps
+  the whole pipeline between local filesystem and Microsoft Fabric OneLake
+  (Delta Lake), with paths deliberately mirrored.
+- **Operational hardening** — input validation on interpolated SQL, connection
+  timeouts and cleanup, a non-root container, secret scrubbing in logs, and a
+  pytest suite.
+
+## How it works
 
 The pipeline follows a **medallion architecture** (Bronze → Silver → Gold),
 orchestrated by Dagster. It supports two storage backends controlled by a
