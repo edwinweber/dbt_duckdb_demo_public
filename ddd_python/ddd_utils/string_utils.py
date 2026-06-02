@@ -8,13 +8,19 @@ from datetime import datetime, timedelta
 
 
 def normalize_danish_name(name: str) -> str:
-    """Convert a Danish entity name to a filesystem-safe ASCII identifier.
+    """Convert a Danish entity name to a portable, ASCII-only identifier.
 
-    Replaces all six Danish characters (upper- and lowercase) that are
-    unsupported in DuckDB schema names, dbt model names, and OneLake / local
-    file-system paths: Ø/ø → oe, Æ/æ → ae, Å/å → aa.  The result is
-    lowercased.  Lowercasing is applied first so that a single set of
-    replacements covers both cases.
+    Replaces all six Danish characters (upper- and lowercase):
+    Ø/ø → oe, Æ/æ → ae, Å/å → aa.  The result is lowercased; lowercasing is
+    applied first so that a single set of replacements covers both cases.
+
+    Note: DuckDB itself accepts Ø/Æ/Å in schema, table, and column names (both
+    quoted and unquoted), so this is **not** a DuckDB limitation.  Normalisation
+    is a portability/convention choice: dbt model names become ``.sql`` file
+    names, identifiers must round-trip cleanly through Delta Lake / Parquet and
+    downstream tools (Power BI / Fabric), and keeping everything ASCII avoids
+    having to quote identifiers everywhere and sidesteps case-folding
+    differences between engines.
 
     This is the single canonical implementation; every other module that
     needs this normalisation imports and calls this function.
