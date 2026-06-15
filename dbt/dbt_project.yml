@@ -41,6 +41,7 @@ models:
       +schema: silver
       +materialized: table
       +tags: ['silver']
+      +database: "{{ 'ducklake_catalog' if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake' else env_var('DUCKDB_DATABASE', 'danish_democracy_data') }}"
     gold:
       +schema: gold
       +materialized: view

@@ -91,11 +91,7 @@ _RFAM_INCREMENTAL_CONFIG = {
     }
 }
 
-_DBT_SILVER_DEFAULT_CONFIG = {
-    "ops": {
-        "dbt_silver_assets": {"config": {"full_refresh": False}}
-    }
-}
+_DBT_SILVER_DEFAULT_CONFIG = {"ops": {"dbt_silver_assets": {"config": {"full_refresh": False}}}}
 
 
 def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
@@ -104,6 +100,7 @@ def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
         | selection
         | AssetSelection.keys("start_metabase_asset")
     )
+
 
 # ---------------------------------------------------------------------------
 # Shared executor: 4-way concurrency, mirrors ThreadPoolExecutor(max_workers=4)
@@ -208,8 +205,7 @@ rfam_all_job = define_asset_job(
     executor_def=_concurrent_executor,
     config=_RFAM_INCREMENTAL_CONFIG,
     description=(
-        "Runs all 7 Rfam extraction assets — incremental and full-extract — "
-        "in a single job."
+        "Runs all 7 Rfam extraction assets — incremental and full-extract — in a single job."
     ),
     tags={
         "team": "data-engineering",
@@ -225,8 +221,10 @@ rfam_all_job = define_asset_job(
 # Import here (deferred) to avoid a circular dependency: dbt_assets.py imports
 # from jobs.py indirectly via definitions.py, so we resolve at call time.
 
+
 def _seeds_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_seeds_assets
+
     return build_dbt_asset_selection([dbt_seeds_assets])
 
 
@@ -245,6 +243,7 @@ def _dbt_select_with_cv(model_names: list[str]) -> str:
 def _bronze_ddd_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
     from ddd_python.ddd_utils import configuration_variables
+
     select = _dbt_select_with_latest(configuration_variables.DANISH_DEMOCRACY_MODELS_BRONZE)
     return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
 
@@ -252,6 +251,7 @@ def _bronze_ddd_selection():
 def _bronze_rfam_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
     from ddd_python.ddd_utils import configuration_variables
+
     select = _dbt_select_with_latest(configuration_variables.RFAM_MODELS_BRONZE)
     return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
 
@@ -263,6 +263,7 @@ def _bronze_selection():
 def _silver_ddd_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_silver_assets
     from ddd_python.ddd_utils import configuration_variables
+
     select = _dbt_select_with_cv(configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER)
     return build_dbt_asset_selection([dbt_silver_assets], dbt_select=select)
 
@@ -270,6 +271,7 @@ def _silver_ddd_selection():
 def _silver_rfam_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_silver_assets
     from ddd_python.ddd_utils import configuration_variables
+
     select = _dbt_select_with_cv(configuration_variables.RFAM_MODELS_SILVER)
     return build_dbt_asset_selection([dbt_silver_assets], dbt_select=select)
 
@@ -280,11 +282,13 @@ def _silver_selection():
 
 def _gold_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_gold_assets
+
     return build_dbt_asset_selection([dbt_gold_assets])
 
 
 def _data_engineering_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_data_engineering_assets
+
     return build_dbt_asset_selection([dbt_data_engineering_assets])
 
 
@@ -341,8 +345,7 @@ dbt_bronze_rfam_job = define_asset_job(
     selection=_with_metabase_control(_bronze_rfam_selection()),
     executor_def=in_process_executor,
     description=(
-        "Runs dbt Bronze models for the RFAM source system only.  "
-        "Selects ``bronze_rfam_*`` models."
+        "Runs dbt Bronze models for the RFAM source system only.  Selects ``bronze_rfam_*`` models."
     ),
     tags={
         "team": "data-engineering",
@@ -481,11 +484,14 @@ export_gold_job = define_asset_job(
 # Full pipeline job — extraction → dbt → export
 # ---------------------------------------------------------------------------
 
+
 def _full_pipeline_selection():
     return (
         AssetSelection.groups(
-            "ingestion_DDD_incremental", "ingestion_DDD_full_extract",
-            "ingestion_RFAM_incremental", "ingestion_RFAM_full_extract",
+            "ingestion_DDD_incremental",
+            "ingestion_DDD_full_extract",
+            "ingestion_RFAM_incremental",
+            "ingestion_RFAM_full_extract",
         )
         | _bronze_selection()
         | _silver_selection()
@@ -495,11 +501,34 @@ def _full_pipeline_selection():
     )
 
 
+ducklake_cleanup_job = define_asset_job(
+    name="ducklake_cleanup_job",
+    selection=_with_metabase_control(AssetSelection.keys("ducklake_cleanup_asset")),
+    executor_def=in_process_executor,
+    description=(
+        "Vacuums the DuckLake catalog: expires snapshots older than 31 days, deletes orphaned "
+        "Parquet files, and removes residual _current_temp / __dbt_tmp "
+        "directories left by dbt's incremental strategy.  No-op when "
+        "SILVER_STORAGE_FORMAT != 'ducklake'."
+    ),
+    tags={
+        "team": "data-engineering",
+        "layer": "maintenance",
+    },
+)
+
+
 full_pipeline_job = define_asset_job(
     name="full_pipeline_job",
     selection=_with_metabase_control(_full_pipeline_selection()),
     executor_def=in_process_executor,
-    config={"ops": {**_DDD_INCREMENTAL_CONFIG["ops"], **_RFAM_INCREMENTAL_CONFIG["ops"], **_DBT_SILVER_DEFAULT_CONFIG["ops"]}},
+    config={
+        "ops": {
+            **_DDD_INCREMENTAL_CONFIG["ops"],
+            **_RFAM_INCREMENTAL_CONFIG["ops"],
+            **_DBT_SILVER_DEFAULT_CONFIG["ops"],
+        }
+    },
     description=(
         "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
         "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, exports "

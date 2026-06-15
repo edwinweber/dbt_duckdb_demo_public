@@ -9,6 +9,7 @@ Maps step_key → asset_key(s) via ASSET_MATERIALIZATION_PLANNED events in
 the consolidated index.db, expanding to one row per planned asset so that
 the downstream SQL model can join to dagster_asset via asset_key.
 """
+
 import json
 import os
 import sqlite3
@@ -66,11 +67,11 @@ def model(dbt, session):
 
     empty = pa.table(
         {
-            "run_id":        pa.array([], type=pa.string()),
-            "step_key":      pa.array([], type=pa.string()),
-            "asset_key":     pa.array([], type=pa.string()),
-            "failed_at":     pa.array([], type=pa.timestamp("us")),
-            "error_class":   pa.array([], type=pa.string()),
+            "run_id": pa.array([], type=pa.string()),
+            "step_key": pa.array([], type=pa.string()),
+            "asset_key": pa.array([], type=pa.string()),
+            "failed_at": pa.array([], type=pa.timestamp("us")),
+            "error_class": pa.array([], type=pa.string()),
             "error_message": pa.array([], type=pa.large_utf8()),
         }
     )
@@ -103,7 +104,12 @@ def model(dbt, session):
 
     # ── Expand failures to one row per planned asset ──────────────────────────
     run_ids, step_keys, asset_keys, failed_ats, error_classes, error_messages = (
-        [], [], [], [], [], []
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
     )
     for f in failures:
         assets = asset_map.get((f["run_id"], f["step_key"]), [None])
@@ -115,13 +121,15 @@ def model(dbt, session):
             error_classes.append(f["error_class"])
             error_messages.append(f["error_message"])
 
-    return _to_relation(pa.table(
-        {
-            "run_id":        pa.array(run_ids,        type=pa.string()),
-            "step_key":      pa.array(step_keys,      type=pa.string()),
-            "asset_key":     pa.array(asset_keys,     type=pa.string()),
-            "failed_at":     pa.array(pa.array(failed_ats).cast(pa.timestamp("us"))),
-            "error_class":   pa.array(error_classes,  type=pa.string()),
-            "error_message": pa.array(error_messages, type=pa.large_utf8()),
-        }
-    ))
+    return _to_relation(
+        pa.table(
+            {
+                "run_id": pa.array(run_ids, type=pa.string()),
+                "step_key": pa.array(step_keys, type=pa.string()),
+                "asset_key": pa.array(asset_keys, type=pa.string()),
+                "failed_at": pa.array(pa.array(failed_ats).cast(pa.timestamp("us"))),
+                "error_class": pa.array(error_classes, type=pa.string()),
+                "error_message": pa.array(error_messages, type=pa.large_utf8()),
+            }
+        )
+    )

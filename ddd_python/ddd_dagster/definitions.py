@@ -16,6 +16,7 @@ from ddd_python.ddd_dagster.dbt_assets import (
     dbt_seeds_assets,
     dbt_silver_assets,
 )
+from ddd_python.ddd_dagster.ducklake_cleanup_assets import ducklake_cleanup_asset
 from ddd_python.ddd_dagster.export_assets import all_export_assets
 from ddd_python.ddd_dagster.jobs import (
     danish_parliament_all_job,
@@ -30,6 +31,7 @@ from ddd_python.ddd_dagster.jobs import (
     dbt_silver_ddd_job,
     dbt_silver_job,
     dbt_silver_rfam_job,
+    ducklake_cleanup_job,
     export_gold_job,
     export_silver_job,
     full_pipeline_job,
@@ -75,6 +77,7 @@ _materialization_assets = [
     *_rfam_assets,
     *_dbt_assets,
     *_export_assets,
+    ducklake_cleanup_asset,
 ]
 start_metabase_asset = build_start_metabase_asset(_asset_keys(_materialization_assets))
 
@@ -86,6 +89,7 @@ defs = Definitions(
         *_rfam_assets,
         *_dbt_assets,
         *_export_assets,
+        ducklake_cleanup_asset,
         start_metabase_asset,
     ],
     jobs=[
@@ -101,6 +105,7 @@ defs = Definitions(
         dbt_silver_rfam_job,
         dbt_gold_job,
         dbt_data_engineering_job,
+        ducklake_cleanup_job,
         export_silver_job,
         export_gold_job,
         full_pipeline_job,

@@ -288,7 +288,10 @@ The solution: a custom module class, `_LazyEnv(types.ModuleType)`:
 
 * **Optional** vars are read eagerly with `os.getenv(...)` and stored as attributes
   (e.g. `STORAGE_TARGET`, `LOCAL_STORAGE_PATH`, `DUCKDB_DATABASE_LOCATION`). These
-  never raise.
+  never raise. This block also handles `SILVER_STORAGE_FORMAT` (default `duckdb`,
+  validated against `{duckdb, ducklake}` — an invalid value raises immediately)
+  plus the two DuckLake paths (`DUCKLAKE_CATALOG_LOCATION`, `DUCKLAKE_DATA_PATH`),
+  which are read eagerly and default to `None` when not in DuckLake mode.
 * **Required** vars are listed in `_LAZY_REQUIRED` and resolved only on **first
   access**, via `__getattr__`. So `get_variables_from_env.AZURE_CLIENT_SECRET`
   raises `EnvironmentError` *only if you actually touch it* and it's missing.
@@ -487,22 +490,57 @@ depth.
 Reads each Silver table from DuckDB and writes it to a Delta Lake table. The
 interesting logic is **incremental append**:
 
-* If the Delta table **already exists**, it registers the existing Delta table as a
-  DuckDB view, then `LEFT JOIN`s the live Silver table against it on
+* If the Delta table **already exists**, the dedup read happens *inside DuckDB*
+  via the `delta` extension's `delta_scan`: the live Silver table is
+  `LEFT JOIN`ed directly against `delta_scan('<target_path>')` on
   `primary_key + LKHS_date_valid_from`, keeping only rows where the target side is
   `NULL` (i.e. not yet exported). Those new rows are appended
-  (`mode="append", schema_mode="merge"`).
+  (`mode="append", schema_mode="merge"`). Reading the target with `delta_scan`
+  (rather than `DeltaTable(...).to_pyarrow_table()`) means the existing Delta
+  table is **never fully materialised into Python/PyArrow memory** — DuckDB reads
+  only the join keys it needs, with projection pushdown.
 * If the Delta table **does not exist** (first load), it writes everything with
   `mode="overwrite"`.
 
 ```python
 query = (
     f"SELECT src.* FROM ...main_silver.{table} src "
-    f"LEFT JOIN target_table_{table} tgt "
+    f"LEFT JOIN delta_scan('{target_table_path}') tgt "
     f"  ON src.{pk} = tgt.{pk} AND src.LKHS_date_valid_from = tgt.LKHS_date_valid_from "
     f"WHERE tgt.{pk} IS NULL"
 )
 ```
+
+**Read/write split.** DuckDB's `delta` extension is **read-only** at the pinned
+version (DuckDB `≥1.5.1,<1.6`) — `delta_scan` reads, but there is no
+`COPY ... (FORMAT delta)` writer. So the *existence check* stays on
+`deltalake.DeltaTable.is_deltatable` and the *write* stays on
+`deltalake.write_deltalake`; only the dedup read moved into DuckDB. A
+`_prepare_delta_read` helper `LOAD`s the extension (and, for OneLake, the Azure
+stack + the persistent `azure_sp` secret) on the connection before `delta_scan`
+runs.
+
+> **Future migration (revisit on the next DuckDB bump).** Newer DuckDB builds add
+> a Delta *writer* (`COPY … (FORMAT delta)`), but there is a known **Azure/OneLake
+> regression**, so the writer cannot yet replace `write_deltalake` for the
+> `onelake` target. Two gates must both clear before dropping the `deltalake`
+> dependency from the write path: (1) bump DuckDB to a version with the writer,
+> and (2) the Azure regression is fixed. Local writes (`STORAGE_TARGET=local`)
+> could move first, but maintaining two write paths isn't worth it for this
+> single-node project — wait until both local and Azure writes work, then switch
+> Gold (overwrite) and the Silver anti-join result to `COPY … (FORMAT delta)` in
+> one go.
+
+**Storage-format aware (DuckDB vs DuckLake).** The connection comes from the
+shared `open_export_connection()` (`ddd_utils/path_utils.py`): in native `duckdb`
+mode it's a plain read-only connection to the main DuckDB file; in `ducklake`
+mode it also attaches the DuckLake catalog read-only (`ATTACH 'ducklake:…' AS
+ducklake_catalog … (READ_ONLY)`).  `_silver_source_database()` then resolves the
+source to `ducklake_catalog.main_silver.<table>` (DuckLake) or
+`<DUCKDB_DATABASE>.main_silver.<table>` (DuckDB), so the export reads the Silver
+tables from wherever dbt actually wrote them.  The **Gold** export uses the same
+`open_export_connection()`, so its views (which reference
+`ducklake_catalog.main_silver`) resolve in DuckLake mode too.
 
 Per-table failures are collected and re-raised as one `RuntimeError` after *all*
 tables are attempted, so one bad table doesn't silently skip the rest. The PK comes
@@ -761,14 +799,38 @@ deferred imports inside the function body to dodge a circular import between
 `jobs.py` and `dbt_assets.py`. `full_pipeline_job` unions everything into one
 sequential end-to-end run.
 
+### 7.7b `ducklake_cleanup_assets.py` — DuckLake catalog maintenance
+
+[ddd_python/ddd_dagster/ducklake_cleanup_assets.py](../ddd_python/ddd_dagster/ducklake_cleanup_assets.py)
+
+A single asset (`ducklake_cleanup_asset`, group `maintenance`) that vacuums the
+DuckLake catalog when `SILVER_STORAGE_FORMAT=ducklake` (otherwise it logs a skip
+and returns). It attaches the catalog, then:
+
+1. `CALL ducklake_expire_snapshots(..., older_than=NOW() - INTERVAL '31 days')` —
+   expire snapshots older than 31 days (recent ones are kept for time-travel).
+2. `CALL ducklake_delete_orphaned_files(...)` — delete Parquet files no longer
+   referenced by the catalog.
+3. A filesystem sweep that removes leftover `*_current_temp` directories from the
+   Silver pre/post-hooks, then re-asserts `o+r`/`o+rx` on the data tree so Metabase
+   (a different UID) can still read it.
+
+**Critical invariant:** the sweep **never** touches `*__dbt_tmp` directories —
+DuckLake stores *live* table data there (dbt's incremental-append strategy writes
+staging Parquet into `…__dbt_tmp/` and the main table's snapshot references those
+files). Deleting them corrupts Silver. It runs via `ducklake_cleanup_job`
+(`in_process_executor`, Metabase-wrapped), which is a **manual** job — there is
+no schedule for it (run it on demand after a large `--full-refresh`).
+
 ### 7.8 `schedules.py` — when jobs run
 
 [ddd_python/ddd_dagster/schedules.py](../ddd_python/ddd_dagster/schedules.py)
 
-Two cron schedules, both **defaulting to STOPPED** (you enable them in the UI): the
-full pipeline at 06:00 and the Data Engineering refresh at 08:00, both
-Europe/Copenhagen. Ordering within the pipeline is enforced by asset dependencies,
-not by spacing the cron times.
+Two cron schedules, both **defaulting to STOPPED** (you enable them in the UI):
+the full pipeline at 06:00 and the Data Engineering refresh at 08:00, both
+Europe/Copenhagen. Ordering within the pipeline is enforced by asset
+dependencies, not by spacing the cron times. (`ducklake_cleanup_job` is
+deliberately left unscheduled — see §7.7b.)
 
 ### 7.9 `sensors.py` — run-status logging
 
@@ -805,8 +867,13 @@ the Fabric capacity), not the data. They're standalone CLI tools.
 
 The single source of truth for backups. Defines a frozen `@dataclass BackupTarget`
 (name, source dir, backup dir, which containers to stop, optional restore UID, max
-archive age) and a tuple `BACKUP_TARGETS` for the three targets: `dagster`,
-`metabase`, `duckdb`. Also holds the Docker helpers `stop_containers` /
+archive age) and a tuple `BACKUP_TARGETS` assembled by `_build_backup_targets()`:
+`dagster`, `metabase`, and `duckdb` always, plus `ducklake` when
+`SILVER_STORAGE_FORMAT=ducklake`. In that mode `ducklake` (the Parquet data files)
+is ordered **before** `duckdb` (which carries the DuckLake catalog), so the catalog
+snapshot can never reference a data file the backup missed. Default local retention
+is 62 days for `dagster`/`metabase` and 7 days for `duckdb`/`ducklake`. Also holds
+the Docker helpers `stop_containers` /
 `start_containers` (which check running state first and use `docker stop/start`
 directly so they work from inside a container) and `available_timestamps` for
 discovering existing archives. Both `backup_platform` and `restore_platform` import
@@ -848,7 +915,7 @@ target state or times out. Skips the call if already in the desired state.
 
 ## 9. The test suite
 
-Location: [tests/](../tests/). **125 tests across 14 modules**, runnable with
+Location: [tests/](../tests/). **132 tests across 15 modules**, runnable with
 `pytest tests/`. They split into two kinds.
 
 **Unit tests** (fast, no database) check the pure-Python logic:
@@ -992,7 +1059,7 @@ project dir) and pass `timeout=` to long-running subprocess calls.
 
 ### 11.6 Test coverage skews toward SQL, away from the Python glue
 
-The 125 tests are strong on what they cover — config consistency, the dbt CDC/SCD2
+The 132 tests are strong on what they cover — config consistency, the dbt CDC/SCD2
 logic, path/string helpers, export logic. But the **orchestration layer is largely
 untested**: there are no tests for the Dagster assets/jobs/sensors
 (`assets.py`, `rfam_assets.py`, `export_assets.py` barriers, `jobs.py`, `sensors.py`),
@@ -1005,16 +1072,17 @@ that breaks silently on a refactor (a renamed asset key, a wrong `deps=` list).
 without touching the network. Even a handful of "the graph has the expected keys and
 dependencies" tests would catch the most likely regressions.
 
-### 11.7 The Silver export anti-join loads the whole Delta table into memory
+### 11.7 The Silver export anti-join (resolved: now reads via `delta_scan`)
 
-In [export_main_silver_to_fabric_silver.py](../ddd_python/ddd_dlt/export_main_silver_to_fabric_silver.py),
-the incremental path does `connection.register(..., target_table.to_pyarrow_table())`
-— i.e. it pulls the **entire existing Delta table** into memory to compute the
-anti-join that finds new rows. This is fine for the current data volumes and is an
-explicit single-node design, but it does not scale: memory grows with total history,
-not with the increment. *Improvement (only if volumes grow):* push the
-`LKHS_date_valid_from` lower-bound predicate into the Delta read, or use Delta's
-`MERGE`/`merge_predicate` so only the relevant slice is materialised.
+*Historical note — this concern has been addressed.* The incremental path used to
+do `connection.register(..., target_table.to_pyarrow_table())`, pulling the
+**entire existing Delta table** into memory to compute the anti-join. It now
+`LEFT JOIN`s against `delta_scan('<target_path>')` directly inside DuckDB, so the
+target is read with projection pushdown and is never fully materialised in Python
+(see §5.4). The write still uses `deltalake.write_deltalake` because DuckDB's
+delta extension is read-only. *Further improvement (only if volumes grow):* push a
+`LKHS_date_valid_from` lower-bound predicate into the `delta_scan` so even the
+join-key scan is bounded, rather than scanning all of history's keys.
 
 ### 11.8 Tooling and CI gaps
 

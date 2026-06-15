@@ -15,9 +15,9 @@ using temporary fixture JSON files, to verify:
 import json
 import os
 
-import duckdb
 import pytest
 
+import duckdb
 
 # ── Fixture ──────────────────────────────────────────────────────────
 
@@ -48,9 +48,7 @@ def silver_fixture_dir(tmp_path):
     }
 
     for fname, rows in files.items():
-        (entity_dir / fname).write_text(
-            "\n".join(json.dumps(r) for r in rows) + "\n"
-        )
+        (entity_dir / fname).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
     return tmp_path
 

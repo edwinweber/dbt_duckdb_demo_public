@@ -14,8 +14,8 @@ from ddd_python.ddd_dbt.generate_dbt_models import (
     _INCREMENTAL_SILVER_MODELS_DDD,
     _INCREMENTAL_SILVER_MODELS_RFAM,
     generate_dbt_models_bronze,
-    generate_dbt_models_silver,
     generate_dbt_models_gold_cv,
+    generate_dbt_models_silver,
 )
 from ddd_python.ddd_utils import configuration_variables as cv
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
@@ -43,10 +43,9 @@ def dbt_models_tmpdir(tmp_path: Path):
 def test_incremental_silver_models_ddd_derived_from_config():
     """The DDD set should match the canonical incremental list, not a hardcoded one."""
     expected = {
-        f"silver_ddd_{normalize_danish_name(n)}"
-        for n in cv.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
+        f"silver_ddd_{normalize_danish_name(n)}" for n in cv.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
     }
-    assert _INCREMENTAL_SILVER_MODELS_DDD == expected
+    assert expected == _INCREMENTAL_SILVER_MODELS_DDD
 
 
 def test_incremental_silver_models_ddd_has_6():
@@ -124,7 +123,10 @@ def test_silver_ddd_all_models_get_correct_macro(dbt_models_tmpdir: Path):
 def test_bronze_ddd_generates_model_and_latest(dbt_models_tmpdir: Path):
     """DDD Bronze should generate both a main model and a _latest model."""
     generate_dbt_models_bronze(
-        ["bronze_ddd_aktoer"], ["Aktør"], "DDD", "danish_parliament",
+        ["bronze_ddd_aktoer"],
+        ["Aktør"],
+        "DDD",
+        "danish_parliament",
     )
     bronze_dir = dbt_models_tmpdir / "bronze"
     assert (bronze_dir / "bronze_ddd_aktoer.sql").exists()
@@ -160,11 +162,8 @@ def test_gold_generates_cv_and_skips_date(dbt_models_tmpdir: Path):
 
 def test_incremental_silver_models_rfam_derived_from_config():
     """The RFAM set should match the canonical incremental list, not a hardcoded one."""
-    expected = {
-        f"silver_rfam_{name}"
-        for name in cv.RFAM_TABLE_NAMES_INCREMENTAL
-    }
-    assert _INCREMENTAL_SILVER_MODELS_RFAM == expected
+    expected = {f"silver_rfam_{name}" for name in cv.RFAM_TABLE_NAMES_INCREMENTAL}
+    assert expected == _INCREMENTAL_SILVER_MODELS_RFAM
 
 
 def test_incremental_silver_models_rfam_has_2():
@@ -280,7 +279,10 @@ def test_silver_rfam_all_models_get_correct_macro(dbt_models_tmpdir: Path):
 def test_bronze_rfam_generates_model_and_latest(dbt_models_tmpdir: Path):
     """RFAM Bronze should generate both a main model and a _latest model."""
     generate_dbt_models_bronze(
-        ["bronze_rfam_family"], ["family"], "RFAM", "rfam",
+        ["bronze_rfam_family"],
+        ["family"],
+        "RFAM",
+        "rfam",
         data_source_env_var="RFAM_DATA_SOURCE",
     )
     bronze_dir = dbt_models_tmpdir / "bronze"

@@ -3,8 +3,6 @@
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path, build_delta_export_path
 
 # Patch targets
@@ -17,6 +15,7 @@ _GET_TOKEN = "ddd_python.ddd_utils.get_fabric_onelake_clients.get_fabric_token"
 # ---------------------------------------------------------------------------
 # build_bronze_destination_path
 # ---------------------------------------------------------------------------
+
 
 class TestBuildBronzeDestinationPath:
     def test_local_returns_relative_path(self):
@@ -54,6 +53,7 @@ class TestBuildBronzeDestinationPath:
 # build_delta_export_path  — local storage
 # ---------------------------------------------------------------------------
 
+
 class TestBuildDeltaExportPathLocal:
     def test_silver_local_path_format(self, tmp_path):
         env = MagicMock(STORAGE_TARGET="local", LOCAL_STORAGE_PATH=str(tmp_path))
@@ -85,6 +85,7 @@ class TestBuildDeltaExportPathLocal:
 # ---------------------------------------------------------------------------
 # build_delta_export_path  — OneLake storage
 # ---------------------------------------------------------------------------
+
 
 class TestBuildDeltaExportPathOneLake:
     _ENV_ONELAKE = dict(

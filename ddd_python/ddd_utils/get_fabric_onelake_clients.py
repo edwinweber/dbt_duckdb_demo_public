@@ -1,11 +1,12 @@
-from ddd_python.ddd_utils import get_variables_from_env
 from azure.identity import ClientSecretCredential
 from azure.storage.filedatalake import (
-    DataLakeServiceClient,
     DataLakeDirectoryClient,
     DataLakeFileClient,
+    DataLakeServiceClient,
     FileSystemClient,
 )
+
+from ddd_python.ddd_utils import get_variables_from_env
 
 # Lazily initialised credential — created on first use so that importing this
 # module does not fail when environment variables are absent (e.g. during
@@ -56,7 +57,8 @@ def get_fabric_file_system_client(file_system_name: str) -> FileSystemClient:
 
 
 def get_fabric_directory_client(
-    file_system_client: FileSystemClient, file_directory: str,
+    file_system_client: FileSystemClient,
+    file_directory: str,
 ) -> DataLakeDirectoryClient:
     # Create a directory client connected to OneLake
     directory_client = file_system_client.get_directory_client(file_directory)
@@ -66,12 +68,14 @@ def get_fabric_directory_client(
 
 
 def get_fabric_file_client(
-    directory_client: DataLakeDirectoryClient, file_name: str,
+    directory_client: DataLakeDirectoryClient,
+    file_name: str,
 ) -> DataLakeFileClient:
     # Create a file client connected to OneLake
     file_client = directory_client.get_file_client(file_name)
 
     return file_client
+
 
 def get_fabric_file_client_default_workspace(
     destination_directory_path: str, destination_file_name: str

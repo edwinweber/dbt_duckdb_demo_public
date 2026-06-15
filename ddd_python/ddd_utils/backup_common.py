@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # ── Target descriptor ─────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class BackupTarget:
     """Immutable descriptor for a single backup/restore target."""
@@ -63,23 +64,43 @@ class BackupTarget:
 
 BACKUP_LOG_DIR: Path = Path(os.environ.get("BACKUP_LOG_DIR", "/data_backup/logs"))
 
-_DAGSTER_BACKUP_DIR  = Path(os.environ.get("DAGSTER_BACKUP_DIR",  "/data_backup/dagster"))
+_DAGSTER_BACKUP_DIR = Path(os.environ.get("DAGSTER_BACKUP_DIR", "/data_backup/dagster"))
 _METABASE_BACKUP_DIR = Path(os.environ.get("METABASE_BACKUP_DIR", "/data_backup/metabase"))
-_DUCKDB_BACKUP_DIR   = Path(os.environ.get("DUCKDB_BACKUP_DIR",   "/data_backup/duckdb"))
+_DUCKDB_BACKUP_DIR = Path(os.environ.get("DUCKDB_BACKUP_DIR", "/data_backup/duckdb"))
+_DUCKLAKE_BACKUP_DIR = Path(os.environ.get("DUCKLAKE_BACKUP_DIR", "/data_backup/ducklake"))
 
-_DAGSTER_BACKUP_MAX_AGE_DAYS:  int = max(1, int(os.environ.get("DAGSTER_BACKUP_MAX_AGE_DAYS",  "62")))
-_METABASE_BACKUP_MAX_AGE_DAYS: int = max(1, int(os.environ.get("METABASE_BACKUP_MAX_AGE_DAYS", "62")))
-_DUCKDB_BACKUP_MAX_AGE_DAYS:   int = max(1, int(os.environ.get("DUCKDB_BACKUP_MAX_AGE_DAYS",   "7")))
+_DAGSTER_BACKUP_MAX_AGE_DAYS: int = max(1, int(os.environ.get("DAGSTER_BACKUP_MAX_AGE_DAYS", "62")))
+_METABASE_BACKUP_MAX_AGE_DAYS: int = max(
+    1, int(os.environ.get("METABASE_BACKUP_MAX_AGE_DAYS", "62"))
+)
+_DUCKDB_BACKUP_MAX_AGE_DAYS: int = max(1, int(os.environ.get("DUCKDB_BACKUP_MAX_AGE_DAYS", "7")))
+_DUCKLAKE_BACKUP_MAX_AGE_DAYS: int = max(
+    1, int(os.environ.get("DUCKLAKE_BACKUP_MAX_AGE_DAYS", "7"))
+)
 
 # Single source of truth for each service's data directory.
 # DAGSTER_HOME and METABASE_DATA_DIR are the same variables used by the
 # services themselves — no separate backup-source variables needed.
 # DUCKDB_DATABASE_LOCATION points to the .duckdb file; .parent gives the directory.
-_DAGSTER_HOME      = Path(os.environ.get("DAGSTER_HOME",      "/data/dagster"))
+_DAGSTER_HOME = Path(os.environ.get("DAGSTER_HOME", "/data/dagster"))
 _METABASE_DATA_DIR = Path(os.environ.get("METABASE_DATA_DIR", "/data/metabase/data"))
-_DUCKDB_DATA_DIR   = Path(
+_DUCKDB_DATA_DIR = Path(
     os.environ.get("DUCKDB_DATABASE_LOCATION", "/data/duckdb/danish_democracy_data.duckdb")
 ).parent
+# DuckLake Parquet data directory — only backed up when Silver is stored in
+# DuckLake.  The DuckLake *catalog* (.ducklake file) lives in the DuckDB
+# directory and is therefore already captured by the ``duckdb`` target.
+_DUCKLAKE_DATA_DIR = Path(os.environ.get("DUCKLAKE_DATA_PATH", "/data/ducklake"))
+
+
+def _silver_storage_is_ducklake() -> bool:
+    """True when ``SILVER_STORAGE_FORMAT=ducklake``.
+
+    In that mode the Silver layer is stored as DuckLake-managed Parquet files,
+    so both the DuckLake **data files** and the DuckLake **catalog** must be part
+    of the backup (the catalog rides along in the ``duckdb`` target).
+    """
+    return os.environ.get("SILVER_STORAGE_FORMAT", "duckdb").strip().lower() == "ducklake"
 
 
 # ── Backup targets ────────────────────────────────────────────────────────────
@@ -88,33 +109,65 @@ _DUCKDB_DATA_DIR   = Path(
 # Container names are pinned via ``container_name:`` in docker-compose.yml so
 # they are stable regardless of which directory the backup runs from.
 
-BACKUP_TARGETS: tuple[BackupTarget, ...] = (
-    BackupTarget(
-        name="dagster",
-        source=_DAGSTER_HOME,
-        backup_dir=_DAGSTER_BACKUP_DIR,
-        containers=("ddd-dagster",),
-        # Dagster home is owned by the process user — direct extraction works.
-        max_archive_age_days=_DAGSTER_BACKUP_MAX_AGE_DAYS,
-    ),
-    BackupTarget(
-        name="metabase",
-        source=_METABASE_DATA_DIR,
-        backup_dir=_METABASE_BACKUP_DIR,
-        containers=("ddd-metabase",),
-        restore_uid="2000",  # /data/metabase is owned by UID 2000 (Metabase process)
-        max_archive_age_days=_METABASE_BACKUP_MAX_AGE_DAYS,
-    ),
-    BackupTarget(
-        name="duckdb",
-        source=_DUCKDB_DATA_DIR,
-        backup_dir=_DUCKDB_BACKUP_DIR,
-        # Both services hold open DuckDB connections; stop both to ensure a
-        # clean, WAL-flushed snapshot before archiving.
-        containers=("ddd-dagster", "ddd-metabase"),
-        max_archive_age_days=_DUCKDB_BACKUP_MAX_AGE_DAYS,
-    ),
+_DAGSTER_TARGET = BackupTarget(
+    name="dagster",
+    source=_DAGSTER_HOME,
+    backup_dir=_DAGSTER_BACKUP_DIR,
+    containers=("ddd-dagster",),
+    # Dagster home is owned by the process user — direct extraction works.
+    max_archive_age_days=_DAGSTER_BACKUP_MAX_AGE_DAYS,
 )
+
+_METABASE_TARGET = BackupTarget(
+    name="metabase",
+    source=_METABASE_DATA_DIR,
+    backup_dir=_METABASE_BACKUP_DIR,
+    containers=("ddd-metabase",),
+    restore_uid="2000",  # /data/metabase is owned by UID 2000 (Metabase process)
+    max_archive_age_days=_METABASE_BACKUP_MAX_AGE_DAYS,
+)
+
+# DuckLake Parquet data files (Silver layer).  Only included in DuckLake mode.
+_DUCKLAKE_TARGET = BackupTarget(
+    name="ducklake",
+    source=_DUCKLAKE_DATA_DIR,
+    backup_dir=_DUCKLAKE_BACKUP_DIR,
+    # The pipeline (dagster) writes these files and Metabase reads them; stop
+    # both for a clean snapshot — mirrors the duckdb target.
+    containers=("ddd-dagster", "ddd-metabase"),
+    max_archive_age_days=_DUCKLAKE_BACKUP_MAX_AGE_DAYS,
+)
+
+_DUCKDB_TARGET = BackupTarget(
+    name="duckdb",
+    source=_DUCKDB_DATA_DIR,  # /data/duckdb — the main DB *and* the DuckLake catalog file
+    backup_dir=_DUCKDB_BACKUP_DIR,
+    # Both services hold open DuckDB connections; stop both to ensure a
+    # clean, WAL-flushed snapshot before archiving.
+    containers=("ddd-dagster", "ddd-metabase"),
+    max_archive_age_days=_DUCKDB_BACKUP_MAX_AGE_DAYS,
+)
+
+
+def _build_backup_targets(include_ducklake: bool) -> tuple[BackupTarget, ...]:
+    """Assemble the ordered backup-target tuple.
+
+    Ordering matters in DuckLake mode: the DuckLake *data files* (``ducklake``
+    target) are archived **before** the DuckLake *catalog* (which lives in
+    /data/duckdb and is captured by the ``duckdb`` target).  The catalog
+    references the data files, so capturing the files first guarantees the
+    catalog snapshot can never point at a file the backup missed.  (Containers
+    are stopped for the whole run, so writes are quiesced too — this ordering is
+    correct-by-construction belt-and-suspenders.)
+    """
+    targets: list[BackupTarget] = [_DAGSTER_TARGET, _METABASE_TARGET]
+    if include_ducklake:
+        targets.append(_DUCKLAKE_TARGET)  # 1) DuckLake data files
+    targets.append(_DUCKDB_TARGET)  # 2) main DB + DuckLake catalog
+    return tuple(targets)
+
+
+BACKUP_TARGETS: tuple[BackupTarget, ...] = _build_backup_targets(_silver_storage_is_ducklake())
 
 TARGET_NAMES: tuple[str, ...] = tuple(t.name for t in BACKUP_TARGETS)
 
@@ -186,6 +239,7 @@ def start_containers(containers: list[str]) -> None:
 
 
 # ── Archive discovery ─────────────────────────────────────────────────────────
+
 
 def available_timestamps(backup_dir: Path) -> list[str]:
     """Return all backup timestamps found in *backup_dir*, sorted ascending.

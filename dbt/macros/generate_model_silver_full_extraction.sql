@@ -62,8 +62,8 @@ AND         CTE_FILES.LKHS_filename_next IS NOT NULL
 )
 SELECT CTE_ALL_ROWS.*
 FROM   CTE_ALL_ROWS
-WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file)
-        OR (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file) IS NULL
+WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file)
+        OR (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file) IS NULL
        )
 {% if is_incremental() %}
 AND NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)

@@ -15,6 +15,13 @@ from dagster import (
 
 from ddd_python.ddd_dagster.jobs import dbt_data_engineering_job, full_pipeline_job
 
+# Note: there is intentionally NO schedule for ``ducklake_cleanup_job``.  At this
+# scale the DuckLake catalog accumulates only trivial amounts of orphaned data
+# (a few Parquet files / empty ``_current_temp`` dirs per full-refresh), so the
+# cleanup is left as a *manual* job — run it from the Dagster UI or CLI after a
+# large ``--full-refresh`` rather than on a daily cron.  Automating it would also
+# bounce Metabase daily for negligible benefit.
+
 danish_parliament_full_pipeline_schedule = ScheduleDefinition(
     name="danish_parliament_full_pipeline_schedule",
     job=full_pipeline_job,

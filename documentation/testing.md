@@ -8,7 +8,7 @@ The project has two complementary layers of automated tests:
 
 | Layer | Tool | Count | Scope |
 | --- | --- | --- | --- |
-| **Python tests** | `pytest` | 125 tests across 14 modules | The Python codebase + the SQL *logic* of the dbt models, run against an ephemeral DuckDB |
+| **Python tests** | `pytest` | 132 tests across 15 modules | The Python codebase + the SQL *logic* of the dbt models, run against an ephemeral DuckDB |
 | **Data-quality tests** | `dbt test` | ~263 tests (262 generic + 1 custom) | The *materialised data* in DuckDB after a pipeline run |
 
 The two layers answer different questions. The pytest layer answers *"is the
@@ -176,7 +176,7 @@ No cloud credentials are required.
 ```bash
 pip install -e ".[dev]"     # installs pytest
 
-pytest tests/                                  # all 125 tests
+pytest tests/                                  # all 132 tests
 pytest tests/ -v                               # verbose
 pytest tests/test_integration_silver_cdc.py    # one module
 pytest -k "incremental"                        # keyword filter

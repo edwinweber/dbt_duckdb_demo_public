@@ -1,7 +1,7 @@
 {%- macro generate_model_silver_incr_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
 {{ config( materialized='incremental',incremental_strategy='append',on_schema_change='append_new_columns',unique_key=[primary_key_columns,'LKHS_date_valid_from']
 ,pre_hook  = "{{ generate_pre_hook_silver_full_refresh(primary_key_columns='" ~ primary_key_columns ~ "') }}"
-,post_hook = "DROP TABLE IF EXISTS {{ this.schema }}.{{ this.name }}_current_temp;"
+,post_hook = "DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_current_temp;"
 ) }}
 WITH CTE_BRONZE AS (
 SELECT src.*
@@ -54,14 +54,14 @@ SELECT  cv.* EXCLUDE (LKHS_date_inserted,LKHS_cdc_operation,LKHS_date_valid_from
 ,       cv.LKHS_date_valid_from
 ,       cv.LKHS_date_inserted
 ,       cv.LKHS_cdc_operation
-FROM     {{ this.schema }}.{{ this.name }}_current_temp cv
+FROM     {{ this.database }}.{{ this.schema }}.{{ this.name }}_current_temp cv
 WHERE   cv.LKHS_cdc_operation = 'D'
 UNION ALL
 SELECT  cv.* EXCLUDE (LKHS_date_inserted,LKHS_cdc_operation,LKHS_date_valid_from)
 ,       CTE_FILE_LATEST.LKHS_date_valid_from
 ,       CAST('{{ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] }}' AS DATETIME) AS LKHS_date_inserted
 ,       'D' AS LKHS_cdc_operation
-FROM      {{ this.schema }}.{{ this.name }}_current_temp cv
+FROM      {{ this.database }}.{{ this.schema }}.{{ this.name }}_current_temp cv
 CROSS JOIN CTE_FILE_LATEST
 LEFT JOIN {{ ref(bronze_latest_version) }} bronze_latest
 ON        cv.{{ primary_key_columns }} = bronze_latest.{{ primary_key_columns }}
@@ -72,8 +72,8 @@ AND       bronze_latest.{{ primary_key_columns }} IS NULL
 )
 SELECT CTE_ALL_ROWS.*
 FROM   CTE_ALL_ROWS
-WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file)
-        OR (SELECT LKHS_filename_previous FROM {{ this.schema }}.{{ this.name}}_last_file) IS NULL
+WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file)
+        OR (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file) IS NULL
        )
 {% if is_incremental() %}
 AND NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)

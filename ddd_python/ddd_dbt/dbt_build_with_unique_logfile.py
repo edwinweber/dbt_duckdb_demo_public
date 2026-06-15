@@ -11,9 +11,9 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from dotenv import load_dotenv, find_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv())
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def generate_log_filename() -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     return f"dbt_build_log_{timestamp}.json"
 
 
@@ -51,8 +51,12 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> i
 def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
     # Deferred import: only called in onelake mode; keeps local-mode imports Azure-free.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
+
+    log_dir_fabric = get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC
+    assert log_dir_fabric is not None, "DBT_LOGS_DIRECTORY_FABRIC must be set"
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
-        get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC, log_file_name,
+        log_dir_fabric,
+        log_file_name,
     )
     file_client.create_file()
     with open(log_file_local, "rb") as local_log:
@@ -61,6 +65,7 @@ def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
 
 def main(models_to_select: str | None = None) -> None:
     log_dir = get_variables_from_env.DBT_LOGS_DIRECTORY
+    assert log_dir is not None, "DBT_LOGS_DIRECTORY must be set"
     os.makedirs(log_dir, exist_ok=True)
 
     log_file_name = generate_log_filename()
@@ -84,8 +89,12 @@ def main(models_to_select: str | None = None) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    parser = argparse.ArgumentParser(description="Run dbt build with timestamped log upload to OneLake.")
-    parser.add_argument("--models_to_select", required=False, help="The dbt-models to build, separated by spaces")
+    parser = argparse.ArgumentParser(
+        description="Run dbt build with timestamped log upload to OneLake."
+    )
+    parser.add_argument(
+        "--models_to_select", required=False, help="The dbt-models to build, separated by spaces"
+    )
     args = parser.parse_args()
 
     try:

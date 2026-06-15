@@ -1,6 +1,7 @@
 import os
-import types
 import sys
+import types
+
 from dotenv import load_dotenv
 
 # Read secrets and variables from .env file
@@ -11,7 +12,7 @@ def _require(name: str) -> str:
     """Return the value of environment variable *name*, or raise if missing."""
     value = os.getenv(name)
     if not value:
-        raise EnvironmentError(f"Required environment variable {name!r} is not set")
+        raise OSError(f"Required environment variable {name!r} is not set")
     return value
 
 
@@ -29,9 +30,7 @@ def _int_env(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        raise EnvironmentError(
-            f"Environment variable {name!r} must be an integer; got {raw!r}"
-        ) from None
+        raise OSError(f"Environment variable {name!r} must be an integer; got {raw!r}") from None
 
 
 # Map of attribute name → env var name for required variables that are
@@ -109,12 +108,28 @@ _mod.AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")  # type: ignore[at
 _VALID_STORAGE_TARGETS = frozenset({"local", "onelake"})
 _storage_target = os.getenv("STORAGE_TARGET", "local")
 if _storage_target not in _VALID_STORAGE_TARGETS:
-    raise EnvironmentError(
+    raise OSError(
         f"Invalid STORAGE_TARGET={_storage_target!r}. "
         f"Must be one of: {sorted(_VALID_STORAGE_TARGETS)}"
     )
 _mod.STORAGE_TARGET = _storage_target  # type: ignore[attr-defined]
 _mod.LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "data")  # type: ignore[attr-defined]
+
+# ── Silver storage format (optional — eager) ─────────────────────────────
+# "duckdb"   — silver tables are native DuckDB tables (default)
+# "ducklake" — silver tables are DuckLake-managed Parquet files stored locally;
+#              requires DUCKLAKE_CATALOG_LOCATION (e.g. /data/ducklake/ducklake_catalog.db).
+#              Selects the "local_ducklake" dbt target regardless of STORAGE_TARGET.
+_VALID_SILVER_STORAGE_FORMATS = frozenset({"duckdb", "ducklake"})
+_silver_storage_format = os.getenv("SILVER_STORAGE_FORMAT", "duckdb")
+if _silver_storage_format not in _VALID_SILVER_STORAGE_FORMATS:
+    raise OSError(
+        f"Invalid SILVER_STORAGE_FORMAT={_silver_storage_format!r}. "
+        f"Must be one of: {sorted(_VALID_SILVER_STORAGE_FORMATS)}"
+    )
+_mod.SILVER_STORAGE_FORMAT = _silver_storage_format  # type: ignore[attr-defined]
+_mod.DUCKLAKE_CATALOG_LOCATION = os.getenv("DUCKLAKE_CATALOG_LOCATION")  # type: ignore[attr-defined]
+_mod.DUCKLAKE_DATA_PATH = os.getenv("DUCKLAKE_DATA_PATH")  # type: ignore[attr-defined]
 
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
 _mod.DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")  # type: ignore[attr-defined]
@@ -123,7 +138,9 @@ _mod.DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER"
 _mod.DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")  # type: ignore[attr-defined]
 
 # ── Rfam data retrieval (optional — eager) ───────────────────────────────
-_mod.RFAM_CONNECTION_STRING = os.getenv("RFAM_CONNECTION_STRING", "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam")  # type: ignore[attr-defined]
+_mod.RFAM_CONNECTION_STRING = os.getenv(
+    "RFAM_CONNECTION_STRING", "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam"
+)  # type: ignore[attr-defined]
 _mod.RFAM_DATA_SOURCE = os.getenv("RFAM_DATA_SOURCE")  # type: ignore[attr-defined]
 _mod.RFAM_DEFAULT_DAYS_TO_LOAD = _int_env("RFAM_DEFAULT_DAYS_TO_LOAD", 365)  # type: ignore[attr-defined]
 

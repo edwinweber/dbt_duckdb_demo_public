@@ -8,7 +8,9 @@ def test_redacts_secret_key():
 
 
 def test_redacts_connection_string():
-    assert _scrub_secrets({"connection_string": "Server=x;Password=y"}) == {"connection_string": "***"}
+    assert _scrub_secrets({"connection_string": "Server=x;Password=y"}) == {
+        "connection_string": "***"
+    }
 
 
 def test_redacts_password_key():

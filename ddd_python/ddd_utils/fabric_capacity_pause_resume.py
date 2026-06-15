@@ -10,7 +10,7 @@ import time
 
 import requests
 
-from ddd_python.ddd_utils import get_variables_from_env, get_fabric_onelake_clients
+from ddd_python.ddd_utils import get_fabric_onelake_clients, get_variables_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,9 @@ def get_capacity_status(access_token: str) -> str | None:
     return None
 
 
-def wait_for_status(target_status: str, access_token: str, poll_interval: int = 10, timeout: int = 300) -> None:
+def wait_for_status(
+    target_status: str, access_token: str, poll_interval: int = 10, timeout: int = 300
+) -> None:
     """Poll the Fabric capacity status until it reaches *target_status* or timeout.
 
     Raises:
@@ -103,5 +105,7 @@ def change_capacity_state(action: str) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    action = input("Enter 'pause' to pause capacity or 'resume' to resume capacity: ").strip().lower()
+    action = (
+        input("Enter 'pause' to pause capacity or 'resume' to resume capacity: ").strip().lower()
+    )
     change_capacity_state(action)

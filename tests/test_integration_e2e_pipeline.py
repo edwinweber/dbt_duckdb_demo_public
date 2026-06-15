@@ -14,13 +14,13 @@ Exercises the full Bronze → Silver → Delta Lake export pipeline logic:
 import json
 import os
 
-import duckdb
-import pyarrow as pa
 import pytest
 
 # deltalake is a project dependency — these tests exercise the real write path.
 from deltalake import DeltaTable
 from deltalake.writer import write_deltalake
+
+import duckdb
 
 
 @pytest.fixture()
@@ -140,7 +140,7 @@ def test_e2e_bronze_to_silver_row_count(e2e_fixture):
     ops = conn.execute(
         "SELECT LKHS_cdc_operation, COUNT(*) FROM main_silver.silver_item GROUP BY 1 ORDER BY 1"
     ).fetchdf()
-    op_dict = dict(zip(ops.iloc[:, 0], ops.iloc[:, 1]))
+    op_dict = dict(zip(ops.iloc[:, 0], ops.iloc[:, 1], strict=False))
     assert op_dict["I"] == 3  # rows 1,2 from file1 + row 3 from file2
     assert op_dict["U"] == 1  # row 1 updated in file2
     conn.close()

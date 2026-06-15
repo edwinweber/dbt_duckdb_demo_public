@@ -10,8 +10,8 @@ Usage::
 
 import logging
 import os
-import duckdb
 
+import duckdb
 from ddd_python.ddd_utils import get_variables_from_env
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def init_duckdb() -> None:
         get_variables_from_env.DUCKDB_DATABASE_LOCATION,
     )
     if not db_path:
-        raise EnvironmentError("DUCKDB_DATABASE_LOCATION is not set")
+        raise OSError("DUCKDB_DATABASE_LOCATION is not set")
 
     dirname = os.path.dirname(db_path)
     if dirname:

@@ -13,10 +13,10 @@ correctly:
 
 import json
 import os
-import textwrap
+
+import pytest
 
 import duckdb
-import pytest
 
 
 @pytest.fixture()
@@ -41,12 +41,8 @@ def bronze_fixture_dir(tmp_path):
         {"id": 3, "name": "Widget-C", "colour": "yellow", "_dlt_load_id": "x2"},
     ]
 
-    (entity_dir / file1_name).write_text(
-        "\n".join(json.dumps(r) for r in rows_file1) + "\n"
-    )
-    (entity_dir / file2_name).write_text(
-        "\n".join(json.dumps(r) for r in rows_file2) + "\n"
-    )
+    (entity_dir / file1_name).write_text("\n".join(json.dumps(r) for r in rows_file1) + "\n")
+    (entity_dir / file2_name).write_text("\n".join(json.dumps(r) for r in rows_file2) + "\n")
 
     return tmp_path
 
@@ -78,15 +74,19 @@ def test_bronze_extracts_lkhs_filename(bronze_fixture_dir):
     conn = duckdb.connect(":memory:")
     glob = os.path.join(bronze_fixture_dir, "widget", "widget_*.json*")
 
-    filenames = conn.execute(
-        f"""
+    filenames = (
+        conn.execute(
+            f"""
         SELECT DISTINCT
                SUBSTRING(filename,
                    LENGTH(filename)
                    - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
         FROM   read_json_auto('{glob}', filename=True, union_by_name=true)
         """
-    ).fetchdf()["LKHS_filename"].tolist()
+        )
+        .fetchdf()["LKHS_filename"]
+        .tolist()
+    )
 
     assert set(filenames) == {
         "widget_20240101_120000.json",
@@ -145,8 +145,9 @@ def test_bronze_latest_marks_deleted_ind_n(bronze_fixture_dir):
     conn = duckdb.connect(":memory:")
     glob = os.path.join(bronze_fixture_dir, "widget", "widget_*.json*")
 
-    deleted_flags = conn.execute(
-        f"""
+    deleted_flags = (
+        conn.execute(
+            f"""
         WITH cte_most_recent_file AS (
             SELECT MAX(filename) AS most_recent_file
             FROM   read_text('{glob}')
@@ -155,6 +156,9 @@ def test_bronze_latest_marks_deleted_ind_n(bronze_fixture_dir):
         FROM   read_json_auto('{glob}', filename=True)
         WHERE  filename = (SELECT most_recent_file FROM cte_most_recent_file)
         """
-    ).fetchdf()["LKHS_deleted_ind"].tolist()
+        )
+        .fetchdf()["LKHS_deleted_ind"]
+        .tolist()
+    )
 
     assert all(f == "N" for f in deleted_flags)

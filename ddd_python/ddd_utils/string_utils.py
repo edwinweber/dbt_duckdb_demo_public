@@ -25,12 +25,7 @@ def normalize_danish_name(name: str) -> str:
     This is the single canonical implementation; every other module that
     needs this normalisation imports and calls this function.
     """
-    return (
-        name.lower()
-        .replace("ø", "oe")
-        .replace("æ", "ae")
-        .replace("å", "aa")
-    )
+    return name.lower().replace("ø", "oe").replace("æ", "ae").replace("å", "aa")
 
 
 def resolve_date_to_load_from(
@@ -66,5 +61,5 @@ def resolve_date_to_load_from(
     except ValueError:
         raise ValueError(
             f"date_to_load_from '{date_to_load_from}' must be in 'YYYY-MM-DD' format."
-        )
+        ) from None
     return date_to_load_from

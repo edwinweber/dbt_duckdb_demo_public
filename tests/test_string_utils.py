@@ -1,15 +1,15 @@
 """Unit tests for ddd_utils.string_utils."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
 
-
 # ---------------------------------------------------------------------------
 # normalize_danish_name
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeDanishName:
     def test_replaces_oe_lowercase(self):
@@ -59,8 +59,9 @@ class TestNormalizeDanishName:
 # resolve_date_to_load_from
 # ---------------------------------------------------------------------------
 
+
 class TestResolveDateToLoadFrom:
-    _REF = datetime(2025, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
+    _REF = datetime(2025, 3, 15, 12, 0, 0, tzinfo=UTC)
 
     def test_none_returns_lookback_date(self):
         result = resolve_date_to_load_from(None, 31, self._REF)

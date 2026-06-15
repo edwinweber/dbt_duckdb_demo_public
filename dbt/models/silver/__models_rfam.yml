@@ -22,7 +22,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -30,7 +31,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['RFAM']
+              arguments:
+                values: ['RFAM']
 
   - name: silver_rfam_genome
     description: SCD Type 2 history for Rfam genome (genome entries).
@@ -45,7 +47,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -64,7 +67,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_clan_membership
     description: SCD Type 2 history for Rfam clan_membership (family-to-clan assignments).
@@ -76,7 +80,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_author
     description: SCD Type 2 history for Rfam author (publication authors).
@@ -88,7 +93,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_literature_reference
     description: SCD Type 2 history for Rfam literature_reference (cited publications).
@@ -100,7 +106,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_dead_family
     description: SCD Type 2 history for Rfam dead_family (retired RNA families).
@@ -112,7 +119,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   # ---------------------------------------------------------------------------
   # Current-version (_cv) views
@@ -135,7 +143,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -153,7 +162,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -171,7 +181,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_clan_membership_cv
     description: Current-version view of Rfam clan_membership. One row per family-to-clan assignment.
@@ -184,7 +195,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_author_cv
     description: Current-version view of Rfam author. One row per author.
@@ -197,7 +209,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_literature_reference_cv
     description: Current-version view of Rfam literature_reference. One row per publication.
@@ -210,7 +223,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_rfam_dead_family_cv
     description: Current-version view of Rfam dead_family. One row per retired family.
@@ -223,4 +237,5 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']

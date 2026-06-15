@@ -337,7 +337,7 @@ an explicit comparison against the latest Bronze snapshot:
     on_schema_change='append_new_columns',
     unique_key=[primary_key_columns, 'LKHS_date_valid_from'],
     pre_hook  = "{{ generate_pre_hook_silver_full_refresh(...) }}",
-    post_hook = "DROP TABLE IF EXISTS schema.model_current_temp;"
+    post_hook = "DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_current_temp;"
 ) }}
 ```
 
@@ -362,14 +362,25 @@ table that the Silver CDC logic depends on.
 ```
 
 **Purpose:** Creates the `_last_file` bookmark table if it does not already
-exist, with the correct schema but zero rows (`WHERE 1 = 0`).
+exist, with the correct schema but zero rows (`WHERE 1 = 0`). On a
+`--full-refresh` run it first **drops** `_last_file`, so the filename watermark
+resets and the rebuilt table reprocesses the full Bronze history (otherwise a
+stale bookmark would filter every Bronze file out and produce an empty table).
 
 **Why this is needed:** Both Silver macros reference
-`{{ this.schema }}.{{ this.name }}_last_file` in a `WHERE` clause. On the very
-first run the table does not exist. This pre-hook ensures it exists (empty) so
-the `SELECT ... FROM _last_file` returns `NULL` rather than raising an error.
-A `NULL` result from `_last_file` causes the main query to process all files
-(correct first-run behaviour).
+`{{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file` in a `WHERE`
+clause. On the very first run the table does not exist. This pre-hook ensures it
+exists (empty) so the `SELECT ... FROM _last_file` returns `NULL` rather than
+raising an error. A `NULL` result from `_last_file` causes the main query to
+process all files (correct first-run behaviour).
+
+> **Database qualification (DuckLake):** all helper-table names are qualified
+> with `{{ this.database }}` (not just `{{ this.schema }}`). In DuckLake mode the
+> Silver model is created in the `ducklake_catalog` database, and DuckDB forbids
+> a single transaction from writing to two databases — so `_last_file` and
+> `_current_temp` must live in the *same* database as the model. In `duckdb`
+> mode `this.database` is the main database, so the qualified name is identical
+> to the unqualified one and nothing changes.
 
 **Called by:** Both Silver macros include this as their `pre_hook` in the model
 `config()`.
@@ -437,8 +448,8 @@ already been processed.
 **How it works:**
 
 ```sql
-DROP TABLE IF EXISTS schema.model_last_file;
-CREATE TABLE schema.model_last_file AS
+DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file;
+CREATE TABLE {{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file AS
 SELECT LKHS_filename, LKHS_date_valid_from, LKHS_filename_previous, ...
 FROM (
     SELECT SUBSTRING(filename, ...) AS LKHS_filename, LAG(...) AS LKHS_filename_previous, ...

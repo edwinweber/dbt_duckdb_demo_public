@@ -24,6 +24,11 @@
 #   # the .duckdb file). o+rwx lets UID 2000 write into the UID-1000-owned dir.
 #   chmod -R o+rwx /data/duckdb
 #
+#   # DuckLake Parquet data: Metabase (UID 2000) reads Silver via DuckLake views.
+#   sudo mkdir -p /data/ducklake
+#   sudo chown -R 1000:1000 /data/ducklake
+#   chmod -R o+rx /data/ducklake
+#
 #   # backup (UID 1000) reads Metabase data (owned by UID 2000) to create archives
 #   chmod -R o+rX /data/metabase/data
 #
@@ -100,11 +105,15 @@ services:
       DAGSTER_BACKUP_DIR: /data_backup/dagster
       METABASE_BACKUP_DIR: /data_backup/metabase
       DUCKDB_BACKUP_DIR: /data_backup/duckdb
+      # DuckLake data-files backup (only used when SILVER_STORAGE_FORMAT=ducklake,
+      # which is read from .env). The catalog rides along in the duckdb backup.
+      DUCKLAKE_BACKUP_DIR: /data_backup/ducklake
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/dagster:/data/dagster
       - /data/metabase/data:/data/metabase/data
       - /data/duckdb:/data/duckdb
+      - /data/ducklake:/data/ducklake
       - /data_backup:/data_backup
       - ${HOST_SSH_DIR:-/root/.ssh}:/home/app/.ssh:ro
 
@@ -131,6 +140,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/dlt_pipelines:/data/dlt_pipelines
       - /data/duckdb:/data/duckdb
+      - /data/ducklake:/data/ducklake
       - /data/dbt_logs:/data/dbt_logs
       - /data/dagster:/data/dagster
       - /data/local:/data/local
@@ -160,6 +170,7 @@ services:
   # INSTALL httpfs; LOAD httpfs;
   # INSTALL delta; LOAD delta;
   # INSTALL sqlite; LOAD sqlite;
+  # LOAD ducklake; ATTACH 'ducklake:/data/duckdb/ducklake_catalog.ducklake' AS ducklake_catalog (DATA_PATH '/data/ducklake');
   metabase:
     build:
       context: .
@@ -170,6 +181,7 @@ services:
       - "3001:3000"
     volumes:
       - /data/duckdb:/data/duckdb
+      - /data/ducklake:/data/ducklake
       - /data/dagster:/data/dagster
       - /data/local:/data/local:ro
       - ${METABASE_DATA_DIR:-/data/metabase/data}:/metabase-data

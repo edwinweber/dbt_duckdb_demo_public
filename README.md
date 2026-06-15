@@ -35,12 +35,18 @@ data-engineering platform around it is my work:
   full row history, and `_cv` current-version views. This is the core of the
   project — see the
   [deep-dive with compiled SQL](documentation/silver_model_logic.md).
-- **Dagster orchestration** — software-defined assets, jobs, schedules, and
-  run-status sensors, plus an observability layer that lets the pipeline report
-  on its own runs.
-- **Dual-backend storage** — one environment variable (`STORAGE_TARGET`) swaps
-  the whole pipeline between local filesystem and Microsoft Fabric OneLake
-  (Delta Lake), with paths deliberately mirrored.
+- **Dagster orchestration** — software-defined assets, jobs, schedules,
+  run-status sensors, and a **ntfy.sh push-notification** layer so failures
+  (and successes) reach you immediately, plus an observability layer that lets
+  the pipeline report on its own runs.
+- **Dual-backend export** — one environment variable (`STORAGE_TARGET`) swaps
+  the Delta Lake export between local filesystem and Microsoft Fabric OneLake,
+  with paths deliberately mirrored.
+- **Switchable Silver storage** — a second, independent variable
+  (`SILVER_STORAGE_FORMAT=duckdb|ducklake`) stores the Silver layer either as
+  native DuckDB tables or as [DuckLake](https://ducklake.select)-managed Parquet
+  files (open table format, local catalog). See
+  [CLAUDE.md → Silver Storage Format](CLAUDE.md#silver-storage-format-duckdb-vs-ducklake).
 - **Operational hardening** — input validation on interpolated SQL, connection
   timeouts and cleanup, a non-root container, secret scrubbing in logs, and a
   pytest suite.
@@ -143,6 +149,7 @@ This README is the entry point. Deeper topics live in focused guides:
 | Cloud storage (optional) | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake) |
 | Data quality | dbt built-in tests + dbt-utils |
 | Data visualization | Metabase (connects to DuckDB directly) |
+| Push notifications | ntfy.sh (run success / failure alerts) |
 | Language | Python 3.12+ |
 
 ---
@@ -256,7 +263,10 @@ cp .env.example .env
 
 | Variable | Required | Example / Description |
 | --- | --- | --- |
-| `STORAGE_TARGET` | All | `local` or `onelake` — selects the storage backend |
+| `STORAGE_TARGET` | All | `local` or `onelake` — selects the **Delta Lake export** backend |
+| `SILVER_STORAGE_FORMAT` | All | `duckdb` (default) or `ducklake` — how Silver tables are stored (independent of `STORAGE_TARGET`) |
+| `DUCKLAKE_CATALOG_LOCATION` | ducklake | `/data/duckdb/ducklake_catalog.ducklake` — DuckLake catalog file |
+| `DUCKLAKE_DATA_PATH` | ducklake | `/data/ducklake` — directory for DuckLake Parquet data |
 | `LOCAL_STORAGE_PATH` | All | `/home/you/dbt_duckdb_demo/data` — base path for Bronze / Silver / Gold files |
 | `DANISH_DEMOCRACY_DATA_SOURCE` | All | Local: `<LOCAL_STORAGE_PATH>/Files/Bronze/DDD`; OneLake: `abfss://.../<lakehouse>.Lakehouse/Files/Bronze/DDD` |
 | `DAGSTER_HOME` | All | `/home/you/dbt_duckdb_demo/.dagster` — Dagster run and schedule state |
@@ -275,6 +285,8 @@ cp .env.example .env
 | `FABRIC_ONELAKE_FOLDER_SILVER` | OneLake | `<Lakehouse>.Lakehouse/Files/Silver` |
 | `FABRIC_ONELAKE_FOLDER_GOLD` | OneLake | `<Lakehouse>.Lakehouse/Files/Gold` |
 | `DLT_PIPELINE_RUN_LOG_DIR` | OneLake | OneLake path for pipeline run logs |
+| `NTFY_TOPIC` | Optional | ntfy.sh topic name for run alerts — topic name only, no URL prefix (e.g. `my-alerts`). Leave unset to disable. |
+| `ENVIRONMENT` | Optional | Label shown in ntfy.sh alert messages, e.g. `PROD` or `DEV`. Also routes StorageBox backups to the right subdirectory. |
 | `AZURE_TENANT_ID` | OneLake | Azure AD tenant ID |
 | `AZURE_CLIENT_ID` | OneLake | Service principal client ID |
 | `AZURE_CLIENT_SECRET` | OneLake | Service principal secret |
@@ -780,7 +792,7 @@ cp dbt/target/{index.html,catalog.json,manifest.json} documentation/dbt-docs/
 ## Running Tests (pytest)
 
 No cloud credentials required — tests use in-memory DuckDB and mocked clients.
-The suite has **125 tests across 14 modules**. For the full strategy — what is
+The suite has **133 tests across 15 modules**. For the full strategy — what is
 tested, how, why, and what is intentionally out of scope (plus the dbt
 data-quality test layer) — see [documentation/testing.md](documentation/testing.md).
 
@@ -853,11 +865,13 @@ export DAGSTER_HOME="$(pwd)/.dagster"
 
 ## Backup and Restore
 
-The platform includes a built-in backup system for the two stateful services:
-**Dagster** (run history, event logs, schedule state) and **Metabase** (dashboards,
-questions, user configuration). Each backup produces one timestamped zip archive
-per service, stored locally and optionally uploaded to a Hetzner StorageBox for
-off-site retention.
+The platform includes a built-in backup system for its stateful data:
+**Dagster** (run history, event logs, schedule state), **Metabase** (dashboards,
+questions, user configuration), the **DuckDB** database directory (the main
+`.duckdb` file plus the DuckLake catalog), and — when `SILVER_STORAGE_FORMAT=ducklake`
+— the **DuckLake** Parquet data files. Each backup produces one timestamped zip
+archive per target, stored locally and optionally uploaded to a Hetzner StorageBox
+for off-site retention.
 
 Backups run inside the existing `backup` Docker Compose service — no Python or
 additional tooling is needed on the host, only Docker.
@@ -868,6 +882,14 @@ additional tooling is needed on the host, only Docker.
 | --- | --- | --- | --- |
 | `dagster` | `ddd-dagster` | `/data/dagster` | `/data_backup/dagster/` |
 | `metabase` | `ddd-metabase` | `/data/metabase/data` | `/data_backup/metabase/` |
+| `ducklake` | `ddd-dagster`, `ddd-metabase` | `/data/ducklake` | `/data_backup/ducklake/` |
+| `duckdb` | `ddd-dagster`, `ddd-metabase` | `/data/duckdb` | `/data_backup/duckdb/` |
+
+The `ducklake` target is only included when `SILVER_STORAGE_FORMAT=ducklake`; in
+that mode it is archived **before** the `duckdb` target, because the DuckLake
+catalog (captured in `/data/duckdb`) references the DuckLake data files, so the
+files must be captured first. The DuckLake catalog `.ducklake` file lives in
+`/data/duckdb`, so it always rides along in the `duckdb` target.
 
 Archives are named `{target}_{YYYYMMDD_HHMMSS}.zip` — for example
 `dagster_20260526_020000.zip`. Each backup run also appends one NDJSON record
@@ -879,6 +901,12 @@ per target to `/data_backup/logs/backup_log_{timestamp}.ndjson`.
 | --- | --- | --- |
 | `DAGSTER_HOME` | All | Dagster data directory (backup source) — default `/data/dagster` |
 | `METABASE_DATA_DIR` | All | Metabase data directory (backup source) — default `/data/metabase/data` |
+| `DUCKDB_DATABASE_LOCATION` | All | Path to the `.duckdb` file; its parent directory is the `duckdb` backup source |
+| `DUCKLAKE_DATA_PATH` | ducklake mode | DuckLake Parquet data directory (`ducklake` backup source) — default `/data/ducklake` |
+| `DAGSTER_BACKUP_MAX_AGE_DAYS` | All | Local retention for `dagster` archives — default `62` |
+| `METABASE_BACKUP_MAX_AGE_DAYS` | All | Local retention for `metabase` archives — default `62` |
+| `DUCKDB_BACKUP_MAX_AGE_DAYS` | All | Local retention for `duckdb` archives — default `7` |
+| `DUCKLAKE_BACKUP_MAX_AGE_DAYS` | ducklake mode | Local retention for `ducklake` archives — default `7` |
 | `ENVIRONMENT` | All | `DEV` or `PROD` — routes StorageBox uploads to the matching subdirectory |
 | `HETZNER_STORAGEBOX_HOST` | StorageBox | StorageBox hostname (upload skipped when absent) |
 | `HETZNER_STORAGEBOX_USER` | StorageBox | SSH user |
@@ -889,12 +917,12 @@ per target to `/data_backup/logs/backup_log_{timestamp}.ndjson`.
 ### Running a Backup
 
 ```bash
-# Back up all targets (Dagster + Metabase)
+# Back up all targets
 docker compose run --rm backup
 
 # Back up a single target
 docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets dagster
-docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets metabase
+docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets duckdb
 ```
 
 The backup:
@@ -904,7 +932,7 @@ The backup:
 3. Waits 30 seconds for databases to flush WAL to disk (`FLUSH_WAIT_SECONDS` env var overrides this; set to `0` for local/dev runs).
 4. Creates a deflate-compressed zip archive and verifies every entry for CRC errors.
 5. Uploads the archive to the Hetzner StorageBox via rsync/SSH (skipped when credentials are absent).
-6. Purges local archives older than 62 days.
+6. Purges local archives older than each target's retention (62 days for `dagster`/`metabase`, 7 days for `duckdb`/`ducklake`).
 7. Restarts the containers that were stopped in step 2 — always, even on failure.
 
 ### Scheduling with Cron
@@ -963,7 +991,8 @@ container as that UID, so restored files carry the correct ownership.
 
 | Location | Retention |
 | --- | --- |
-| Local (`/data_backup/`) | 62 days — older archives are pruned at the end of each backup run |
+| Local `dagster` / `metabase` | 62 days — older archives are pruned at the end of each backup run |
+| Local `duckdb` / `ducklake` | 7 days — older archives are pruned at the end of each backup run |
 | Hetzner StorageBox | Forever — archives are uploaded with rsync and never deleted remotely |
 
 ### Querying the Backup Log
@@ -1039,7 +1068,7 @@ Two persistent block volumes are attached and mounted at boot:
 | Mount point | Size | Purpose |
 | --- | --- | --- |
 | `/data` | 50 GB | Live data — DuckDB database, dlt state, dbt logs, Dagster home, Metabase state, Bronze/Silver/Gold files |
-| `/data_backup` | 50 GB | Local backup archives (62-day retention) and backup logs |
+| `/data_backup` | 50 GB | Local backup archives (per-target retention: 62 days dagster/metabase, 7 days duckdb/ducklake) and backup logs |
 
 ### Firewall
 
@@ -1053,6 +1082,47 @@ IP addresses. Only the following ports are open:
 | 3001 | Metabase |
 
 All other inbound traffic is blocked.
+
+---
+
+## Alerting (ntfy.sh)
+
+Both Dagster run-status sensors send push notifications via [ntfy.sh](https://ntfy.sh)
+— an open-source, self-hostable push notification service with free-tier cloud hosting.
+
+### Enabling alerts
+
+1. Pick a topic name on [ntfy.sh](https://ntfy.sh) (or self-host).
+2. Subscribe to it with the ntfy app (Android / iOS / web).
+3. Add to `.env`:
+
+   ```dotenv
+   NTFY_TOPIC=your-topic-name   # topic name only — no https://ntfy.sh/ prefix
+   ENVIRONMENT=PROD             # included in every alert message
+   ```
+
+4. Restart the Dagster container to pick up the new variables:
+
+   ```bash
+   docker compose restart dagster
+   ```
+
+### What you receive
+
+| Event | Priority | Tag |
+| --- | --- | --- |
+| Job SUCCESS | default | ✅ |
+| Job FAILURE | high | 🚨 |
+
+Every notification includes the job name, a short run ID, and the `ENVIRONMENT` label.
+All registered jobs are covered — no configuration needed when new jobs are added.
+
+### Opt-in
+
+Alerts are **disabled by default**. When `NTFY_TOPIC` is not set, the sensors
+still run and write their log summaries, but the ntfy.sh POST is silently skipped.
+A failed POST (network error, wrong topic) is caught and logged as a Dagster warning
+— it never blocks the sensor tick or the next job run.
 
 ---
 

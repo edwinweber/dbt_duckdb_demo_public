@@ -4,6 +4,11 @@ Reads each Gold table via DuckDB, converts it to a PyArrow table, and writes
 it as a Delta Lake table to OneLake using ``deltalake``.  Gold tables are
 always fully overwritten (``mode="overwrite"``).
 
+The connection comes from ``open_export_connection()``: in DuckLake mode it
+attaches the DuckLake catalog read-only, because the Gold views (which live in
+the main DuckDB database) reference ``ducklake_catalog.main_silver.*`` and would
+otherwise fail to resolve.
+
 Usage::
 
     python -m ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
@@ -13,11 +18,11 @@ Usage::
 import argparse
 import logging
 
-import duckdb
 from deltalake.writer import write_deltalake
 
-from ddd_python.ddd_utils import get_variables_from_env, configuration_variables
-from ddd_python.ddd_utils.path_utils import build_delta_export_path
+import duckdb
+from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.path_utils import build_delta_export_path, open_export_connection
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +40,10 @@ def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) 
     result = connection.execute(query)
     df = result.to_arrow_table()
     write_deltalake(
-        target_table_path, df,
-        mode="overwrite", schema_mode="merge",
+        target_table_path,
+        df,
+        mode="overwrite",
+        schema_mode="merge",
         storage_options=storage_options,
     )
     logger.info("Replaced Gold Delta-table %s — %d rows written.", table, df.num_rows)
@@ -67,13 +74,18 @@ def write_tables_to_onelake_gold(connection: duckdb.DuckDBPyConnection, tables: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export Gold tables to Fabric OneLake.")
-    parser.add_argument("--tables", nargs="+", required=False, help="Tables to export (default: all Gold tables).")
+    parser.add_argument(
+        "--tables", nargs="+", required=False, help="Tables to export (default: all Gold tables)."
+    )
     args = parser.parse_args()
 
     tables = args.tables or configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
 
-    with duckdb.connect(get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True) as connection:
+    connection = open_export_connection()
+    try:
         write_tables_to_onelake_gold(connection, tables)
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":

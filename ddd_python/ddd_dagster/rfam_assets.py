@@ -12,7 +12,7 @@ The factory pattern mirrors ``assets.py`` (DDD) so the two source systems
 are architecturally consistent.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dagster import (
     AssetExecutionContext,
@@ -24,11 +24,11 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
+from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
 
 
 class RfamExtractionConfig(Config):
@@ -47,9 +47,7 @@ _SOURCE_SYSTEM_CODE = "RFAM"
 _PIPELINE_TYPE = "sql_to_file"
 _STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
-_INCREMENTAL_NAMES: frozenset[str] = frozenset(
-    configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
-)
+_INCREMENTAL_NAMES: frozenset[str] = frozenset(configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL)
 
 
 def _destination_path(table_name: str) -> str:
@@ -87,15 +85,16 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
         date_from = resolve_date_to_load_from(
             config.date_to_load_from,
             get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
 
         logger.info(
             "START incremental extraction — table=%s  date_from=%s",
-            table_name, date_from,
+            table_name,
+            date_from,
         )
 
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
         # Use a SQLAlchemy named parameter (:updated_from) rather than
         # interpolating the date string — prevents SQL injection.
@@ -113,12 +112,15 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
             loader_file_format="jsonl",
         )
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         records = result.get("records_written") or 0
 
         logger.info(
             "END incremental extraction — table=%s  date_from=%s  records=%d  duration_s=%.1f",
-            table_name, date_from, records, duration,
+            table_name,
+            date_from,
+            records,
+            duration,
         )
 
         return MaterializeResult(
@@ -161,7 +163,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
         logger = context.log
         logger.info("START full extraction — table=%s", table_name)
 
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
         sql_query = query_template.format(where_clause="")
 
@@ -176,12 +178,14 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
             loader_file_format="jsonl",
         )
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         records = result.get("records_written") or 0
 
         logger.info(
             "END full extraction — table=%s  records=%d  duration_s=%.1f",
-            table_name, records, duration,
+            table_name,
+            records,
+            duration,
         )
 
         return MaterializeResult(

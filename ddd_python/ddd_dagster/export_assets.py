@@ -27,9 +27,8 @@ The factory pattern mirrors ``assets.py`` (extraction assets) to keep the
 definitions DRY across 25 Silver tables (18 DDD + 7 Rfam) and 9 Gold tables.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-import duckdb
 from dagster import (
     AssetExecutionContext,
     AssetKey,
@@ -39,10 +38,11 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY
-from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
 from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
+from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
+from ddd_python.ddd_utils import configuration_variables
+from ddd_python.ddd_utils.path_utils import open_export_connection
 
 _STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
@@ -57,15 +57,13 @@ _ALL_SILVER_TABLES: list[str] = (
 # Barrier 1: wait for dbt Gold to finish before starting Silver exports
 # ---------------------------------------------------------------------------
 
+
 @asset(
     name="barrier_dbt_gold_complete",
     key_prefix=["export"],
     group_name="export_silver",
     deps=[_STOP_METABASE_KEY]
-    + [
-        AssetKey(["gold", name])
-        for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
-    ],
+    + [AssetKey(["gold", name]) for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD],
     description=(
         "Ordering barrier: depends on every dbt Gold model.  "
         "Silver exports depend on this asset so that dbt Gold completes "
@@ -108,19 +106,21 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
         logger = context.log
         logger.info("START Silver export — table=%s", table_name)
 
-        ts = datetime.now(timezone.utc)
-        connection = duckdb.connect(
-            get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True,
-        )
+        ts = datetime.now(UTC)
+        # In DuckLake mode this attaches the DuckLake catalog (read-only) so the
+        # Silver tables in ducklake_catalog.main_silver are readable.
+        connection = open_export_connection()
         try:
             rows = export_single_silver_table(connection, table_name)
         finally:
             connection.close()
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         logger.info(
             "END Silver export — table=%s  rows=%d  duration_s=%.1f",
-            table_name, rows, duration,
+            table_name,
+            rows,
+            duration,
         )
 
         return MaterializeResult(
@@ -138,15 +138,13 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
 # Barrier 2: wait for all Silver exports before starting Gold exports
 # ---------------------------------------------------------------------------
 
+
 @asset(
     name="barrier_all_silver_exported",
     key_prefix=["export"],
     group_name="export_silver",
     deps=[_STOP_METABASE_KEY]
-    + [
-        AssetKey(["export", "silver", f"export_{name}"])
-        for name in _ALL_SILVER_TABLES
-    ],
+    + [AssetKey(["export", "silver", f"export_{name}"]) for name in _ALL_SILVER_TABLES],
     description=(
         "Ordering barrier: depends on every Silver export asset.  "
         "Gold exports depend on this asset so that all Silver exports "
@@ -189,19 +187,21 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
         logger = context.log
         logger.info("START Gold export — table=%s", table_name)
 
-        ts = datetime.now(timezone.utc)
-        connection = duckdb.connect(
-            get_variables_from_env.DUCKDB_DATABASE_LOCATION, read_only=True,
-        )
+        ts = datetime.now(UTC)
+        # In DuckLake mode this attaches the DuckLake catalog (read-only) so the
+        # Gold views — which reference ducklake_catalog.main_silver — resolve.
+        connection = open_export_connection()
         try:
             rows = export_single_gold_table(connection, table_name)
         finally:
             connection.close()
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         logger.info(
             "END Gold export — table=%s  rows=%d  duration_s=%.1f",
-            table_name, rows, duration,
+            table_name,
+            rows,
+            duration,
         )
 
         return MaterializeResult(
@@ -221,19 +221,18 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
 
 #: Silver export assets — one per table in DANISH_DEMOCRACY_MODELS_SILVER + RFAM_MODELS_SILVER.
 export_silver_assets: list[AssetsDefinition] = [
-    _make_export_silver_asset(name)
-    for name in _ALL_SILVER_TABLES
+    _make_export_silver_asset(name) for name in _ALL_SILVER_TABLES
 ]
 
 #: Gold export assets — one per table in DANISH_DEMOCRACY_MODELS_GOLD.
 export_gold_assets: list[AssetsDefinition] = [
-    _make_export_gold_asset(name)
-    for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
+    _make_export_gold_asset(name) for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
 ]
 
 # ---------------------------------------------------------------------------
 # Barrier 3: wait for all Gold exports before starting Data Engineering refresh
 # ---------------------------------------------------------------------------
+
 
 @asset(
     name="barrier_all_gold_exported",

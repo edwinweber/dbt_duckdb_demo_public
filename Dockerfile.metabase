@@ -20,7 +20,10 @@ RUN apt-get update && \
         -o /plugins/duckdb.metabase-driver.jar && \
     groupadd -g 2000 metabase && \
     useradd -u 2000 -g metabase -m -d /home/metabase -s /usr/sbin/nologin metabase && \
-    mkdir -p /home/metabase/.duckdb/extensions && \
+    mkdir -p /home/metabase/.duckdb/extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64 && \
+    curl -fsSL --retry 3 --retry-delay 2 \
+        "https://extensions.duckdb.org/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension.gz" \
+        | gunzip -c > /home/metabase/.duckdb/extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension && \
     chown -R metabase:metabase /app /plugins /metabase-data /home/metabase
 
 ENV MB_PLUGINS_DIR=/plugins \

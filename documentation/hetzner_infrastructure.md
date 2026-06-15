@@ -1,7 +1,7 @@
 # Hetzner Production Infrastructure
 
 Operational reference for the live production server that runs the Danish Democracy Data pipeline.  
-Last updated: 2026-06-02.
+Last updated: 2026-06-11.
 
 ---
 
@@ -29,7 +29,7 @@ They are formatted as **ext4** and mounted at boot via `/etc/fstab`.
 | Mount point | Size | Purpose |
 | --- | --- | --- |
 | `/data` | 50 GB | Live operational data (DuckDB, dlt state, dbt logs, Dagster home, Metabase state, Bronze/Silver/Gold files) |
-| `/data_backup` | 50 GB | Local backup archives (62-day retention) and structured backup logs |
+| `/data_backup` | 50 GB | Local backup archives (per-target retention: 62 days dagster/metabase, 7 days duckdb/ducklake) and structured backup logs |
 
 ### One-time volume setup (run once after attaching each volume in the Hetzner console)
 
@@ -96,6 +96,7 @@ df -h /data /data_backup
 ├── dagster/    # Timestamped zip archives of /data/dagster
 ├── metabase/   # Timestamped zip archives of /data/metabase/data
 ├── duckdb/     # Timestamped zip archives of /data/duckdb (7-day local retention)
+├── ducklake/   # Timestamped zip archives of /data/ducklake (7-day local retention; ducklake mode only)
 └── logs/       # NDJSON backup run logs (one file per run)
 ```
 
@@ -178,16 +179,41 @@ The host's SSH directory is mounted read-only into the `backup` container at `/h
 
 | Item | Value |
 | --- | --- |
-| Host SSH directory | `/root/.ssh` (configurable via `HOST_SSH_DIR` in `.env`) |
+| Host SSH directory | `/data_backup/.ssh` (configurable via `HOST_SSH_DIR` in `.env`) |
 | Mounted at (inside container) | `/home/app/.ssh` (read-only) |
-| SSH key for StorageBox | `/root/.ssh/id_ed25519_storagebox` (or default key if `HETZNER_STORAGEBOX_SSH_KEY` is unset) |
+| SSH key for StorageBox | `/home/app/.ssh/hetzner` (set via `HETZNER_STORAGEBOX_SSH_KEY`) |
 | StorageBox SSH port | **23** (Hetzner always uses 23 for StorageBox) |
+
+#### Staging the key for the non-root container user
+
+The `backup` container runs as `app` (UID 1000), **not** root. The StorageBox
+private key therefore cannot live in `/root/.ssh`: that directory is mode `700`
+owned by root, and the key itself is mode `600` owned by root, so UID 1000 can
+neither traverse the directory nor read the key when it is bind-mounted into the
+container. SSH then reports the key as missing.
+
+Copy the key into a directory that UID 1000 owns and can read, and point
+`HOST_SSH_DIR` at it:
+
+```bash
+sudo mkdir -p /data_backup/.ssh
+sudo cp /root/.ssh/hetzner /data_backup/.ssh/hetzner
+sudo chown -R 1000:1000 /data_backup/.ssh
+sudo chmod 700 /data_backup/.ssh
+sudo chmod 600 /data_backup/.ssh/hetzner
+```
+
+The `600` mode on the key (owned by `1000:1000`, not loosened to `644`) is
+required — SSH refuses to use a private key that is group- or world-readable.
+With this in place, `.env` sets `HOST_SSH_DIR=/data_backup/.ssh`, which is
+mounted at `/home/app/.ssh`, so the key resolves to `/home/app/.ssh/hetzner`
+inside the container.
 
 To authorize the server key on the StorageBox:
 
 ```bash
 # From the server — add the public key to the StorageBox authorized_keys
-ssh-copy-id -p 23 -i /root/.ssh/id_ed25519_storagebox.pub \
+ssh-copy-id -p 23 -i /root/.ssh/hetzner.pub \
     <storagebox-user>@<storagebox-host>
 
 # Verify
@@ -201,7 +227,8 @@ HETZNER_STORAGEBOX_HOST="u<number>.your-storagebox.de"
 HETZNER_STORAGEBOX_USER="u<number>"
 HETZNER_STORAGEBOX_PORT=23
 HETZNER_STORAGEBOX_REMOTE_DIR="backups/ddd"
-HETZNER_STORAGEBOX_SSH_KEY="/home/app/.ssh/id_ed25519_storagebox"
+HOST_SSH_DIR="/data_backup/.ssh"
+HETZNER_STORAGEBOX_SSH_KEY="/home/app/.ssh/hetzner"
 ```
 
 ---
@@ -322,7 +349,14 @@ Structured NDJSON run logs go to `/data_backup/logs/backup_log_<timestamp>.ndjso
 | `/data_backup/dagster/` | 62 days |
 | `/data_backup/metabase/` | 62 days |
 | `/data_backup/duckdb/` | 7 days |
-| Hetzner StorageBox | Indefinite (never deleted remotely) |
+| Hetzner StorageBox | 31 daily + 12 monthly archives per target (grandfather-father-son rotation) |
+
+The StorageBox rotation keeps the most recent archive of each of the last 31 days
+plus the most recent archive of each of the last 12 months, **per target**. Older
+archives are deleted after each successful upload. Multiple runs on the same day
+collapse to the latest run. Tune via `HETZNER_STORAGEBOX_KEEP_DAILY` /
+`HETZNER_STORAGEBOX_KEEP_MONTHLY` in `.env` (set both to `0` to keep everything
+remotely, the previous behaviour).
 
 ---
 
@@ -345,6 +379,7 @@ Use this checklist when provisioning a new server from scratch.
 [ ] Verify health: curl http://localhost:3000  and  curl http://localhost:3001/api/health
 [ ] Configure Hetzner Firewall — whitelist operator IPs for ports 22, 3000, 3001
 [ ] Attach firewall to the server in Hetzner console
+[ ] Stage StorageBox SSH key for UID 1000 in /data_backup/.ssh (see "Staging the key" above)
 [ ] Set up StorageBox SSH key and verify rsync: docker compose run --rm backup
 [ ] scripts/setup_backup_cron.sh --install   (nightly 02:00 backup)
 [ ] Run a full pipeline to verify end-to-end: docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data

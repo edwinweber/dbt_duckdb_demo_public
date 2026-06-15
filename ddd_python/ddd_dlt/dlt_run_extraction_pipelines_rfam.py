@@ -27,12 +27,12 @@ import sys
 import time
 import traceback
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
+from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
+from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def run_extraction_pipelines_rfam(
         RuntimeError: If one or more pipeline tasks fail during execution.
     """
     script_start = time.monotonic()
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(UTC)
 
     # Resolve date_to_load_from
     date_to_load_from = resolve_date_to_load_from(
@@ -115,40 +115,47 @@ def run_extraction_pipelines_rfam(
             name = future_to_name[future]
             try:
                 result = future.result()
-                pipeline_results.append({
-                    "resource": name,
-                    "status": "success",
-                    "records_written": result.get("records_written"),
-                })
+                pipeline_results.append(
+                    {
+                        "resource": name,
+                        "status": "success",
+                        "records_written": result.get("records_written"),
+                    }
+                )
             except Exception as exc:
-                pipeline_results.append({
-                    "resource": name,
-                    "status": "failure",
-                    "error": traceback.format_exc(),
-                })
+                pipeline_results.append(
+                    {
+                        "resource": name,
+                        "status": "failure",
+                        "error": traceback.format_exc(),
+                    }
+                )
                 failed.append(name)
                 logger.error("Pipeline failed for table %s: %s", name, exc)
 
-    end_time = datetime.now(timezone.utc)
+    end_time = datetime.now(UTC)
     duration_seconds = time.monotonic() - script_start
     overall_status = "failure" if failed else "success"
 
-    log_record = json.dumps(
-        {
-            "script_name": SCRIPT_NAME,
-            "source_system_code": SOURCE_SYSTEM_CODE,
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-            "duration_seconds": round(duration_seconds, 3),
-            "date_to_load_from": date_to_load_from,
-            "status": overall_status,
-            "pipelines_total": len(pipeline_results),
-            "pipelines_succeeded": sum(1 for p in pipeline_results if p["status"] == "success"),
-            "pipelines_failed": len(failed),
-            "pipelines": sorted(pipeline_results, key=lambda p: p["resource"]),
-        },
-        ensure_ascii=False,
-    ) + "\n"
+    log_record = (
+        json.dumps(
+            {
+                "script_name": SCRIPT_NAME,
+                "source_system_code": SOURCE_SYSTEM_CODE,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "duration_seconds": round(duration_seconds, 3),
+                "date_to_load_from": date_to_load_from,
+                "status": overall_status,
+                "pipelines_total": len(pipeline_results),
+                "pipelines_succeeded": sum(1 for p in pipeline_results if p["status"] == "success"),
+                "pipelines_failed": len(failed),
+                "pipelines": sorted(pipeline_results, key=lambda p: p["resource"]),
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
 
     log_dir = dpef.build_log_dir(SOURCE_SYSTEM_CODE)
     log_file = f"{SCRIPT_NAME}_log.ndjson"

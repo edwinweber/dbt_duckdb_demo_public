@@ -1,6 +1,6 @@
 """Tests for the _serialize_trace helper."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import _serialize_trace
@@ -15,15 +15,15 @@ def _make_trace(has_load_info=True, has_failed_jobs=False):
     trace = MagicMock()
     trace.transaction_id = "tx-123"
     trace.pipeline_name = "test_pipeline"
-    trace.started_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    trace.finished_at = datetime(2024, 1, 1, 0, 5, 0, tzinfo=timezone.utc)
+    trace.started_at = datetime(2024, 1, 1, tzinfo=UTC)
+    trace.finished_at = datetime(2024, 1, 1, 0, 5, 0, tzinfo=UTC)
     trace.engine_version = 1
     trace.execution_context = {"library": {"version": "1.17.1"}}
 
     step = MagicMock()
     step.step = "load"
-    step.started_at = datetime(2024, 1, 1, 0, 1, 0, tzinfo=timezone.utc)
-    step.finished_at = datetime(2024, 1, 1, 0, 4, 0, tzinfo=timezone.utc)
+    step.started_at = datetime(2024, 1, 1, 0, 1, 0, tzinfo=UTC)
+    step.finished_at = datetime(2024, 1, 1, 0, 4, 0, tzinfo=UTC)
     step.step_exception = None
     trace.steps = [step]
 

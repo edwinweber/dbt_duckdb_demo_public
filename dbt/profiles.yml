@@ -1,8 +1,15 @@
 danish_democracy_data:
-  # STORAGE_TARGET controls which output is used:
-  #   local   — reads JSON from local filesystem, no Azure credentials needed
-  #   onelake — reads JSON from Fabric OneLake via abfss://, requires Azure service principal
-  target: "{{ env_var('STORAGE_TARGET', 'local') }}"
+  # STORAGE_TARGET controls the Delta Lake export destination (silver/gold):
+  #   local   — exports written to local filesystem, no Azure credentials needed
+  #   onelake — exports written to Fabric OneLake via abfss://, requires Azure SP
+  #
+  # SILVER_STORAGE_FORMAT controls how silver tables are stored inside DuckDB.
+  # DuckLake is always local (/data/ducklake); this setting is independent of
+  # STORAGE_TARGET (the Delta Lake export destination is unaffected).
+  #   duckdb   — native DuckDB tables (default); uses the STORAGE_TARGET target
+  #   ducklake — DuckLake-managed Parquet files; always selects "local_ducklake".
+  #              Also set DUCKLAKE_CATALOG_LOCATION to the catalog .db path.
+  target: "{{ 'local_ducklake' if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake' else env_var('STORAGE_TARGET', 'local') }}"
   outputs:
     local:
       type: duckdb
@@ -12,6 +19,23 @@ danish_democracy_data:
         - parquet
         - delta
         - sqlite
+      external_root: 'data/curated'
+
+    local_ducklake:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
+      extensions:
+        - httpfs
+        - parquet
+        - delta
+        - sqlite
+        - ducklake
+      attach:
+        - path: "ducklake:{{ env_var('DUCKLAKE_CATALOG_LOCATION') }}"
+          alias: ducklake_catalog
+          is_ducklake: true
+          options:
+            data_path: "{{ env_var('DUCKLAKE_DATA_PATH') }}"
       external_root: 'data/curated'
 
     onelake:
@@ -35,3 +59,4 @@ danish_democracy_data:
           client_secret: "{{ env_var('AZURE_CLIENT_SECRET') }}"
           account_name: 'onelake'
       external_root: 'data/curated'
+

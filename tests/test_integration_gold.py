@@ -10,8 +10,9 @@ Uses an in-memory DuckDB with pre-populated Silver tables to verify:
 * Correct filtering of deleted rows in fact tables
 """
 
-import duckdb
 import pytest
+
+import duckdb
 
 
 @pytest.fixture()
@@ -170,6 +171,7 @@ def test_scd2_first_version_starts_at_1900(gold_duckdb):
     version_1_rows = df[(df["LKHS_row_version"] == 1) & (df["id"] != 0)]
     for _, row in version_1_rows.iterrows():
         assert row["LKHS_date_valid_from"].year == 1900
+
 
 def test_scd2_row_version_is_sequential(gold_duckdb):
     """Row version should be 1, 2, ... per PK."""

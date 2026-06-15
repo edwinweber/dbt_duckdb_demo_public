@@ -22,7 +22,7 @@ passed through this resource.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from dagster import ConfigurableResource
@@ -53,8 +53,9 @@ class DltOneLakeResource(ConfigurableResource):
 
         This is a thin pass-through to
         :func:`dlt_pipeline_execution_functions.execute_pipeline`.  Per-pipeline
-        NDJSON run logs are written to OneLake **inside** that function, so
-        callers do not need to handle logging themselves.
+        NDJSON run logs are written to the configured log destination (local or
+        OneLake, per ``STORAGE_TARGET``) **inside** that function, so callers do
+        not need to handle logging themselves.
 
         Args:
             pipeline_type: One of ``"api_to_file"``, ``"sql_to_file"``, or
@@ -90,11 +91,13 @@ class DltOneLakeResource(ConfigurableResource):
         end_time: datetime,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        """Append a job-run summary NDJSON record to OneLake.
+        """Append a job-run summary NDJSON record to the configured log destination.
 
-        One record per Dagster job run, stored at::
+        One record per Dagster job run. The destination path depends on
+        ``STORAGE_TARGET``::
 
-            <DLT_PIPELINE_RUN_LOG_DIR>/<source_system_code>/<job_name>_run_log.ndjson
+            <DLT_PIPELINE_RUN_LOG_DIR>/<source_system_code>/<job_name>_run_log.ndjson  (onelake)
+            <DLT_PIPELINES_LOG_DIR>/<source_system_code>/<job_name>_run_log.ndjson     (local)
 
         Args:
             job_name: Dagster job name (used in the log file name).
@@ -106,7 +109,7 @@ class DltOneLakeResource(ConfigurableResource):
                 (e.g. step summaries, failure reasons).
 
         Raises:
-            Exception: Propagates any error from the OneLake file client.
+            Exception: Propagates any error from the log file client.
         """
         record = (
             json.dumps(
@@ -116,9 +119,7 @@ class DltOneLakeResource(ConfigurableResource):
                     "source_system_code": self.source_system_code,
                     "start_time": start_time.isoformat(),
                     "end_time": end_time.isoformat(),
-                    "duration_seconds": round(
-                        (end_time - start_time).total_seconds(), 3
-                    ),
+                    "duration_seconds": round((end_time - start_time).total_seconds(), 3),
                     "status": status,
                     **(extra or {}),
                 },

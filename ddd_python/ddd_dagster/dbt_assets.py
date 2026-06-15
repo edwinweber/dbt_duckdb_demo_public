@@ -58,6 +58,7 @@ produce this file automatically.  During local development::
 """
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,9 @@ class DbtSilverConfig(Config):
     Set ``full_refresh: true`` in the Launchpad to pass ``--full-refresh`` to
     dbt, rebuilding all Silver tables from scratch instead of incrementally.
     """
+
     full_refresh: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -101,6 +104,7 @@ dbt_project = DbtProject(project_dir=_DBT_PROJECT_DIR)
 # ---------------------------------------------------------------------------
 # Custom translator: wire dbt sources → dlt extraction asset keys
 # ---------------------------------------------------------------------------
+
 
 class DddDbtTranslator(DagsterDbtTranslator):
     """Maps dbt model layers to Dagster asset groups and connects dbt sources
@@ -125,7 +129,7 @@ class DddDbtTranslator(DagsterDbtTranslator):
         "gold": "ddd_gold",
     }
 
-    def get_asset_key(self, dbt_resource_props: dict[str, Any]) -> AssetKey:
+    def get_asset_key(self, dbt_resource_props: Mapping[str, Any]) -> AssetKey:
         resource_type = dbt_resource_props.get("resource_type")
 
         if resource_type == "source":
@@ -147,7 +151,7 @@ class DddDbtTranslator(DagsterDbtTranslator):
         # For models, use the default path-based key (prefixed by layer folder)
         return super().get_asset_key(dbt_resource_props)
 
-    def get_group_name(self, dbt_resource_props: dict[str, Any]) -> str | None:
+    def get_group_name(self, dbt_resource_props: Mapping[str, Any]) -> str | None:
         resource_type = dbt_resource_props.get("resource_type")
         if resource_type == "seed":
             return "ingestion_seeds"
@@ -162,7 +166,9 @@ _translator = DddDbtTranslator()
 _STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
 
-def _dbt_multi_asset_with_metabase(*, select: str, name: str, extra_deps: list[AssetKey] | None = None):
+def _dbt_multi_asset_with_metabase(
+    *, select: str, name: str, extra_deps: list[AssetKey] | None = None
+):
     manifest = validate_manifest(dbt_project.manifest_path)
     translator = validate_translator(_translator)
     specs, check_specs = build_dbt_specs(
@@ -197,6 +203,7 @@ def _dbt_multi_asset_with_metabase(*, select: str, name: str, extra_deps: list[A
 # dbt assets — Seeds
 # ---------------------------------------------------------------------------
 
+
 @_dbt_multi_asset_with_metabase(
     select="resource_type:seed",
     name="dbt_seeds_assets",
@@ -224,6 +231,7 @@ dbt_seeds_assets = dbt_seeds_assets.map_asset_specs(
 # ---------------------------------------------------------------------------
 # dbt assets — Bronze layer
 # ---------------------------------------------------------------------------
+
 
 @_dbt_multi_asset_with_metabase(
     select="bronze",
@@ -256,6 +264,7 @@ dbt_bronze_assets = dbt_bronze_assets.map_asset_specs(
 # dbt assets — Silver layer
 # ---------------------------------------------------------------------------
 
+
 @_dbt_multi_asset_with_metabase(
     select="silver",
     name="dbt_silver_assets",
@@ -286,6 +295,7 @@ dbt_silver_assets = dbt_silver_assets.map_asset_specs(
 # ---------------------------------------------------------------------------
 # dbt assets — Gold layer
 # ---------------------------------------------------------------------------
+
 
 @_dbt_multi_asset_with_metabase(
     select="gold",
@@ -319,6 +329,7 @@ dbt_gold_assets = dbt_gold_assets.map_asset_specs(
 # ---------------------------------------------------------------------------
 # dbt assets — Data Engineering layer
 # ---------------------------------------------------------------------------
+
 
 @_dbt_multi_asset_with_metabase(
     select="data_engineering",
@@ -354,5 +365,3 @@ def dbt_data_engineering_assets(
     * ``dagster_step_failure``         — enriched view with surrogate keys and FKs
     """
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
-
-

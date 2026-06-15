@@ -31,3 +31,7 @@ export_environment_variables.sh
 *.egg-info/
 .ruff_cache/
 .mypy_cache/
+# Claude Code files — kept locally for development workflow, not for the public repo
+CLAUDE.md
+.claude/codebase_index.md
+.claude/settings.local.json

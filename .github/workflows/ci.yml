@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Python tests ────────────────────────────────────────────────────────────
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dagster,dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          # Minimal env vars required by the lazy env-loading module.
+          # Tests use monkeypatch / MagicMock for everything else.
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: duckdb
+          LOCAL_STORAGE_PATH: /tmp/ddd_ci
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
+          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
+          DUCKDB_DATABASE: danish_democracy_data
+          DLT_PIPELINES_DIR: /tmp/ddd_ci/pipelines_dir
+          DLT_PIPELINE_RUN_LOG_DIR: /tmp/ddd_ci/logs
+          DBT_PROJECT_DIRECTORY: ${{ github.workspace }}/dbt
+          DBT_MODELS_DIRECTORY: ${{ github.workspace }}/dbt/models
+          DBT_LOGS_DIRECTORY: /tmp/ddd_ci/dbt/logs
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+          DAGSTER_HOME: /tmp/ddd_ci/dagster
+          DANISH_DEMOCRACY_BASE_URL: https://oda.ft.dk/api
+          DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD: "31"
+          RFAM_CONNECTION_STRING: "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam"
+          RFAM_DEFAULT_DAYS_TO_LOAD: "365"
+
+  # ── dbt SQL validation ──────────────────────────────────────────────────────
+  dbt-validate:
+    name: dbt parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install dbt packages
+        run: dbt deps --project-dir dbt --profiles-dir dbt
+        env:
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: duckdb
+          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
+          DUCKDB_DATABASE: danish_democracy_data
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
+          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+
+      - name: dbt parse (validates all SQL + YAML without a live database)
+        run: dbt parse --project-dir dbt --profiles-dir dbt
+        env:
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: duckdb
+          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
+          DUCKDB_DATABASE: danish_democracy_data
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
+          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+
+  # ── Linting & type-checking ──────────────────────────────────────────────────
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dagster,dev]"
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format check
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy ddd_python/ --ignore-missing-imports

@@ -1,8 +1,8 @@
 """Shared test fixtures for the Danish Democracy Data test suite."""
 
-import pyarrow.dataset  # ensure it's in sys.modules before any patch.dict runs
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture

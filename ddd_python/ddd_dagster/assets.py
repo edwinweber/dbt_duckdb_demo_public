@@ -41,7 +41,7 @@ Design notes
   ``ThreadPoolExecutor(max_workers=4)``).
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dagster import (
     AssetExecutionContext,
@@ -53,11 +53,11 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
+from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
 
 
 class ExtractionConfig(Config):
@@ -72,6 +72,7 @@ class ExtractionConfig(Config):
     """
 
     date_to_load_from: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -159,7 +160,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         date_from = resolve_date_to_load_from(
             config.date_to_load_from,
             get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
 
         logger.info(
@@ -168,7 +169,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
             date_from,
         )
 
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         destination_file = f"{base}_{ts:%Y%m%d_%H%M%S}.json"
         api_filter = f"$filter=opdateringsdato ge DateTime'{date_from}'&$orderby=id"
 
@@ -183,7 +184,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
             destination_file_name=destination_file,
         )
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         records = result.get("records_written") or 0
 
         logger.info(
@@ -251,7 +252,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         logger = context.log
         logger.info("START full extraction — resource=%s", api_resource)
 
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         destination_file = f"{base}_{ts:%Y%m%d_%H%M%S}.json"
         today = f"{ts:%Y-%m-%d}"
 
@@ -266,7 +267,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
             destination_file_name=destination_file,
         )
 
-        duration = (datetime.now(timezone.utc) - ts).total_seconds()
+        duration = (datetime.now(UTC) - ts).total_seconds()
         records = result.get("records_written") or 0
 
         logger.info(

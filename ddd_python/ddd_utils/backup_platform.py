@@ -8,12 +8,24 @@ For each selected target the script:
 4. Creates a verified, deflate-compressed zip archive per target.
 5. Optionally uploads the archive to a Hetzner StorageBox via rsync/SSH.
 6. Prunes local archives older than 2 months.
-7. Restarts only the containers that were stopped in step 2.
+7. Prunes remote StorageBox archives to a daily+monthly rotation (31 + 12).
+8. Restarts only the containers that were stopped in step 2.
 
 Backup directories (overridable via environment variables):
     /data_backup/dagster   — Dagster home directory
     /data_backup/metabase  — Metabase data directory
-    /data_backup/duckdb    — DuckDB database directory
+    /data_backup/ducklake  — DuckLake Parquet data files (DuckLake mode only)
+    /data_backup/duckdb    — DuckDB database directory (incl. the DuckLake catalog)
+
+DuckLake mode (``SILVER_STORAGE_FORMAT=ducklake``):
+    The Silver layer is stored as DuckLake-managed Parquet files, so the backup
+    additionally captures the DuckLake **data files** (``ducklake`` target).
+    The DuckLake **catalog** (``.ducklake`` file) lives in the DuckDB directory
+    and is captured by the ``duckdb`` target.  Targets run in the order
+    ``… → ducklake → duckdb`` so the data files are archived **before** the
+    catalog — the catalog references the files, so files-first guarantees the
+    catalog snapshot never points at a file the backup missed.  The ``ducklake``
+    target is omitted entirely in native ``duckdb`` mode.
 
 Log files are written to /data_backup/logs/ as NDJSON.  Query all runs:
 
@@ -35,15 +47,20 @@ Environment variables:
     DAGSTER_BACKUP_DIR            Override for /data_backup/dagster
     METABASE_BACKUP_DIR           Override for /data_backup/metabase
     DUCKDB_BACKUP_DIR             Override for /data_backup/duckdb
+    DUCKLAKE_BACKUP_DIR           Override for /data_backup/ducklake
     BACKUP_LOG_DIR                Override for /data_backup/logs
     DAGSTER_HOME                  Override for Dagster home directory
     METABASE_DATA_DIR             Override for Metabase data directory
     DUCKDB_DATABASE_LOCATION      Override for DuckDB file path (parent dir is backed up)
+    SILVER_STORAGE_FORMAT         duckdb | ducklake — ducklake adds the ducklake target
+    DUCKLAKE_DATA_PATH            DuckLake data directory backed up by the ducklake target
     HETZNER_STORAGEBOX_HOST       StorageBox hostname  (upload skipped when absent)
     HETZNER_STORAGEBOX_USER       StorageBox SSH user
     HETZNER_STORAGEBOX_REMOTE_DIR Base remote path; archives go to <base>/<env>/
     HETZNER_STORAGEBOX_PORT       SSH port (default: 23)
     HETZNER_STORAGEBOX_SSH_KEY    Path to private key (uses SSH agent when absent)
+    HETZNER_STORAGEBOX_KEEP_DAILY    Remote daily archives to keep (default: 31; 0 disables)
+    HETZNER_STORAGEBOX_KEEP_MONTHLY  Remote monthly archives to keep (default: 12; 0 disables)
 """
 
 from __future__ import annotations
@@ -52,11 +69,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
 import zipfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple, TypedDict
 
@@ -83,14 +101,24 @@ _FLUSH_WAIT_SECONDS: int = max(0, int(os.environ.get("FLUSH_WAIT_SECONDS", "30")
 
 # ── Hetzner StorageBox ────────────────────────────────────────────────────────
 
-_HETZNER_HOST: str | None        = os.environ.get("HETZNER_STORAGEBOX_HOST")
-_HETZNER_USER: str | None        = os.environ.get("HETZNER_STORAGEBOX_USER")
-_HETZNER_PORT: int                = int(os.environ.get("HETZNER_STORAGEBOX_PORT", "23"))  # 23 is Hetzner's documented SSH port for StorageBox
+_HETZNER_HOST: str | None = os.environ.get("HETZNER_STORAGEBOX_HOST")
+_HETZNER_USER: str | None = os.environ.get("HETZNER_STORAGEBOX_USER")
+_HETZNER_PORT: int = int(
+    os.environ.get("HETZNER_STORAGEBOX_PORT", "23")
+)  # 23 is Hetzner's documented SSH port for StorageBox
 _HETZNER_REMOTE_BASE: str | None = os.environ.get("HETZNER_STORAGEBOX_REMOTE_DIR")
-_HETZNER_SSH_KEY: str | None     = os.environ.get("HETZNER_STORAGEBOX_SSH_KEY")
+_HETZNER_SSH_KEY: str | None = os.environ.get("HETZNER_STORAGEBOX_SSH_KEY")
+
+# Remote (StorageBox) retention. Unlike the local purge, the StorageBox keeps a
+# grandfather-father-son rotation: the most recent N daily archives plus the most
+# recent M monthly archives (one representative per day/month). Set either to 0
+# to disable that tier; both 0 disables remote pruning entirely (keep forever).
+_STORAGEBOX_KEEP_DAILY: int = max(0, int(os.environ.get("HETZNER_STORAGEBOX_KEEP_DAILY", "31")))
+_STORAGEBOX_KEEP_MONTHLY: int = max(0, int(os.environ.get("HETZNER_STORAGEBOX_KEEP_MONTHLY", "12")))
 
 
 # ── Typed structures ──────────────────────────────────────────────────────────
+
 
 class _ArchiveResult(NamedTuple):
     """Result of a single archive creation."""
@@ -117,12 +145,13 @@ class _LogRecord(TypedDict):
     archive_verified: bool
     uploaded_to_storagebox: bool
     skipped_files: list[str]
-    status: str          # "success" | "error"
+    status: str  # "success" | "error"
     error_message: str | None
     duration_seconds: float | None
 
 
 # ── Archive operations ────────────────────────────────────────────────────────
+
 
 def _create_archive(target: BackupTarget, timestamp: str) -> _ArchiveResult:
     """Create a deflate-compressed zip archive of *target.source*.
@@ -195,6 +224,19 @@ def _verify_archive(archive_path: Path) -> int:
     return count
 
 
+def _storagebox_ssh_args() -> list[str]:
+    """Build the shared ``ssh`` option list for StorageBox connections."""
+    args = [
+        "-p",
+        str(_HETZNER_PORT),
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+    ]
+    if _HETZNER_SSH_KEY:
+        args += ["-i", _HETZNER_SSH_KEY]
+    return args
+
+
 def _upload_to_storagebox(archive_path: Path, environment: str) -> bool:
     """Upload *archive_path* to the environment-specific StorageBox subdirectory.
 
@@ -208,25 +250,142 @@ def _upload_to_storagebox(archive_path: Path, environment: str) -> bool:
         logger.warning("StorageBox credentials not configured — skipping remote upload.")
         return False
 
-    ssh_args: list[str] = [
-        "-p", str(_HETZNER_PORT),
-        "-o", "StrictHostKeyChecking=accept-new",
-    ]
-    if _HETZNER_SSH_KEY:
-        ssh_args += ["-i", _HETZNER_SSH_KEY]
+    ssh_args = _storagebox_ssh_args()
+    remote_dir = f"{_HETZNER_REMOTE_BASE}/{environment.lower()}"
 
-    remote = f"{_HETZNER_USER}@{_HETZNER_HOST}:{_HETZNER_REMOTE_BASE}/{environment.lower()}/"
+    # Pre-create the remote directory tree. rsync only creates the final
+    # destination dir when its parent already exists, and Hetzner's StorageBox
+    # rsync does not reliably honour --mkpath. The StorageBox restricted shell
+    # does support `mkdir -p`, so create the path explicitly first.
+    subprocess.run(
+        ["ssh"] + ssh_args + [f"{_HETZNER_USER}@{_HETZNER_HOST}", "mkdir", "-p", remote_dir],
+        check=True,
+    )
+
+    remote = f"{_HETZNER_USER}@{_HETZNER_HOST}:{remote_dir}/"
     logger.info("Uploading %s → %s", archive_path.name, remote)
     subprocess.run(
         [
-            "rsync", "--archive", "--compress", "--progress",
-            "-e", " ".join(["ssh"] + ssh_args),
+            "rsync",
+            "--archive",
+            "--compress",
+            "--progress",
+            "-e",
+            " ".join(["ssh"] + ssh_args),
             str(archive_path),
             remote,
         ],
         check=True,
     )
     return True
+
+
+def _select_retained_archives(
+    archives: list[tuple[datetime, str]],
+    keep_daily: int,
+    keep_monthly: int,
+) -> set[str]:
+    """Return the set of archive names to keep under a daily+monthly rotation.
+
+    For each calendar day and each calendar month the most recent archive is the
+    representative for that period. The *keep_daily* most recent daily
+    representatives and *keep_monthly* most recent monthly representatives are
+    retained; everything else is eligible for deletion.
+    """
+    latest_per_day: dict[date, tuple[datetime, str]] = {}
+    latest_per_month: dict[tuple[int, int], tuple[datetime, str]] = {}
+    for dt, name in archives:
+        day = dt.date()
+        if day not in latest_per_day or dt > latest_per_day[day][0]:
+            latest_per_day[day] = (dt, name)
+        month = (dt.year, dt.month)
+        if month not in latest_per_month or dt > latest_per_month[month][0]:
+            latest_per_month[month] = (dt, name)
+
+    keep: set[str] = set()
+    for day in sorted(latest_per_day, reverse=True)[:keep_daily]:
+        keep.add(latest_per_day[day][1])
+    for month in sorted(latest_per_month, reverse=True)[:keep_monthly]:
+        keep.add(latest_per_month[month][1])
+    return keep
+
+
+def _prune_storagebox(target_name: str, environment: str) -> None:
+    """Apply daily+monthly retention to *target_name* archives on the StorageBox.
+
+    Lists the remote directory, keeps the most recent
+    ``_STORAGEBOX_KEEP_DAILY`` daily and ``_STORAGEBOX_KEEP_MONTHLY`` monthly
+    archives, and deletes the rest. Never raises: a pruning failure is logged as
+    a warning and does not fail the (already-completed) backup. A no-op when
+    StorageBox credentials are absent or both retention counts are 0.
+    """
+    if not _HETZNER_HOST or not _HETZNER_USER or not _HETZNER_REMOTE_BASE:
+        return
+    if _STORAGEBOX_KEEP_DAILY == 0 and _STORAGEBOX_KEEP_MONTHLY == 0:
+        return  # retention disabled — keep everything remotely
+
+    remote_dir = f"{_HETZNER_REMOTE_BASE}/{environment.lower()}"
+    host = f"{_HETZNER_USER}@{_HETZNER_HOST}"
+    ssh = ["ssh"] + _storagebox_ssh_args()
+
+    try:
+        listing = subprocess.run(
+            ssh + [host, "ls", remote_dir],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "[%s] StorageBox prune: could not list %s (%s) — skipping.",
+            target_name,
+            remote_dir,
+            exc.stderr.strip() if exc.stderr else exc,
+        )
+        return
+
+    pattern = re.compile(rf"^{re.escape(target_name)}_(\d{{8}})_(\d{{6}})\.zip$")
+    archives: list[tuple[datetime, str]] = []
+    for token in listing.split():
+        m = pattern.match(token)
+        if not m:
+            continue
+        try:
+            dt = datetime.strptime(f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        archives.append((dt, token))
+
+    if not archives:
+        return
+
+    keep = _select_retained_archives(archives, _STORAGEBOX_KEEP_DAILY, _STORAGEBOX_KEEP_MONTHLY)
+    to_delete = sorted(name for _, name in archives if name not in keep)
+    if not to_delete:
+        logger.info(
+            "[%s] StorageBox prune: nothing to remove (%d archive(s) kept).",
+            target_name,
+            len(keep),
+        )
+        return
+
+    paths = [f"{remote_dir}/{name}" for name in to_delete]
+    try:
+        subprocess.run(ssh + [host, "rm"] + paths, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "[%s] StorageBox prune: rm failed (%s) — leaving archives in place.",
+            target_name,
+            exc.stderr.strip() if exc.stderr else exc,
+        )
+        return
+
+    logger.info(
+        "[%s] StorageBox prune: removed %d archive(s), kept %d.",
+        target_name,
+        len(to_delete),
+        len(keep),
+    )
 
 
 def _write_log_record(log_file: Path, record: _LogRecord) -> None:
@@ -239,7 +398,8 @@ def _purge_old_archives(backup_dir: Path, max_age_days: int) -> None:
     """Delete archives older than *max_age_days* from *backup_dir*."""
     cutoff = datetime.now() - timedelta(days=max_age_days)
     expired = [
-        f for f in backup_dir.glob("*_????????_??????.zip")
+        f
+        for f in backup_dir.glob("*_????????_??????.zip")
         if datetime.fromtimestamp(f.stat().st_mtime) < cutoff
     ]
     for f in expired:
@@ -253,6 +413,7 @@ def _purge_old_archives(backup_dir: Path, max_age_days: int) -> None:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     logging.basicConfig(
@@ -273,8 +434,7 @@ def main() -> None:
         default=list(TARGET_NAMES),
         metavar="TARGET",
         help=(
-            f"One or more targets to back up (default: all). "
-            f"Choices: {{{', '.join(TARGET_NAMES)}}}"
+            f"One or more targets to back up (default: all). Choices: {{{', '.join(TARGET_NAMES)}}}"
         ),
     )
     args = parser.parse_args()
@@ -293,12 +453,10 @@ def main() -> None:
     selected: list[BackupTarget] = [t for t in BACKUP_TARGETS if t.name in requested]
 
     # Collect unique containers while preserving declaration order.
-    containers_to_stop: list[str] = list(
-        dict.fromkeys(c for t in selected for c in t.containers)
-    )
+    containers_to_stop: list[str] = list(dict.fromkeys(c for t in selected for c in t.containers))
 
-    now        = datetime.now()
-    timestamp  = now.strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     started_at = now.isoformat(timespec="seconds")
 
     BACKUP_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -319,32 +477,34 @@ def main() -> None:
             logger.info("[%s] backup started", target.name)
             t0 = time.monotonic()
             record: _LogRecord = {
-                "run_id":                 timestamp,
-                "run_started_at":         started_at,
-                "logged_at":              datetime.now().isoformat(timespec="seconds"),
-                "environment":            environment,
-                "target":                 target.name,
-                "source_path":            str(target.source),
-                "backup_dir":             str(target.backup_dir),
-                "archive_name":           None,
-                "archive_size_mb":        None,
-                "archive_verified":       False,
+                "run_id": timestamp,
+                "run_started_at": started_at,
+                "logged_at": datetime.now().isoformat(timespec="seconds"),
+                "environment": environment,
+                "target": target.name,
+                "source_path": str(target.source),
+                "backup_dir": str(target.backup_dir),
+                "archive_name": None,
+                "archive_size_mb": None,
+                "archive_verified": False,
                 "uploaded_to_storagebox": False,
-                "skipped_files":          [],
-                "status":                 "error",
-                "error_message":          None,
-                "duration_seconds":       None,
+                "skipped_files": [],
+                "status": "error",
+                "error_message": None,
+                "duration_seconds": None,
             }
             try:
                 result = _create_archive(target, timestamp)
-                record["archive_name"]           = result.path.name
-                record["archive_size_mb"]        = round(result.path.stat().st_size / 1_048_576, 2)
-                record["skipped_files"]          = result.skipped
+                record["archive_name"] = result.path.name
+                record["archive_size_mb"] = round(result.path.stat().st_size / 1_048_576, 2)
+                record["skipped_files"] = result.skipped
                 _verify_archive(result.path)
-                record["archive_verified"]       = True
+                record["archive_verified"] = True
                 record["uploaded_to_storagebox"] = _upload_to_storagebox(result.path, environment)
-                record["status"]                 = "success"
+                record["status"] = "success"
                 _purge_old_archives(target.backup_dir, target.max_archive_age_days)
+                if record["uploaded_to_storagebox"]:
+                    _prune_storagebox(target.name, environment)
             except Exception as exc:
                 record["error_message"] = str(exc)
                 failed.append(target.name)
@@ -354,20 +514,14 @@ def main() -> None:
                 _write_log_record(log_file, record)
 
         if failed:
-            logger.error(
-                "Backup finished with errors — failed targets: %s", ", ".join(failed)
-            )
+            logger.error("Backup finished with errors — failed targets: %s", ", ".join(failed))
         else:
-            logger.info(
-                "Backup completed successfully — %d archive(s) created.", len(selected)
-            )
+            logger.info("Backup completed successfully — %d archive(s) created.", len(selected))
     finally:
         try:
             start_containers(actually_stopped)
         except Exception:
-            logger.exception(
-                "Failed to restart container(s) — manual intervention required!"
-            )
+            logger.exception("Failed to restart container(s) — manual intervention required!")
 
     if failed:
         sys.exit(1)

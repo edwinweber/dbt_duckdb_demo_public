@@ -19,7 +19,7 @@ dependencies = [
 
     # Transformation
     # dbt-core is capped at <1.12 — dagster-dbt 0.29.x hard limit
-    "dbt-core>=1.10,<1.12",
+    "dbt-core>=1.11,<1.12",
     "dbt-duckdb>=1.10,<2",
     "duckdb>=1.5.1,<1.6",
 
@@ -39,13 +39,18 @@ Issues = "https://github.com/edwinweber/dbt_duckdb_demo/issues"
 
 [project.optional-dependencies]
 dagster = [
-    # dagster, dagster-webserver, and dagster-dbt must stay in lockstep (0.29.x = 1.13.x)
+    # dagster-dbt's minor version tracks dagster's (0.29.x ↔ 1.13.x); keep the
+    # ranges wide enough that pip can resolve a matching dagster-dbt for whatever
+    # dagster<2 it selects.
     "dagster>=1.12,<2",
     "dagster-webserver>=1.12,<2",
-    "dagster-dbt>=0.29,<0.30",
+    "dagster-dbt>=0.29,<1",
 ]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.9",
+    "mypy>=1.10",
+    "pandas>=2.0",  # needed by duckdb.fetchdf() in integration tests
 ]
 
 [tool.setuptools.packages.find]
@@ -53,6 +58,38 @@ include = ["ddd_python*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# ── Ruff ─────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "B008",  # do not perform function calls in argument defaults (Dagster pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # assert is fine in tests
+# load_dotenv() must run before app imports so env vars are available at import time;
+# the E402 violations below are intentional.
+"ddd_python/ddd_dagster/definitions.py" = ["E402"]
+"ddd_python/ddd_dagster/sensors.py" = ["E402"]
+"ddd_python/ddd_dbt/dbt_build_with_unique_logfile.py" = ["E402"]
+"ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ddd_python"]
 
 [build-system]
 requires = ["setuptools>=68"]

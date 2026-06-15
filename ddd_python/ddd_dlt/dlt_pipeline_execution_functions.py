@@ -56,18 +56,19 @@ import io
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import time
 import traceback
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-import dlt
 import requests
 from dlt.destinations import filesystem as dlt_filesystem
 from sqlalchemy import create_engine, text
+
+import dlt
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,7 @@ _TS_MICROSEC = re.compile(r"(\.\d{6})\d+")
 def _scrub_secrets(params: dict) -> dict:
     """Return a copy of *params* with values of sensitive keys replaced by '***'."""
     return {
-        k: "***" if any(s in k.lower() for s in _SENSITIVE_KEYS) else v
-        for k, v in params.items()
+        k: "***" if any(s in k.lower() for s in _SENSITIVE_KEYS) else v for k, v in params.items()
     }
 
 
@@ -134,6 +134,7 @@ def _upload_to_onelake(data: bytes | str, directory_path: str, file_name: str) -
     # Keeping it local means the module can be imported in local-storage mode
     # (e.g. tests, code generation) without requiring Azure credentials.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
+
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         directory_path, file_name
     )
@@ -155,7 +156,6 @@ def _upload(data: bytes | str, directory_path: str, file_name: str) -> None:
         _upload_to_local(data, directory_path, file_name)
     else:
         _upload_to_onelake(data, directory_path, file_name)
-
 
 
 def _make_destination(
@@ -271,10 +271,12 @@ def write_log_to_onelake(
 
     # Deferred imports: Azure SDK + ADLS client only needed for OneLake writes.
     from ddd_python.ddd_utils import get_fabric_onelake_clients
+
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         destination_directory_path, destination_file_name
     )
     from azure.core.exceptions import ResourceNotFoundError
+
     encoded = data.encode("utf-8")
     try:
         offset = file_client.get_file_properties().size
@@ -388,10 +390,12 @@ def run_api_to_file_pipeline(
             num_rows += len(records)
             for record in records:
                 yield {
-                    normalize_danish_name(k): _TS_MICROSEC.sub(r'\1', v) if isinstance(v, str) else v
+                    normalize_danish_name(k): _TS_MICROSEC.sub(r"\1", v)
+                    if isinstance(v, str)
+                    else v
                     for k, v in record.items()
                 }
-            api_url = body.get("odata.nextLink")     # follow OData pagination
+            api_url = body.get("odata.nextLink")  # follow OData pagination
 
     # Two @dlt.resource definitions are necessary here: the incremental variant
     # carries a dlt.sources.incremental cursor parameter that dlt detects at
@@ -399,29 +403,36 @@ def run_api_to_file_pipeline(
     # function with no cursor.  The page-fetching logic is shared via
     # _iter_odata_pages above.
     if source_api_incremental_field:
+        _incr_field: str = source_api_incremental_field
+
         @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
         def get_api_data(
             api_url_base: str,
             updated_at: dlt.sources.incremental[str] = dlt.sources.incremental(
-                source_api_incremental_field,
+                _incr_field,
                 initial_value=source_api_date_to_load_from,
             ),
         ):
             # Truncate to YYYY-MM-DD for the OData DateTime'...' literal syntax
             last_date = str(updated_at.last_value)[:10]
             date_filter = f"$filter={source_api_incremental_field} ge DateTime'{last_date}'"
-            combined_filter = f"{source_api_filter}&{date_filter}" if source_api_filter else date_filter
+            combined_filter = (
+                f"{source_api_filter}&{date_filter}" if source_api_filter else date_filter
+            )
             yield from _iter_odata_pages(f"{api_url_base}?{combined_filter}")
     else:
+
         @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
         def get_api_data(api_url: str):  # type: ignore[no-redef]
             yield from _iter_odata_pages(api_url)
 
     destination, dataset_name = _make_destination(
-        destination_directory_path, destination_file_name, data_table_name=pipeline_name,
+        destination_directory_path,
+        destination_file_name,
+        data_table_name=pipeline_name,
     )
 
-    pipeline = dlt.pipeline(
+    pipeline = dlt.pipeline(  # type: ignore[call-overload]  # restore_from_destination absent from dlt stub
         pipeline_name=pipeline_name,
         destination=destination,
         pipelines_dir=get_variables_from_env.DLT_PIPELINES_DIR,
@@ -442,7 +453,11 @@ def run_api_to_file_pipeline(
     finally:
         session.close()
 
-    return {"status": "success", "records_written": num_rows, "trace": _serialize_trace(pipeline.last_trace)}
+    return {
+        "status": "success",
+        "records_written": num_rows,
+        "trace": _serialize_trace(pipeline.last_trace),
+    }
 
 
 def run_sql_to_file_pipeline(
@@ -522,15 +537,19 @@ def run_sql_to_file_pipeline(
                         break
                     for row in rows:
                         num_rows += 1
-                        yield dict(zip(columns, row))   # individual rows — dlt sees real schema
+                        yield dict(
+                            zip(columns, row, strict=False)
+                        )  # individual rows — dlt sees real schema
         finally:
             engine.dispose()
 
     destination, dataset_name = _make_destination(
-        destination_directory_path, destination_file_name, data_table_name=pipeline_name,
+        destination_directory_path,
+        destination_file_name,
+        data_table_name=pipeline_name,
     )
 
-    pipeline = dlt.pipeline(
+    pipeline = dlt.pipeline(  # type: ignore[call-overload]  # restore_from_destination absent from dlt stub
         pipeline_name=pipeline_name,
         destination=destination,
         pipelines_dir=get_variables_from_env.DLT_PIPELINES_DIR,
@@ -538,9 +557,16 @@ def run_sql_to_file_pipeline(
         restore_from_destination=True,
     )
 
-    pipeline.run(get_sql_data(source_connection_string, source_sql_query), loader_file_format=loader_file_format)
+    pipeline.run(
+        get_sql_data(source_connection_string, source_sql_query),
+        loader_file_format=loader_file_format,
+    )
 
-    return {"status": "success", "records_written": num_rows, "trace": _serialize_trace(pipeline.last_trace)}
+    return {
+        "status": "success",
+        "records_written": num_rows,
+        "trace": _serialize_trace(pipeline.last_trace),
+    }
 
 
 def run_file_to_file_pipeline(
@@ -713,7 +739,7 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
         level, message = "INFO", "Pipeline execution completed successfully"
         return result
 
-    except Exception as exc:
+    except Exception:
         error = traceback.format_exc()
         raise
 
@@ -721,17 +747,21 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
         end_timestamp = time.time()
         try:
             write_log_to_onelake(
-                json.dumps({
-                    "level": level,
-                    "message": message,
-                    "pipeline_type": pipeline_type,
-                    "start_time": datetime.fromtimestamp(start_timestamp, tz=timezone.utc).isoformat(),
-                    "end_time": datetime.fromtimestamp(end_timestamp, tz=timezone.utc).isoformat(),
-                    "duration_seconds": round(end_timestamp - start_timestamp, 3),
-                    "parameters": _scrub_secrets(kwargs),
-                    "result": result,
-                    "error": error,
-                }, default=_json_default) + "\n",
+                json.dumps(
+                    {
+                        "level": level,
+                        "message": message,
+                        "pipeline_type": pipeline_type,
+                        "start_time": datetime.fromtimestamp(start_timestamp, tz=UTC).isoformat(),
+                        "end_time": datetime.fromtimestamp(end_timestamp, tz=UTC).isoformat(),
+                        "duration_seconds": round(end_timestamp - start_timestamp, 3),
+                        "parameters": _scrub_secrets(kwargs),
+                        "result": result,
+                        "error": error,
+                    },
+                    default=_json_default,
+                )
+                + "\n",
                 log_dir,
                 log_file,
             )

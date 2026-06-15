@@ -1,12 +1,10 @@
+import subprocess
 from collections.abc import Iterable
 
 from dagster import AssetKey, AssetsDefinition, asset
-import subprocess
 
-@asset(
-    name="stop_metabase_asset",
-    description="Stops Metabase before pipeline runs."
-)
+
+@asset(name="stop_metabase_asset", description="Stops Metabase before pipeline runs.")
 def stop_metabase_asset():
     subprocess.run(["./stop_metabase_and_wait.sh"], check=True)
 

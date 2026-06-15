@@ -1,6 +1,6 @@
 """Tests for the _json_default fallback serializer."""
 
-from datetime import datetime, date, time
+from datetime import date, datetime, time
 
 from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import _json_default
 
@@ -28,6 +28,7 @@ def test_non_isoformat_object_returns_str():
 
 class FakeDateTime:
     """Mimics pendulum.DateTime or similar objects with isoformat()."""
+
     def isoformat(self):
         return "2024-01-01T00:00:00+00:00"
 

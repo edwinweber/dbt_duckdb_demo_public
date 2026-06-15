@@ -1,5 +1,8 @@
 {%- macro generate_pre_hook_silver(file_name,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
-CREATE TABLE IF NOT EXISTS {{ this.schema }}.{{ this.name }}_last_file AS
+{%- if is_incremental() == False -%}
+DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file;
+{%- endif -%}
+CREATE TABLE IF NOT EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file AS
 SELECT processed_files.*
 ,      CAST('{{ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] }}' AS DATETIME) AS LKHS_date_inserted
 FROM

@@ -21,7 +21,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -29,7 +30,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['DDD']
+              arguments:
+                values: ['DDD']
 
   - name: silver_ddd_aktoer
     description: SCD Type 2 history for Aktør (actors/members).
@@ -45,7 +47,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -63,7 +66,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -81,7 +85,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -99,7 +104,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -117,7 +123,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -135,7 +142,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -154,7 +162,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_aktoertype
     description: SCD Type 2 history for Aktørtype (actor types).
@@ -166,7 +175,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_moedestatus
     description: SCD Type 2 history for Mødestatus (meeting statuses).
@@ -178,7 +188,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_moedetype
     description: SCD Type 2 history for Mødetype (meeting types).
@@ -190,7 +201,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_periode
     description: SCD Type 2 history for Periode (parliamentary periods).
@@ -202,7 +214,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagskategori
     description: SCD Type 2 history for Sagskategori (case categories).
@@ -214,7 +227,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagsstatus
     description: SCD Type 2 history for Sagsstatus (case statuses).
@@ -226,7 +240,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstrinsstatus
     description: SCD Type 2 history for Sagstrinsstatus (case step statuses).
@@ -238,7 +253,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstrinstype
     description: SCD Type 2 history for Sagstrinstype (case step types).
@@ -250,7 +266,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstype
     description: SCD Type 2 history for Sagstype (case types).
@@ -262,7 +279,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_stemmetype
     description: SCD Type 2 history for Stemmetype (vote types).
@@ -274,7 +292,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   # ---------------------------------------------------------------------------
   # Current-version (_cv) views
@@ -298,7 +317,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -316,7 +336,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -334,7 +355,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -352,7 +374,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -370,7 +393,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -388,7 +412,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -406,7 +431,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
       - name: LKHS_hash_value
         data_tests:
           - not_null
@@ -424,7 +450,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_aktoertype_cv
     description: Current-version view of Aktørtype (actor types). One row per type.
@@ -437,7 +464,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_moedestatus_cv
     description: Current-version view of Mødestatus (meeting statuses). One row per status.
@@ -450,7 +478,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_moedetype_cv
     description: Current-version view of Mødetype (meeting types). One row per type.
@@ -463,7 +492,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_periode_cv
     description: Current-version view of Periode (parliamentary periods). One row per period.
@@ -476,7 +506,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagskategori_cv
     description: Current-version view of Sagskategori (case categories). One row per category.
@@ -489,7 +520,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagsstatus_cv
     description: Current-version view of Sagsstatus (case statuses). One row per status.
@@ -502,7 +534,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstrinsstatus_cv
     description: Current-version view of Sagstrinsstatus (case step statuses). One row per status.
@@ -515,7 +548,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstrinstype_cv
     description: Current-version view of Sagstrinstype (case step types). One row per type.
@@ -528,7 +562,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_sagstype_cv
     description: Current-version view of Sagstype (case types). One row per type.
@@ -541,7 +576,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
   - name: silver_ddd_stemmetype_cv
     description: Current-version view of Stemmetype (vote types). One row per type.
@@ -554,6 +590,7 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['I', 'U', 'D']
+              arguments:
+                values: ['I', 'U', 'D']
 
 

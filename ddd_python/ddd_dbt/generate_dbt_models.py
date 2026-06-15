@@ -16,10 +16,10 @@ from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 logger = logging.getLogger(__name__)
 
-PREFIX = '{{'
-SUFFIX = '}}'
-PREFIX_STMT = '{%-'
-SUFFIX_STMT = '-%}'
+PREFIX = "{{"
+SUFFIX = "}}"
+PREFIX_STMT = "{%-"
+SUFFIX_STMT = "-%}"
 # Build the set of Silver model names that use incremental extraction,
 # derived from the canonical list in configuration_variables — NOT hardcoded.
 _INCREMENTAL_SILVER_MODELS_DDD: frozenset[str] = frozenset(
@@ -28,8 +28,7 @@ _INCREMENTAL_SILVER_MODELS_DDD: frozenset[str] = frozenset(
 )
 
 _INCREMENTAL_SILVER_MODELS_RFAM: frozenset[str] = frozenset(
-    f"silver_rfam_{name}"
-    for name in configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
+    f"silver_rfam_{name}" for name in configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL
 )
 
 
@@ -52,7 +51,9 @@ def generate_dbt_models_bronze(
         data_source_env_var: Environment variable name for the Bronze data path.
             Only passed to ``generate_model_bronze_latest`` when non-default.
     """
-    target_dir = os.path.join(get_variables_from_env.DBT_MODELS_DIRECTORY, "bronze")
+    models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
+    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
+    target_dir = os.path.join(models_dir, "bronze")
     os.makedirs(target_dir, exist_ok=True)
 
     for table_name in table_names:
@@ -75,10 +76,7 @@ def generate_dbt_models_bronze(
         # For DDD: bronze_{file_name}_latest.  For Rfam: bronze_rfam_{file_name}_latest.
         # We find the matching Bronze model name and append _latest.
         matching = [t for t in table_names if t.lower().endswith(f"_{file_name}")]
-        if matching:
-            model_name = f"{matching[0].lower()}_latest"
-        else:
-            model_name = f"bronze_{file_name}_latest"
+        model_name = f"{matching[0].lower()}_latest" if matching else f"bronze_{file_name}_latest"
         model_path = os.path.join(target_dir, model_name)
         source_tag = source_system_code.lower()
         query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze_latest('{file_name}','{source_system_code}','{source_name}'{dsev_arg}) {SUFFIX}"
@@ -121,7 +119,9 @@ def generate_dbt_models_silver(
     if incremental_models is None:
         incremental_models = _INCREMENTAL_SILVER_MODELS_DDD
 
-    target_dir = os.path.join(get_variables_from_env.DBT_MODELS_DIRECTORY, "silver")
+    models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
+    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
+    target_dir = os.path.join(models_dir, "silver")
     os.makedirs(target_dir, exist_ok=True)
 
     for table_name in table_names:
@@ -158,19 +158,21 @@ def generate_dbt_models_silver(
         # automatically.  Add an explicit -- depends_on hint.
         depends_on_line = ""
         if macro_name == "generate_model_silver_incr_extraction":
-            depends_on_line = f"-- depends_on: {PREFIX} ref(bronze_table_name ~ '_latest') {SUFFIX}\n"
+            depends_on_line = (
+                f"-- depends_on: {PREFIX} ref(bronze_table_name ~ '_latest') {SUFFIX}\n"
+            )
 
         query = (
             f"{PREFIX_STMT} set bronze_table_name = this.name.replace('silver', 'bronze', 1) {SUFFIX_STMT}\n"
             f"{PREFIX_STMT} set base_for_hash = generate_base_for_hash(table_name=bronze_table_name,"
             f"columns_to_exclude=var('bronze_columns_to_exclude_in_silver_hash'),"
-            f"primary_key_columns=\"{pk_columns_bronze}\") {SUFFIX_STMT}\n"
+            f'primary_key_columns="{pk_columns_bronze}") {SUFFIX_STMT}\n'
             f"{depends_on_line}"
             f"{PREFIX} config( materialized='incremental',incremental_strategy='append',"
             f"on_schema_change='append_new_columns',unique_key=['{pk}','LKHS_date_valid_from'],"
             f"tags=['{source_system_code.lower()}'],\n"
-            f"pre_hook  = \"{PREFIX} generate_pre_hook_silver({pre_hook_args}) {SUFFIX}\",\n"
-            f"post_hook = \"{PREFIX} generate_post_hook_silver({post_hook_args}) {SUFFIX}\"\n"
+            f'pre_hook  = "{PREFIX} generate_pre_hook_silver({pre_hook_args}) {SUFFIX}",\n'
+            f'post_hook = "{PREFIX} generate_post_hook_silver({post_hook_args}) {SUFFIX}"\n'
             f") {SUFFIX}\n"
             f"{PREFIX} {macro_name}(file_name='{file_name}',bronze_table_name=bronze_table_name,"
             f"primary_key_columns='{pk}',date_column='{dc}',base_for_hash=base_for_hash{dsev_arg}) {SUFFIX}\n"
@@ -192,7 +194,9 @@ def generate_dbt_models_silver(
 
 def generate_dbt_models_gold_cv(table_names: list[str]) -> None:
     """Generate dbt Gold ``_cv`` (current-version) model files."""
-    target_dir = os.path.join(get_variables_from_env.DBT_MODELS_DIRECTORY, "gold")
+    models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
+    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
+    target_dir = os.path.join(models_dir, "gold")
     os.makedirs(target_dir, exist_ok=True)
 
     # 'date' and 'individual_votes' are handcrafted — skip them.

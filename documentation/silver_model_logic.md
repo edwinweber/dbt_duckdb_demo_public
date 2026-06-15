@@ -25,11 +25,13 @@ This document explains the two Silver model macros used in this project. Both im
 
 ### Pre-hook: `generate_pre_hook_silver`
 
-Creates the `_last_file` bookmark table if it doesn't exist (with zero rows via `WHERE 1 = 0`). This ensures the main query can always reference it.
+Creates the `_last_file` bookmark table if it doesn't exist (with zero rows via `WHERE 1 = 0`). This ensures the main query can always reference it. On a `--full-refresh` run it first **drops** `_last_file` so the filename watermark resets and the rebuilt table reprocesses the entire Bronze history — without this, a stale bookmark would filter out every Bronze file and leave the table empty.
 
 ### Post-hook: `generate_post_hook_silver`
 
 Drops and recreates the `_last_file` bookmark table with a single row: the **latest** bronze file and its predecessor. This bookmark tells the next run where to start processing.
+
+> **Storage-format note:** all helper tables (`_last_file`, `_current_temp`) are written with a fully-qualified `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` name. This keeps them in the **same database** as the Silver model — required in DuckLake mode (`SILVER_STORAGE_FORMAT=ducklake`), where the model lives in `ducklake_catalog` and DuckDB forbids a transaction from writing to two databases. In the default `duckdb` mode `this.database` is the main database, so behaviour is unchanged.
 
 ```text
 _last_file table:

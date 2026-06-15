@@ -11,7 +11,12 @@ as that UID so that restored files are owned correctly.
 Backup directories (overridable via environment variables):
     /data_backup/dagster   — Dagster home directory archives
     /data_backup/metabase  — Metabase data directory archives
-    /data_backup/duckdb    — DuckDB database directory archives
+    /data_backup/ducklake  — DuckLake Parquet data-file archives (DuckLake mode only)
+    /data_backup/duckdb    — DuckDB database directory archives (incl. the DuckLake catalog)
+
+In DuckLake mode (``SILVER_STORAGE_FORMAT=ducklake``) the ``ducklake`` target is
+available too; restoring all targets brings back both the DuckLake data files
+and the catalog (the catalog is part of the ``duckdb`` archive).
 
 Every restore run appends one NDJSON record per target to:
     /data_backup/logs/restore_log_{YYYYMMDD_HHMMSS}.ndjson
@@ -78,6 +83,7 @@ _TARGETS: dict[str, BackupTarget] = {t.name: t for t in BACKUP_TARGETS}
 
 # ── Log record ────────────────────────────────────────────────────────────────
 
+
 class _RestoreLogRecord(TypedDict):
     """Schema for one NDJSON log entry written per restored target."""
 
@@ -88,7 +94,7 @@ class _RestoreLogRecord(TypedDict):
     archive_name: str
     archive_size_mb: float
     restore_dest: str
-    status: str           # "success" | "error"
+    status: str  # "success" | "error"
     error_message: str | None
     duration_seconds: float | None
 
@@ -101,6 +107,7 @@ def _write_log_record(log_file: Path, record: _RestoreLogRecord) -> None:
 
 # ── Restore plan ──────────────────────────────────────────────────────────────
 
+
 class _RestoreItem(NamedTuple):
     """One resolved entry in the restore plan."""
 
@@ -109,6 +116,7 @@ class _RestoreItem(NamedTuple):
 
 
 # ── Restore operations ────────────────────────────────────────────────────────
+
 
 def _resolve_timestamp(target: BackupTarget, requested: str | None) -> str:
     """Return the timestamp to restore for *target*.
@@ -121,9 +129,7 @@ def _resolve_timestamp(target: BackupTarget, requested: str | None) -> str:
     """
     timestamps = available_timestamps(target.backup_dir)
     if not timestamps:
-        raise FileNotFoundError(
-            f"No backup archives found in {target.backup_dir}"
-        )
+        raise FileNotFoundError(f"No backup archives found in {target.backup_dir}")
     if requested is None:
         return timestamps[-1]
     if requested not in timestamps:
@@ -134,9 +140,7 @@ def _resolve_timestamp(target: BackupTarget, requested: str | None) -> str:
     return requested
 
 
-def _build_restore_plan(
-    targets: list[str], timestamp: str | None
-) -> list[_RestoreItem]:
+def _build_restore_plan(targets: list[str], timestamp: str | None) -> list[_RestoreItem]:
     """Resolve archive paths for all requested targets before touching anything.
 
     Raises:
@@ -145,7 +149,7 @@ def _build_restore_plan(
     plan: list[_RestoreItem] = []
     for name in targets:
         target = _TARGETS[name]
-        ts      = _resolve_timestamp(target, timestamp)
+        ts = _resolve_timestamp(target, timestamp)
         archive = target.backup_dir / f"{name}_{ts}.zip"
         plan.append(_RestoreItem(target=target, archive=archive))
         logger.info("[%s] will restore from %s", name, archive.name)
@@ -164,8 +168,8 @@ def _restore_one(item: _RestoreItem) -> None:
     if not item.archive.exists():
         raise FileNotFoundError(f"Archive not found: {item.archive}")
 
-    target  = item.target
-    dest    = target.source.parent
+    target = item.target
+    dest = target.source.parent
 
     if target.restore_uid:
         # Data directory is owned by a different UID.  Run extraction inside
@@ -178,11 +182,17 @@ def _restore_one(item: _RestoreItem) -> None:
         )
         subprocess.run(
             [
-                "docker", "run", "--rm",
-                "--user", target.restore_uid,
-                "--entrypoint", "python3",      # bypass the image's entrypoint script
-                "-v", f"{item.archive.parent}:/backup:ro",
-                "-v", f"{dest}:/target",
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                target.restore_uid,
+                "--entrypoint",
+                "python3",  # bypass the image's entrypoint script
+                "-v",
+                f"{item.archive.parent}:/backup:ro",
+                "-v",
+                f"{dest}:/target",
                 RESTORE_DOCKER_IMAGE,
                 "-c",
                 (
@@ -199,6 +209,7 @@ def _restore_one(item: _RestoreItem) -> None:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     logging.basicConfig(
@@ -228,12 +239,12 @@ def main() -> None:
         default=list(TARGET_NAMES),
         metavar="TARGET",
         help=(
-            f"One or more targets to restore (default: all). "
-            f"Choices: {{{', '.join(TARGET_NAMES)}}}"
+            f"One or more targets to restore (default: all). Choices: {{{', '.join(TARGET_NAMES)}}}"
         ),
     )
     parser.add_argument(
-        "--yes", "-y",
+        "--yes",
+        "-y",
         action="store_true",
         help="Skip the confirmation prompt (use in non-interactive / scripted contexts).",
     )
@@ -261,11 +272,12 @@ def main() -> None:
             sys.exit(0)
 
     # ── Log file setup ────────────────────────────────────────────────────────
-    now        = datetime.now()
-    timestamp  = now.strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     started_at = now.isoformat(timespec="seconds")
 
     from ddd_python.ddd_utils.backup_common import BACKUP_LOG_DIR
+
     BACKUP_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = BACKUP_LOG_DIR / f"restore_log_{timestamp}.ndjson"
     logger.info("Log: %s", log_file)
@@ -283,15 +295,15 @@ def main() -> None:
             logger.info("[%s] restoring …", item.target.name)
             t0 = time.monotonic()
             record: _RestoreLogRecord = {
-                "run_id":           timestamp,
-                "run_started_at":   started_at,
-                "logged_at":        datetime.now().isoformat(timespec="seconds"),
-                "target":           item.target.name,
-                "archive_name":     item.archive.name,
-                "archive_size_mb":  round(item.archive.stat().st_size / 1_048_576, 2),
-                "restore_dest":     str(item.target.source),
-                "status":           "error",
-                "error_message":    None,
+                "run_id": timestamp,
+                "run_started_at": started_at,
+                "logged_at": datetime.now().isoformat(timespec="seconds"),
+                "target": item.target.name,
+                "archive_name": item.archive.name,
+                "archive_size_mb": round(item.archive.stat().st_size / 1_048_576, 2),
+                "restore_dest": str(item.target.source),
+                "status": "error",
+                "error_message": None,
                 "duration_seconds": None,
             }
             try:
@@ -309,14 +321,10 @@ def main() -> None:
         try:
             start_containers(actually_stopped)
         except Exception:
-            logger.exception(
-                "Failed to restart container(s) — manual intervention required!"
-            )
+            logger.exception("Failed to restart container(s) — manual intervention required!")
 
     if failed:
-        logger.error(
-            "Restore finished with errors — failed targets: %s", ", ".join(failed)
-        )
+        logger.error("Restore finished with errors — failed targets: %s", ", ".join(failed))
         sys.exit(1)
     else:
         logger.info("Restore completed successfully.")

@@ -22,9 +22,10 @@ exports the result as Delta Lake tables to Microsoft Fabric OneLake.
 | Extraction      | dlt ≥1.24 (Data Load Tool)                           |
 | Transformation  | dbt-core ≥1.10,<1.12 + dbt-duckdb ≥1.10             |
 | Query engine    | DuckDB ≥1.5.1,<1.6                                   |
+| Silver storage  | DuckDB native tables (default) **or** DuckLake (Parquet + catalog) |
 | Data quality    | dbt-utils 1.3.0 + dbt built-in tests                 |
 | Cloud storage   | Microsoft Fabric OneLake (ADLS Gen2 / Delta Lake)    |
-| Export          | deltalake ≥1.5, PyArrow ≥17                          |
+| Export          | DuckDB `delta_scan` (dedup read) + deltalake ≥1.5 / PyArrow ≥17 (write) |
 | SQL source      | SQLAlchemy ≥2.0, PyMySQL ≥1.1                        |
 | Container       | Docker + Docker Compose                               |
 | Testing         | pytest ≥8.0                                          |
@@ -36,14 +37,21 @@ Extraction (dlt)
    ↓  JSON / Parquet files
 Bronze (DuckDB views over raw files)
    ↓  hash-based CDC, SCD Type 2
-Silver (DuckDB incremental tables + _cv current-version views)
+Silver (DuckDB native tables OR DuckLake Parquet + _cv current-version views)
    ↓  star-schema modeling
 Gold (DuckDB views — facts & dimensions)
    ↓  Delta Lake export
 OneLake / local filesystem
 ```
 
-Orchestrated by **Dagster** (two daily schedules: 06:00 + 08:00 Europe/Copenhagen, disabled by default).
+The **Silver storage format** is switchable via `SILVER_STORAGE_FORMAT`
+(`duckdb` default | `ducklake`) — see *Silver Storage Format* below. This is
+orthogonal to `STORAGE_TARGET`, which only controls the Delta Lake **export**
+destination (local vs OneLake).
+
+Orchestrated by **Dagster** (two daily schedules: 06:00 full pipeline +
+08:00 data engineering, Europe/Copenhagen, disabled by default). DuckLake
+catalog cleanup is a separate **manual** job (no schedule).
 
 ## Directory Structure
 
@@ -61,7 +69,7 @@ Orchestrated by **Dagster** (two daily schedules: 06:00 + 08:00 Europe/Copenhage
 │   ├── macros/                  9 Jinja macros (model factories, hash, CDC)
 │   ├── seeds/                   Seed CSVs (Danish public holidays, source registry)
 │   └── dbt_project.yml          Project config + variables
-├── tests/                       pytest tests (14 modules, 125 tests)
+├── tests/                       pytest tests (15 modules, 132 tests)
 ├── duckdb/                      DuckDB init scripts (extensions + Azure secret)
 ├── dlt/pipelines_dir/           dlt incremental state (git-ignored)
 ├── data/                        Local storage root (git-ignored)
@@ -136,6 +144,12 @@ Key constants:
 - `build_delta_export_path(layer, table)` — returns `(path, storage_options)` for
   `write_deltalake`; handles local vs OneLake switch and `os.makedirs` for local.
   Used by both Silver and Gold export scripts.
+- `silver_storage_is_ducklake()` — `True` when `SILVER_STORAGE_FORMAT=ducklake`;
+  the predicate that decides whether an export connection attaches the catalog.
+- `open_export_connection()` — the shared read-only DuckDB connection for the
+  Silver/Gold Delta exports. Opens the main DuckDB file and, in DuckLake mode,
+  attaches the DuckLake catalog read-only as `ducklake_catalog`. Used by both
+  export scripts and the Dagster export assets.
 
 ### `ddd_utils/get_variables_from_env.py` — Lazy environment loading
 
@@ -149,11 +163,22 @@ on first access.
 - **rfam_assets.py** — Rfam extraction (7× asset factory)
 - **dbt_assets.py** — dagster-dbt integration for Bronze/Silver/Gold/Data Engineering + seeds
 - **export_assets.py** — Silver (incremental) + Gold (full overwrite) → Delta Lake
-- **sensors.py** — Run-status sensors (success/failure) that log summaries to OneLake
-- **jobs.py** — Pipelines (incremental, full-extract, all, full-pipeline)
-  - dbt jobs: `in_process_executor` (DuckDB single-writer constraint)
+- **ducklake_cleanup_assets.py** — `ducklake_cleanup_asset` (group `maintenance`):
+  vacuums the DuckLake catalog; no-op unless `SILVER_STORAGE_FORMAT=ducklake`
+- **sensors.py** — Two `@run_status_sensor` definitions covering **all** Dagster jobs:
+  - `danish_parliament_run_success_sensor` — fires on SUCCESS: writes an NDJSON run
+    summary to the configured log destination and sends a ntfy.sh push notification.
+  - `danish_parliament_run_failure_sensor` — fires on FAILURE: same, but with
+    high-priority ntfy.sh alert. Both sensors are enabled by default
+    (`DefaultSensorStatus.RUNNING`). The ntfy.sh alert is skipped when `NTFY_TOPIC`
+    is not set, so notifications are opt-in.
+- **jobs.py** — Pipelines (incremental, full-extract, all, full-pipeline,
+  ducklake-cleanup)
+  - dbt + ducklake-cleanup jobs: `in_process_executor` (DuckDB single-writer constraint)
   - Extraction/export: `multiprocess_executor` (max_concurrent=4)
-- **schedules.py** — Two daily schedules (06:00 full pipeline + 08:00 data engineering, Europe/Copenhagen, disabled by default)
+- **schedules.py** — Two daily schedules (06:00 full pipeline + 08:00 data
+  engineering, Europe/Copenhagen, disabled by default). The DuckLake cleanup
+  job is intentionally **not** scheduled — run it manually.
 
 ### `ddd_dlt/` — Extraction & export
 
@@ -162,8 +187,26 @@ on first access.
 - **dlt_run_extraction_pipelines_danish_parliament_data.py** — DDD orchestrator
   (CLI: `--date_to_load_from`, `--file_names`; ThreadPoolExecutor max_workers=4)
 - **dlt_run_extraction_pipelines_rfam.py** — Rfam orchestrator
-- **export_main_silver_to_fabric_silver.py** — Silver → Delta Lake (incremental)
-- **export_main_gold_to_fabric_gold.py** — Gold → Delta Lake (full overwrite)
+- **export_main_silver_to_fabric_silver.py** — Silver → Delta Lake (incremental
+  append). The dedup read runs inside DuckDB via `delta_scan('<target>')`
+  (anti-join on `pk + LKHS_date_valid_from`) instead of loading the target Delta
+  table into PyArrow. The write still uses `deltalake.write_deltalake` —
+  DuckDB's delta extension is **read-only** at the pinned version (no
+  `COPY … (FORMAT delta)`). *Future:* newer DuckDB builds add a Delta writer but
+  it has an **Azure/OneLake regression**, so the write can't move off
+  `deltalake` yet — revisit dropping `deltalake` on the next DuckDB bump, once
+  both a writer-capable version is pinned **and** the Azure regression is fixed.
+  **Storage-format aware:** the shared `open_export_connection()`
+  (`ddd_utils/path_utils.py`) attaches the DuckLake catalog read-only in
+  `ducklake` mode; `_silver_source_database()` then reads Silver from
+  `ducklake_catalog.main_silver.*` (ducklake) or `<DUCKDB_DATABASE>.main_silver.*`
+  (duckdb).
+- **export_main_gold_to_fabric_gold.py** — Gold → Delta Lake (full overwrite;
+  no target read, so no `delta_scan` — still PyArrow + `write_deltalake`).
+  **DuckLake-aware:** uses the same shared `open_export_connection()`, so in
+  `ducklake` mode the catalog is attached and the Gold views (which reference
+  `ducklake_catalog.main_silver`) resolve. Gold's source stays
+  `<DUCKDB_DATABASE>.main_gold` in both modes.
 
 ### `ddd_dbt/` — dbt tooling
 
@@ -178,12 +221,22 @@ on first access.
 
 ### Configuration
 
-- **Profile:** `danish_democracy_data` with two targets:
-  - `local` — DuckDB on local disk (extensions: httpfs, parquet, delta)
+- **Profile:** `danish_democracy_data` with three targets:
+  - `local` — DuckDB on local disk (extensions: httpfs, parquet, delta, sqlite)
+  - `local_ducklake` — same as `local` plus the `ducklake` extension and an
+    `attach:` block that mounts the DuckLake catalog as the `ducklake_catalog`
+    database (`data_path` = `DUCKLAKE_DATA_PATH`)
   - `onelake` — DuckDB with Azure secret (extensions: + azure)
-- **Switched by:** `STORAGE_TARGET` env var (default `local`)
+- **Target selection** (`profiles.yml` `target:` expression):
+  - If `SILVER_STORAGE_FORMAT=ducklake` → always `local_ducklake`
+    (regardless of `STORAGE_TARGET`)
+  - Otherwise → `STORAGE_TARGET` (`local` | `onelake`, default `local`)
 - **Schemas:** `bronze`, `silver`, `gold`
 - **Materialization:** Bronze=view, Silver=table (incremental), Gold=view
+  - In `ducklake` mode the Silver tables are created in the `ducklake_catalog`
+    database (`+database` in `dbt_project.yml`); Bronze and Gold stay in the
+    main DuckDB file. dbt reads Bronze cross-database and Gold's `{{ ref() }}`
+    resolves Silver to `ducklake_catalog.main_silver.*` automatically.
 
 ### Variables (`dbt_project.yml`)
 
@@ -200,9 +253,19 @@ on first access.
 4. `generate_model_bronze_latest.sql` — Latest-snapshot view factory
 5. `generate_model_silver_incr_extraction.sql` — CDC for incremental tables
 6. `generate_model_silver_full_extraction.sql` — CDC for full-extract tables
-7. `generate_pre_hook_silver.sql` — Pre-hook: temp table for delete detection
+7. `generate_pre_hook_silver.sql` — Pre-hook: `_last_file` tracking table
 8. `generate_pre_hook_silver_full_refresh.sql` — Pre-hook for full refresh
-9. `generate_post_hook_silver.sql` — Post-hook: drop temp table
+9. `generate_post_hook_silver.sql` — Post-hook: rebuild `_last_file` table
+
+> **DuckLake note:** every Silver tracking table the macros create
+> (`_last_file`, `_current_temp`) is written with a fully-qualified
+> `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` name. This is
+> required for DuckLake mode: DuckDB forbids one transaction from writing to
+> two databases, so the helper tables must live in the **same** database as
+> the model (`ducklake_catalog`). In `duckdb` mode `this.database` is simply
+> the main database, so the same code path works unchanged.
+> `generate_pre_hook_silver.sql` also drops `_last_file` on `--full-refresh`
+> so the filename watermark resets and all Bronze files are reprocessed.
 
 ### Custom Column Prefix: `LKHS_`
 
@@ -222,6 +285,65 @@ All data-warehouse tracking columns use the `LKHS_` prefix:
 - **Silver:** 50 models (25 CDC tables + 25 `_cv` current-version views)
 - **Gold:** 19 models (10 star-schema views + 8 `_cv` views + `time` utility)
 
+## Silver Storage Format (DuckDB vs DuckLake)
+
+The Silver layer can be stored two ways, chosen by the `SILVER_STORAGE_FORMAT`
+env var (validated eagerly in `get_variables_from_env.py`):
+
+| `SILVER_STORAGE_FORMAT` | Silver tables live in | dbt target | Files on disk |
+|-------------------------|-----------------------|------------|---------------|
+| `duckdb` (default)      | main `.duckdb` file, `main_silver` schema (BASE TABLE) | `local`/`onelake` (per `STORAGE_TARGET`) | inside the DuckDB binary |
+| `ducklake`              | `ducklake_catalog` (DuckLake), `main_silver` schema | `local_ducklake` | Parquet under `DUCKLAKE_DATA_PATH`, metadata in the catalog `.ducklake` file |
+
+Key facts:
+
+- **Independent of `STORAGE_TARGET`.** DuckLake is always local; the Delta Lake
+  export (Silver/Gold → local or OneLake) is unchanged in either mode.
+- **Catalog auto-creates.** The catalog `.ducklake` file and the data directory
+  are created on first `ATTACH` — no manual setup.
+- **Inline small tables.** DuckLake stores very small tables *inline in the
+  catalog* rather than as Parquet (so not every table appears as a `.parquet`
+  file on disk). Force them out with `CALL ducklake_flush_inlined_data(...)`.
+- **Bronze/Gold unaffected.** Both stay in the main DuckDB file; Gold's
+  `{{ ref() }}` to Silver resolves to `ducklake_catalog.main_silver.*`
+  automatically.
+- **Single-writer still applies.** dbt's primary connection always opens the
+  main `.duckdb` file read-write (Bronze views, Gold views), so a dbt run still
+  needs an exclusive lock on it — Metabase **and** any DBeaver/host connection
+  to the `.duckdb` file must be closed during a run, in *both* modes.
+- **Downstream tools** (Metabase, DBeaver) must load the `ducklake` extension
+  and `ATTACH` the catalog to read Silver/Gold in DuckLake mode. Metabase: the
+  extension is baked into `Dockerfile.metabase`, `/data/ducklake` is mounted,
+  and the connection init-SQL runs `LOAD ducklake; ATTACH …`. DBeaver: needs the
+  DuckDB JDBC driver **≥1.5.3** (1.5.1 lacks DuckLake) plus an `init_sql`
+  driver property that runs `LOAD ducklake; ATTACH …`.
+
+### DuckLake maintenance
+
+`ducklake_cleanup_asset` / `ducklake_cleanup_job` (group `maintenance`) vacuums
+the catalog: expires snapshots older than 31 days, deletes catalog-orphaned files, and removes
+residual `*_current_temp` directories left by the Silver pre/post-hooks. It
+**deliberately skips `*__dbt_tmp` directories** — DuckLake stores live table data
+there, so deleting them corrupts Silver. The asset is a no-op when
+`SILVER_STORAGE_FORMAT != ducklake`. It is a **manual** job (no schedule): at this
+scale the catalog accumulates only trivial orphaned data, so run it on demand
+after a large `--full-refresh` rather than on a daily cron.
+
+### DuckLake backup
+
+The platform backup (`ddd_utils/backup_platform.py`, targets defined in
+`backup_common.py`) is DuckLake-aware. When `SILVER_STORAGE_FORMAT=ducklake` it
+adds a **`ducklake`** target that archives the DuckLake **data files**
+(`DUCKLAKE_DATA_PATH`, e.g. `/data/ducklake`). The DuckLake **catalog**
+(`.ducklake` file) lives in the DuckDB directory and is already captured by the
+**`duckdb`** target. Targets run **`ducklake` → `duckdb`** so the data files are
+archived **before** the catalog: the catalog references the files, so files-first
+ensures the catalog snapshot never points at a file the backup missed. In native
+`duckdb` mode the `ducklake` target is omitted. The `backup` Docker service
+mounts `/data/ducklake` and sets `DUCKLAKE_BACKUP_DIR=/data_backup/ducklake`.
+Restore (`restore_platform.py`) is target-driven and handles `ducklake`
+automatically.
+
 ## Naming Conventions
 
 - **Danish characters** in table/model names: ø→oe, æ→ae, å→aa
@@ -239,11 +361,15 @@ All data-warehouse tracking columns use the `LKHS_` prefix:
 3. **Lazy env vars** — `__getattr__` defers credential loading
 4. **Hash-based CDC** — SHA256 on all non-tracking columns detects changes
 5. **SCD Type 2** — full history in Silver; `_cv` views expose current version
-6. **Dual-mode storage** — `STORAGE_TARGET=local|onelake` switches everything
-7. **Concurrent extraction** — ThreadPoolExecutor(max_workers=4) for I/O
-8. **Single-writer dbt** — `in_process_executor` for DuckDB constraint
-9. **Generated SQL** — Bronze/Silver models auto-generated from config; Gold
-   mostly generated, except `individual_votes.sql` (handcrafted)
+6. **Dual-mode export** — `STORAGE_TARGET=local|onelake` switches the Delta
+   Lake export destination
+7. **Switchable Silver storage** — `SILVER_STORAGE_FORMAT=duckdb|ducklake`
+   stores Silver as native DuckDB tables or DuckLake Parquet (independent of
+   `STORAGE_TARGET`); see *Silver Storage Format*
+8. **Concurrent extraction** — ThreadPoolExecutor(max_workers=4) for I/O
+9. **Single-writer dbt** — `in_process_executor` for DuckDB constraint
+10. **Generated SQL** — Bronze/Silver models auto-generated from config; Gold
+    mostly generated, except `individual_votes.sql` (handcrafted)
 
 ## Defensive Practices
 
@@ -263,22 +389,62 @@ single-node design, not a high-availability platform):
 - **Non-root Docker** — Container runs as `appuser` (UID 1000) to limit
   container-escape risk
 
+## ntfy.sh Alerting
+
+Both run-status sensors (`danish_parliament_run_success_sensor` and
+`danish_parliament_run_failure_sensor`) send push notifications via
+[ntfy.sh](https://ntfy.sh) after writing the OneLake/local log record.
+
+### Alert configuration
+
+| Variable      | Purpose                                                                 |
+|---------------|-------------------------------------------------------------------------|
+| `NTFY_TOPIC`  | Topic name only — **no** `https://ntfy.sh/` prefix (e.g. `my-topic`). Leave unset to disable alerts. |
+| `ENVIRONMENT` | Label included in every alert message (e.g. `PROD`, `DEV`).            |
+
+### Notification format
+
+| Field     | SUCCESS                              | FAILURE                                    |
+|-----------|--------------------------------------|--------------------------------------------|
+| Title     | `Dagster run SUCCEEDED - <job_name>` | `Dagster run FAILED - <job_name>`          |
+| Priority  | `default`                            | `high`                                     |
+| Tag       | ✅ `white_check_mark`                | 🚨 `rotating_light`                        |
+| Body      | `Job: <job_name>\nRun ID: <first 8 chars>\nEnvironment: <ENVIRONMENT>` | same |
+
+### Behaviour notes
+
+- **Opt-in** — alerts are silently skipped when `NTFY_TOPIC` is not set; no
+  error is raised.
+- **Non-blocking** — a failed POST (network error, bad topic, etc.) is caught
+  and logged as a warning; it never blocks the sensor tick or the next run.
+- **All jobs covered** — both sensors monitor every registered Dagster job with
+  no explicit `monitored_jobs` list, so new jobs are covered automatically.
+- **HTTP headers are ASCII-only** — the job name in the `Title` header must not
+  contain non-ASCII characters; the separator used is a plain hyphen (`-`), not
+  an em dash, for HTTP header compatibility.
+
 ## Environment Variables
 
 Defined in `.env` (see `.env.example`). Key groups:
 
 | Variable                           | Purpose                              |
 |------------------------------------|--------------------------------------|
-| `STORAGE_TARGET`                   | `local` or `onelake`                 |
+| `STORAGE_TARGET`                   | `local` or `onelake` (Delta Lake export only) |
+| `SILVER_STORAGE_FORMAT`            | `duckdb` (default) or `ducklake`     |
+| `DUCKLAKE_CATALOG_LOCATION`        | Path to DuckLake catalog `.ducklake` file (ducklake mode) |
+| `DUCKLAKE_DATA_PATH`               | Dir for DuckLake Parquet data (ducklake mode) |
 | `LOCAL_STORAGE_PATH`               | Root for local file storage          |
 | `DANISH_DEMOCRACY_DATA_SOURCE`     | Path to DDD Bronze files             |
 | `DANISH_DEMOCRACY_BASE_URL`        | OData API base URL                   |
 | `RFAM_CONNECTION_STRING`           | MySQL connection string              |
 | `RFAM_DATA_SOURCE`                 | Path to Rfam Bronze files            |
 | `DUCKDB_DATABASE_LOCATION`         | Path to `.duckdb` file               |
+| `DUCKDB_DATABASE`                  | Main DuckDB database name (= file stem) |
 | `DBT_PROJECT_DIRECTORY`            | Path to `dbt/` folder                |
 | `DLT_PIPELINES_DIR`               | dlt incremental state directory      |
 | `DAGSTER_HOME`                     | Dagster SQLite storage               |
+| `ENVIRONMENT`                      | Deployment label included in ntfy.sh alerts (e.g. `PROD`, `DEV`) |
+| `NTFY_TOPIC`                       | ntfy.sh topic name for run alerts (topic name only, no URL prefix); leave unset to disable |
 | `AZURE_TENANT_ID/CLIENT_ID/SECRET` | Service principal (OneLake mode)    |
 | `FABRIC_WORKSPACE`                 | Fabric workspace name                |
 | `FABRIC_ONELAKE_FOLDER_*`         | OneLake Bronze/Silver/Gold paths     |
@@ -348,7 +514,7 @@ pytest -v -k "incremental"                     # keyword filter
 | `test_path_utils.py`              | Bronze destination + Delta export path construction (local vs OneLake) |
 | `test_string_utils.py`            | Danish name normalization + incremental load-date resolution |
 
-**Total: 125 tests across 14 modules** (unit + integration).
+**Total: 132 tests across 15 modules** (unit + integration).
 
 ## DuckDB Initialization
 
@@ -368,7 +534,13 @@ when `STORAGE_TARGET=onelake`.
   run `python -m ddd_python.ddd_dbt.generate_dbt_models`.
 - **Add a new Rfam table:** Update `RFAM_TABLE_NAMES`, `_PRIMARY_KEYS`,
   `_DATE_COLUMNS`, `_QUERIES` in `configuration_variables.py`, then regenerate.
-- **Change CDC logic:** Edit the Silver macros in `dbt/macros/`.
+- **Change CDC logic:** Edit the Silver macros in `dbt/macros/`. Keep all
+  helper-table writes (`_last_file`, `_current_temp`) qualified with
+  `{{ this.database }}` so DuckLake mode stays within one database per transaction.
+- **Switch Silver storage:** Set `SILVER_STORAGE_FORMAT=duckdb|ducklake` in
+  `.env`, then `--full-refresh` the Silver layer (`dbt build --select tag:silver
+  --full-refresh`). Switching format does **not** migrate existing data — rebuild
+  from Bronze. See *Silver Storage Format*.
 - **Modify Gold star schema:** Edit SQL in `dbt/models/gold/` directly
   (some are generated, some handcrafted).
 - **Run tests after changes:** `pytest tests/` — configuration tests will catch

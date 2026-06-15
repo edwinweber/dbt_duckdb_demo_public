@@ -47,13 +47,15 @@ def test_no_duplicates_in_lists():
 
 # ── Rfam configuration consistency ───────────────────────────────────────────
 
+
 def test_rfam_table_names_has_7_tables():
     assert len(cv.RFAM_TABLE_NAMES) == 7
 
 
 def test_rfam_incremental_is_subset_of_all():
-    assert set(cv.RFAM_TABLE_NAMES_INCREMENTAL).issubset(set(cv.RFAM_TABLE_NAMES)), \
+    assert set(cv.RFAM_TABLE_NAMES_INCREMENTAL).issubset(set(cv.RFAM_TABLE_NAMES)), (
         f"Not in all: {set(cv.RFAM_TABLE_NAMES_INCREMENTAL) - set(cv.RFAM_TABLE_NAMES)}"
+    )
 
 
 def test_rfam_incremental_has_2_tables():
@@ -76,23 +78,27 @@ def test_rfam_silver_models_match_bronze():
 
 def test_rfam_primary_keys_cover_all_tables():
     """Every Rfam table must have a primary key defined."""
-    assert set(cv.RFAM_TABLE_PRIMARY_KEYS.keys()) == set(cv.RFAM_TABLE_NAMES), \
+    assert set(cv.RFAM_TABLE_PRIMARY_KEYS.keys()) == set(cv.RFAM_TABLE_NAMES), (
         f"Missing PK: {set(cv.RFAM_TABLE_NAMES) - set(cv.RFAM_TABLE_PRIMARY_KEYS.keys())}"
+    )
 
 
 def test_rfam_date_columns_cover_all_tables():
     """Every Rfam table must have a date column entry (may be empty string)."""
-    assert set(cv.RFAM_TABLE_DATE_COLUMNS.keys()) == set(cv.RFAM_TABLE_NAMES), \
+    assert set(cv.RFAM_TABLE_DATE_COLUMNS.keys()) == set(cv.RFAM_TABLE_NAMES), (
         f"Missing date col: {set(cv.RFAM_TABLE_NAMES) - set(cv.RFAM_TABLE_DATE_COLUMNS.keys())}"
+    )
 
 
 def test_rfam_queries_cover_all_tables():
     """Every Rfam table must have a SQL query defined."""
-    assert set(cv.RFAM_TABLE_QUERIES.keys()) == set(cv.RFAM_TABLE_NAMES), \
+    assert set(cv.RFAM_TABLE_QUERIES.keys()) == set(cv.RFAM_TABLE_NAMES), (
         f"Missing query: {set(cv.RFAM_TABLE_NAMES) - set(cv.RFAM_TABLE_QUERIES.keys())}"
+    )
 
 
 # ── Cross-source consistency ─────────────────────────────────────────────────
+
 
 def test_silver_table_primary_keys_covers_all_silver_models():
     """SILVER_TABLE_PRIMARY_KEYS must have an entry for every DDD + Rfam Silver model."""
