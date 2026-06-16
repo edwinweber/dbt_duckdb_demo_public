@@ -77,8 +77,15 @@ services:
     volumes:
       - /data/dlt_pipelines:/data/dlt_pipelines
       - /data/duckdb:/data/duckdb
+      # DuckLake Parquet data files — needed when SILVER_STORAGE_FORMAT=ducklake
+      # (e.g. the silver→ducklake migration and any ducklake-backed dbt run).
+      - /data/ducklake:/data/ducklake
       - /data/dbt_logs:/data/dbt_logs
       - /data/local:/data/local
+      # Dagster SQLite history — the data_engineering dbt models (dagster_event_logs,
+      # dagster_pipeline_runs) sqlite_scan $DAGSTER_HOME/history/*.db, so a full
+      # `dbt build` via this runner needs the Dagster home mounted too.
+      - /data/dagster:/data/dagster
 
   # ── Backup: one-off backup of platform databases ────────────────────────
   # Usage:  docker compose run --rm backup
@@ -165,12 +172,9 @@ services:
   # UI: docker compose up metabase  →  http://localhost:3001
   # In the Metabase setup wizard choose "DuckDB" and set the database path to:
   #   /data/duckdb/danish_democracy_data.duckdb
-  # The init-script for the DuckDB connection is:
-  # INSTALL icu; LOAD icu;
-  # INSTALL httpfs; LOAD httpfs;
-  # INSTALL delta; LOAD delta;
-  # INSTALL sqlite; LOAD sqlite;
-  # LOAD ducklake; ATTACH 'ducklake:/data/duckdb/ducklake_catalog.ducklake' AS ducklake_catalog (DATA_PATH '/data/ducklake');
+  # For the DuckDB connection's init-script, paste the contents of
+  # metabase-duckdb-init.sql (the canonical copy — installs the extensions and
+  # attaches the DuckLake catalog read-only via a self-healing DETACH-then-ATTACH).
   metabase:
     build:
       context: .

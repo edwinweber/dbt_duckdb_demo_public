@@ -3,7 +3,7 @@
 A reference data pipeline that ingests, transforms, and publishes open data from
 the Danish Parliament (Folketing) OData API and the Rfam public MySQL database.
 
-![Reference architecture: source systems feed dlt extraction, which lands Bronze files; dbt then builds Bronze views, Silver historized tables, and Gold dimensional models in DuckDB, with a Delta Lake export to Microsoft Fabric OneLake and Power BI / Metabase consumption.](documentation/assets/architecture-overview.svg)
+![Architecture overview: Danish Parliament OData API and Rfam MySQL are extracted by dlt into Bronze (DuckDB views), transformed through Silver (DuckDB or DuckLake) and Gold (star-schema views) by dbt, then exported as Delta Lake to local filesystem or Microsoft Fabric OneLake. Orchestrated by Dagster on Docker/Python. Consumed via Metabase dashboards and Power BI reports.](documentation/assets/architecture-overview.png)
 
 > **Forked from** [bgarcevic/danish-democracy-data](https://github.com/bgarcevic/danish-democracy-data),
 > which provides the initial foundation for working with Folketing open data.
@@ -606,7 +606,9 @@ Power BI compatibility. Most Gold dimension tables also have a `_cv` (current-ve
 
 Metabase is included as a BI layer that connects directly to the DuckDB file,
 allowing you to build dashboards and explore the Gold layer without any
-additional export step.
+additional export step. When `SILVER_STORAGE_FORMAT=ducklake`, the Silver layer
+lives in a separate DuckLake catalog, so the connection's init script also
+attaches that catalog (Gold views read Silver through it) — see step 4.
 
 ### Setup
 
@@ -624,18 +626,31 @@ additional export step.
    /data/duckdb/danish_democracy_data.duckdb
    ```
 
-4. In the DuckDB connection init script field, enter:
+4. In the DuckDB connection init script field, paste the contents of
+   [`metabase-duckdb-init.sql`](metabase-duckdb-init.sql) (the canonical copy —
+   shown here for convenience):
 
    ```sql
    INSTALL icu; LOAD icu;
    INSTALL httpfs; LOAD httpfs;
    INSTALL delta; LOAD delta;
    INSTALL sqlite; LOAD sqlite;
+   INSTALL ducklake; LOAD ducklake;
+   DETACH DATABASE IF EXISTS ducklake_catalog;
+   ATTACH 'ducklake:/data/duckdb/ducklake_catalog.ducklake' AS ducklake_catalog (DATA_PATH '/data/ducklake', READ_ONLY);
    ```
 
+   The last three lines attach the DuckLake catalog and are required when
+   `SILVER_STORAGE_FORMAT=ducklake` (without them, the Silver tables are simply
+   missing in Metabase). They can be omitted in native `duckdb` mode. The
+   `DETACH`-then-`ATTACH` form is self-healing across the pipeline's Metabase
+   restarts, and `READ_ONLY` is used because Metabase never writes Silver —
+   see [`metabase-duckdb-init.sql`](metabase-duckdb-init.sql) for the full rationale.
+
 After connecting, Metabase can query all schemas: `bronze`, `silver`, `gold`,
-and `data_engineering`. The Gold layer (`actor`, `vote`, `case`, `meeting`, etc.)
-is the most natural starting point for dashboards.
+and `data_engineering` (with `silver` served from the DuckLake catalog in
+ducklake mode). The Gold layer (`actor`, `vote`, `case`, `meeting`, etc.) is the
+most natural starting point for dashboards.
 
 ### Metabase Lifecycle During Pipeline Runs
 
