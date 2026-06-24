@@ -48,6 +48,7 @@ dagster = [
 ]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "ruff>=0.9",
     "mypy>=1.10",
     "types-requests",  # mypy stubs for requests; without this, newer mypy raises import-untyped
@@ -59,6 +60,21 @@ include = ["ddd_python*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.coverage.report]
+omit = [
+    # Operational CLI scripts — require live databases, Azure, or Dagster state;
+    # untestable in CI without those dependencies.
+    "ddd_python/ddd_dbt/dbt_build_with_unique_logfile.py",
+    "ddd_python/ddd_dbt/init_duckdb.py",
+    "ddd_python/ddd_dlt/dlt_run_extraction_pipelines_danish_parliament_data.py",
+    "ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py",
+    "ddd_python/ddd_utils/backup_platform.py",
+    "ddd_python/ddd_utils/fabric_capacity_pause_resume.py",
+    "ddd_python/ddd_utils/migrate_silver_to_ducklake.py",
+    "ddd_python/ddd_utils/restore_platform.py",
+]
 
 # ── Ruff ─────────────────────────────────────────────────────────────────────
 [tool.ruff]
@@ -81,7 +97,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]  # assert is fine in tests
+"tests/*" = ["S101", "E501"]  # assert is fine in tests; inline test data is exempt from line-length
+"scripts/*" = ["E501"]  # HTML/SQL template strings cannot be broken without changing content
+"upgrade_check.py" = ["E501"]  # generated output strings
 # load_dotenv() must run before app imports so env vars are available at import time;
 # the E402 violations below are intentional.
 "ddd_python/ddd_dagster/definitions.py" = ["E402"]
@@ -91,6 +109,50 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["ddd_python"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+# Third-party libraries without type stubs
+[[tool.mypy.overrides]]
+module = [
+    "dlt.*",
+    "duckdb.*",
+    "dagster.*",
+    "dagster_dbt.*",
+    "deltalake.*",
+    "pyarrow.*",
+    "azure.*",
+    "dotenv.*",
+]
+ignore_missing_imports = true
+
+# Dagster-heavy modules: decorator patterns return opaque Dagster types;
+# full annotations require importing many internal Dagster symbols that lack
+# stubs. Annotations on public entry-points (execute_pipeline, etc.) are kept.
+[[tool.mypy.overrides]]
+module = [
+    "ddd_python.ddd_dagster.dbt_assets",
+    "ddd_python.ddd_dagster.jobs",
+    "ddd_python.ddd_dagster.metabase_control_assets",
+    "ddd_python.ddd_dagster.sensors",
+]
+disallow_untyped_defs = false
+
+# DuckDB and PyArrow return Any through untyped stubs; warn_return_any fires
+# on functions that simply pass those values through. Suppress per-module.
+[[tool.mypy.overrides]]
+module = [
+    "ddd_python.ddd_dlt.export_main_silver_to_fabric_silver",
+    "ddd_python.ddd_dlt.export_main_gold_to_fabric_gold",
+    "ddd_python.ddd_dlt.dlt_pipeline_execution_functions",
+    "ddd_python.ddd_utils.fabric_capacity_pause_resume",
+]
+warn_return_any = false
 
 [build-system]
 requires = ["setuptools>=68"]

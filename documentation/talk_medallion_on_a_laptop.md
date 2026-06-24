@@ -52,10 +52,10 @@ Two public sources, deliberately mismatched:
 |---|---|---|
 | What | MPs, meetings, cases, votes | RNA families, genomes, clans |
 | Where | `oda.ft.dk` OData REST API | public MySQL at EBI |
-| Size | 18 entities | 7 tables |
+| Entities | Multiple entities | Multiple tables |
 | Why | rich relational graph, real history | a *completely* different shape |
 
-- 25 entities total. No API key. No rate limit drama. No NDA.
+- Multiple entities across both sources. No API key. No rate limit drama. No NDA.
 - The mismatch is the point: if the pipeline only works for one source's shape, it's not a pipeline, it's a script.
 
 <!--
@@ -75,8 +75,8 @@ flowchart LR
         B["Bronze<br/>views over raw JSON"] -->|dbt| S["Silver<br/>SCD2 + hash CDC"]
         S -->|dbt| G["Gold<br/>star-schema views"]
     end
-    DDD["Danish Parliament<br/>OData · 18 entities"] -->|dlt| B
-    RFAM["Rfam<br/>MySQL · 7 tables"] -->|dlt| B
+    DDD["Danish Parliament<br/>OData API"] -->|dlt| B
+    RFAM["Rfam<br/>MySQL DB"] -->|dlt| B
     S -.->|SILVER_STORAGE_FORMAT| ST{{"DuckDB tables<br/>· or ·<br/>DuckLake Parquet"}}
     G --> MB["Metabase<br/>(direct read — no export)"]
     G -->|Delta export · optional| DL[("Delta Lake<br/>local / OneLake → Power BI")]
@@ -145,8 +145,8 @@ breath: dates are regex-validated before they go anywhere near a query.
 
 ## Bronze: the easy layer
 
-- 53 views, all generated. Most are literally `read_json_auto()` over a folder.
-- A `_latest` view per entity (newest snapshot) and a few utility views.
+- Multiple views, all generated. Most are literally `read_json_auto()` over a folder.
+- A `_latest` view per entity (newest snapshot) and utility views.
 - Zero copies. Bronze is a **lens on files**, not a table.
 
 ```sql
@@ -247,7 +247,7 @@ caught me adding a key to one list and forgetting another.
 
 ## Gold: making it presentable
 
-- 19 views: 10 star-schema facts/dims + `_cv` passthroughs + a date dimension.
+- Multiple views: star-schema facts and dimensions, `_cv` current-version passthroughs, and a date dimension.
 - English names (`bronze_ddd_aktoer` → `gold_actor`), surrogate keys.
 - Surrogate keys cast **UBIGINT → signed BIGINT** — because Power BI can't digest unsigned 64-bit ints. (You learn this the annoying way.)
 - Mostly generated; a couple handcrafted where the star schema needed a human (`individual_votes`).
@@ -263,7 +263,7 @@ handwritten, and that's fine.
 
 ## Orchestration with Dagster
 
-- Software-defined **assets**, created by factory functions (25 extraction assets from ~2 factories).
+- Software-defined **assets**, created by factory functions (extraction assets generated from a small set of factories).
 - Jobs: incremental, full-extract, full-pipeline, export, DuckLake cleanup.
 - Two daily schedules (06:00 + 08:00, Europe/Copenhagen) — **shipped disabled**, because a demo that hammers a public API on a cron is rude.
 - Run-status sensors fire on every job SUCCESS and FAILURE: write a summary to the log destination and push a **ntfy.sh** notification. Opt-in via `NTFY_TOPIC` in `.env`.

@@ -9,7 +9,7 @@ Usage::
 """
 
 import logging
-import os
+from pathlib import Path
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
@@ -52,15 +52,16 @@ def generate_dbt_models_bronze(
             Only passed to ``generate_model_bronze_latest`` when non-default.
     """
     models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
-    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
-    target_dir = os.path.join(models_dir, "bronze")
-    os.makedirs(target_dir, exist_ok=True)
+    if models_dir is None:
+        raise OSError("DBT_MODELS_DIRECTORY must be set")
+    target_dir = Path(models_dir) / "bronze"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     for table_name in table_names:
         model_name = table_name.lower()
-        model_path = os.path.join(target_dir, model_name)
+        model_path = target_dir / model_name
         source_tag = source_system_code.lower()
-        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze(this.name,'{source_system_code}','{source_name}') {SUFFIX}"
+        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze(this.name,'{source_system_code}','{source_name}') {SUFFIX}"  # noqa: E501 — SQL template string
         with open(f"{model_path}.sql", "w") as f:
             f.write(query)
         logger.info("Generated Bronze model %s.sql", model_name)
@@ -70,16 +71,16 @@ def generate_dbt_models_bronze(
     if data_source_env_var != "DANISH_DEMOCRACY_DATA_SOURCE":
         dsev_arg = f",data_source_env_var='{data_source_env_var}'"
 
-    for file_name in file_names:
-        file_name = normalize_danish_name(file_name)
+    for raw_name in file_names:
+        file_name = normalize_danish_name(raw_name)
         # Derive _latest model name from the Bronze model naming convention.
         # For DDD: bronze_{file_name}_latest.  For Rfam: bronze_rfam_{file_name}_latest.
         # We find the matching Bronze model name and append _latest.
         matching = [t for t in table_names if t.lower().endswith(f"_{file_name}")]
         model_name = f"{matching[0].lower()}_latest" if matching else f"bronze_{file_name}_latest"
-        model_path = os.path.join(target_dir, model_name)
+        model_path = target_dir / model_name
         source_tag = source_system_code.lower()
-        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze_latest('{file_name}','{source_system_code}','{source_name}'{dsev_arg}) {SUFFIX}"
+        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze_latest('{file_name}','{source_system_code}','{source_name}'{dsev_arg}) {SUFFIX}"  # noqa: E501 — SQL template string
         with open(f"{model_path}.sql", "w") as f:
             f.write(query)
         logger.info("Generated Bronze model %s.sql", model_name)
@@ -92,7 +93,6 @@ def generate_dbt_models_silver(
     date_column_map: dict[str, str] | None = None,
     data_source_env_var: str = "DANISH_DEMOCRACY_DATA_SOURCE",
     bronze_prefix: str = "silver_ddd_",
-    file_name_prefix: str = "",
     primary_key_map: dict[str, str] | None = None,
     source_system_code: str = "DDD",
 ) -> None:
@@ -110,7 +110,6 @@ def generate_dbt_models_silver(
         bronze_prefix: Prefix to strip from Silver model name to get the Bronze
             file name.  Default ``"silver_ddd_"`` works for DDD; for Rfam use
             ``"silver_rfam_"``.
-        file_name_prefix: Not used — kept for API symmetry.
         primary_key_map: Mapping from file/table name to its PK column name.
             When ``None``, all tables default to ``id``.
         source_system_code: Short code for the source system (e.g. ``"DDD"``).
@@ -120,13 +119,14 @@ def generate_dbt_models_silver(
         incremental_models = _INCREMENTAL_SILVER_MODELS_DDD
 
     models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
-    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
-    target_dir = os.path.join(models_dir, "silver")
-    os.makedirs(target_dir, exist_ok=True)
+    if models_dir is None:
+        raise OSError("DBT_MODELS_DIRECTORY must be set")
+    target_dir = Path(models_dir) / "silver"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     for table_name in table_names:
         model_name = table_name.lower()
-        model_path = os.path.join(target_dir, model_name)
+        model_path = target_dir / model_name
 
         # Derive the Bronze file name from the Silver model name.
         file_name = model_name.replace(bronze_prefix, "", 1)
@@ -163,8 +163,8 @@ def generate_dbt_models_silver(
             )
 
         query = (
-            f"{PREFIX_STMT} set bronze_table_name = this.name.replace('silver', 'bronze', 1) {SUFFIX_STMT}\n"
-            f"{PREFIX_STMT} set base_for_hash = generate_base_for_hash(table_name=bronze_table_name,"
+            f"{PREFIX_STMT} set bronze_table_name = this.name.replace('silver', 'bronze', 1) {SUFFIX_STMT}\n"  # noqa: E501 — SQL template string
+            f"{PREFIX_STMT} set base_for_hash = generate_base_for_hash(table_name=bronze_table_name,"  # noqa: E501 — SQL template string
             f"columns_to_exclude=var('bronze_columns_to_exclude_in_silver_hash'),"
             f'primary_key_columns="{pk_columns_bronze}") {SUFFIX_STMT}\n'
             f"{depends_on_line}"
@@ -175,17 +175,17 @@ def generate_dbt_models_silver(
             f'post_hook = "{PREFIX} generate_post_hook_silver({post_hook_args}) {SUFFIX}"\n'
             f") {SUFFIX}\n"
             f"{PREFIX} {macro_name}(file_name='{file_name}',bronze_table_name=bronze_table_name,"
-            f"primary_key_columns='{pk}',date_column='{dc}',base_for_hash=base_for_hash{dsev_arg}) {SUFFIX}\n"
+            f"primary_key_columns='{pk}',date_column='{dc}',base_for_hash=base_for_hash{dsev_arg}) {SUFFIX}\n"  # noqa: E501 — SQL template string
         )
         with open(f"{model_path}.sql", "w") as f:
             f.write(query)
         logger.info("Generated Silver model %s.sql (macro: %s)", model_name, macro_name)
 
         query_cv = (
-            f"{PREFIX} config( materialized='view',tags=['{source_system_code.lower()}'] ) {SUFFIX}\n"
+            f"{PREFIX} config( materialized='view',tags=['{source_system_code.lower()}'] ) {SUFFIX}\n"  # noqa: E501 — SQL template string
             f"SELECT src.*\n"
             f"FROM {PREFIX} ref('{model_name}') {SUFFIX} src\n"
-            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.{pk} ORDER BY src.LKHS_date_valid_from DESC) = 1\n"
+            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.{pk} ORDER BY src.LKHS_date_valid_from DESC) = 1\n"  # noqa: E501 — SQL template string
         )
         with open(f"{model_path}_cv.sql", "w") as f:
             f.write(query_cv)
@@ -195,21 +195,22 @@ def generate_dbt_models_silver(
 def generate_dbt_models_gold_cv(table_names: list[str]) -> None:
     """Generate dbt Gold ``_cv`` (current-version) model files."""
     models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
-    assert models_dir is not None, "DBT_MODELS_DIRECTORY must be set"
-    target_dir = os.path.join(models_dir, "gold")
-    os.makedirs(target_dir, exist_ok=True)
+    if models_dir is None:
+        raise OSError("DBT_MODELS_DIRECTORY must be set")
+    target_dir = Path(models_dir) / "gold"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     # 'date' and 'individual_votes' are handcrafted — skip them.
     tables = [t for t in table_names if t not in {"date", "individual_votes"}]
 
     for table_name in tables:
         model_name = table_name.lower()
-        model_path = os.path.join(target_dir, model_name)
+        model_path = target_dir / model_name
 
         query = (
-            f"SELECT src.* EXCLUDE (LKHS_date_inserted_src,LKHS_date_valid_from,LKHS_date_valid_to,LKHS_row_version)\n"
+            f"SELECT src.* EXCLUDE (LKHS_date_inserted_src,LKHS_date_valid_from,LKHS_date_valid_to,LKHS_row_version)\n"  # noqa: E501 — SQL template string
             f"FROM {PREFIX} ref('{table_name}') {SUFFIX} src\n"
-            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.{table_name}_bk ORDER BY src.LKHS_date_valid_from DESC) = 1\n"
+            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code,src.{table_name}_bk ORDER BY src.LKHS_date_valid_from DESC) = 1\n"  # noqa: E501 — SQL template string
         )
         with open(f"{model_path}_cv.sql", "w") as f:
             f.write(query)
@@ -236,9 +237,10 @@ def generate_dbt_test_silver_no_duplicate(
             primary keys vary per table, so a ``GROUP BY id`` would be wrong.
     """
     project_dir = get_variables_from_env.DBT_PROJECT_DIRECTORY
-    assert project_dir is not None, "DBT_PROJECT_DIRECTORY must be set"
-    target_dir = os.path.join(project_dir, "tests")
-    os.makedirs(target_dir, exist_ok=True)
+    if project_dir is None:
+        raise OSError("DBT_PROJECT_DIRECTORY must be set")
+    target_dir = Path(project_dir) / "tests"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     list_lines = "\n".join(f"    '{name.lower()}'," for name in sorted(table_names))
 
@@ -268,7 +270,7 @@ def generate_dbt_test_silver_no_duplicate(
         "{% endfor %}\n"
     )
 
-    with open(os.path.join(target_dir, f"{test_name}.sql"), "w") as f:
+    with open(target_dir / f"{test_name}.sql", "w") as f:
         f.write(header + "\n" + body)
     logger.info("Generated dbt test %s.sql", test_name)
 

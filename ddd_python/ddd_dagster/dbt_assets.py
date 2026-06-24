@@ -180,6 +180,8 @@ def _dbt_multi_asset_with_metabase(
         io_manager_key=None,
         project=dbt_project,
     )
+    # DuckDB is single-writer — Metabase holds a persistent read-connection to the
+    # .duckdb file and must release it before dbt can acquire the exclusive write lock.
     merged_deps = [_STOP_METABASE_KEY, *(extra_deps or [])]
     specs = [spec.merge_attributes(deps=merged_deps) for spec in specs]
     op_tags = {

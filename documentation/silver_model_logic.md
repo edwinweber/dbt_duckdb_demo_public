@@ -81,7 +81,7 @@ QUALIFY ROW_NUMBER() OVER (
 
 ## Full Bronze Refresh (`generate_model_silver_full_extraction`)
 
-**Used for:** 12 entities where every Bronze extraction contains the complete dataset (e.g., aktoertype, moedestatus, periode, sagskategori).
+**Used for:** Entities where every Bronze extraction contains the complete dataset (e.g., aktoertype, moedestatus, periode, sagskategori).
 
 ### How It Works
 
@@ -150,7 +150,7 @@ Bronze file N-1    Bronze file N    Bronze file N+1
 
 ## Incremental Bronze Refresh (`generate_model_silver_incr_extraction`)
 
-**Used for:** 6 entities where bronze extractions contain only **changed** records since the last extraction (e.g., aktoer, moede, sag, sagstrin, sagstrinaktoer, stemme).
+**Used for:** Entities where bronze extractions contain only **changed** records since the last extraction (e.g., aktoer, moede, sag, sagstrin, sagstrinaktoer, stemme).
 
 ### How It Works — Incremental
 

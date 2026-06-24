@@ -159,7 +159,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 ### Development & Testing (`[dev]`)
 
 #### `pytest` `>=8.0`
-**Role:** Test runner for all 132 tests across 15 modules (unit, integration, and end-to-end).
+**Role:** Test runner for the test suite (unit, integration, and end-to-end).
 
 **Why chosen:**
 - The dominant Python test framework; fixture system, parametrization, and plugin ecosystem make it suitable for both unit and integration tests.

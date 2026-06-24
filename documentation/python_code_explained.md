@@ -110,7 +110,7 @@ recognise these five, most of the code reads easily.
 
 ### 3.1 The factory function pattern
 
-Instead of writing 18 nearly-identical asset definitions by hand, the code writes a
+Instead of writing nearly-identical asset definitions by hand for every entity, the code writes a
 **function that returns a function** (or a Dagster asset). You call it once per
 entity in a loop. This is "DRY" (Don't Repeat Yourself).
 
@@ -128,8 +128,8 @@ incremental_assets = [_make_incremental_asset(n) for n in INCREMENTAL_NAMES]
 ```
 
 The inner function "remembers" the `api_resource`/`base` from the call that built
-it — that captured variable is called a **closure**. This is how 18 distinct assets
-are produced from a single 40-line factory.
+it — that captured variable is called a **closure**. This is how multiple distinct assets
+are produced from a single factory.
 
 ### 3.2 Configuration-driven, not hardcoded
 
@@ -188,8 +188,8 @@ imports from here.
 This file is just **data** — lists and dictionaries, no functions. But it is the
 spine of the project. It declares, for both source systems:
 
-* The full list of entities/tables (`DANISH_DEMOCRACY_FILE_NAMES` — 18,
-  `RFAM_TABLE_NAMES` — 7).
+* The full list of entities/tables (`DANISH_DEMOCRACY_FILE_NAMES`,
+  `RFAM_TABLE_NAMES`).
 * Which ones are extracted *incrementally* vs *fully*
   (`..._INCREMENTAL` subsets).
 * The derived dbt model names for Bronze and Silver (built with list
@@ -277,37 +277,33 @@ clock.
 
 [ddd_python/ddd_utils/get_variables_from_env.py](../ddd_python/ddd_utils/get_variables_from_env.py)
 
-This is the cleverest small file in the repo, so it's worth understanding fully.
-
 The problem it solves: some env vars are **required** (Azure credentials), others
 are **optional** (with sensible defaults). If the module read all required vars at
 import time, you couldn't even `import` it to generate dbt models or run unit tests
 without Azure credentials in your shell.
 
-The solution: a custom module class, `_LazyEnv(types.ModuleType)`:
+The solution: **PEP 562 module-level `__getattr__`**.
 
-* **Optional** vars are read eagerly with `os.getenv(...)` and stored as attributes
-  (e.g. `STORAGE_TARGET`, `LOCAL_STORAGE_PATH`, `DUCKDB_DATABASE_LOCATION`). These
-  never raise. This block also handles `SILVER_STORAGE_FORMAT` (default `duckdb`,
+* `load_dotenv()` fires at import time to populate `os.environ` from `.env`.
+* **Optional** vars are read eagerly with `os.getenv(...)` and stored as module-level
+  globals (e.g. `STORAGE_TARGET`, `LOCAL_STORAGE_PATH`, `DUCKDB_DATABASE_LOCATION`).
+  These never raise. This includes `SILVER_STORAGE_FORMAT` (default `duckdb`,
   validated against `{duckdb, ducklake}` — an invalid value raises immediately)
   plus the two DuckLake paths (`DUCKLAKE_CATALOG_LOCATION`, `DUCKLAKE_DATA_PATH`),
   which are read eagerly and default to `None` when not in DuckLake mode.
 * **Required** vars are listed in `_LAZY_REQUIRED` and resolved only on **first
-  access**, via `__getattr__`. So `get_variables_from_env.AZURE_CLIENT_SECRET`
-  raises `EnvironmentError` *only if you actually touch it* and it's missing.
+  access**, via module-level `__getattr__`. When you access
+  `get_variables_from_env.AZURE_CLIENT_SECRET`, Python automatically calls
+  `__getattr__` only if the name is not already in the module's `__dict__`. Since
+  optional vars are plain globals in `__dict__`, they return immediately; required
+  vars go through `__getattr__`, which calls `_require()` and raises
+  `EnvironmentError` if missing.
 
-The final trick is the last line:
-
-```python
-sys.modules[__name__] = _mod
-```
-
-This **replaces the module object itself** in Python's module cache with the
-custom `_LazyEnv` instance. After this, `from ddd_python.ddd_utils import
-get_variables_from_env` hands you the lazy object, so `get_variables_from_env.FOO`
-goes through the custom `__getattr__`. (The CLAUDE.md memory note about reading via
-`python-dotenv` is the *older* design — the current file uses this lazy wrapper.
-`load_dotenv()` is still called at the top to populate `os.environ` from `.env`.)
+Because optional vars are already in the module's `__dict__`, the `__getattr__`
+function is never called for them — they have no performance cost and no type-checking
+impact. This PEP 562 approach restores IDE autocomplete and static analysis support:
+the function signature is plain Python, and type checkers can see all names without
+the need for special stubs or `# type: ignore` directives.
 
 Helper functions:
 * `_require(name)` — fetch or raise with a clear message.
@@ -366,15 +362,26 @@ sources to Bronze files) and **out** (from DuckDB to Delta Lake).
 
 [ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py](../ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py)
 
-This 744-line module is the engine room. It exposes **one public entry point**,
-`execute_pipeline(pipeline_type, **kwargs)`, which dispatches to one of three
-handlers:
+This module is the engine room. It exposes **two public entry points**:
 
-| `pipeline_type` | Handler | Use |
-|-----------------|---------|-----|
-| `"api_to_file"` | `run_api_to_file_pipeline` | Paginated OData/REST → NDJSON |
-| `"sql_to_file"` | `run_sql_to_file_pipeline` | SQL query → Parquet or NDJSON |
-| `"file_to_file"` | `run_file_to_file_pipeline` | Raw byte copy (no dlt) |
+* **`execute_pipeline(pipeline_type, source_system_code, **kwargs)`** — the main
+  dispatcher. Selects a handler based on `pipeline_type`, measures wall-clock
+  duration, and unconditionally writes an NDJSON log record (success or failure).
+  Uses an internal `_PIPELINE_HANDLERS` dict to look up and call the right handler,
+  forwarding `**kwargs` directly to it.
+
+  | `pipeline_type` | Handler | Use |
+  | --- | --- | --- |
+  | `"api_to_file"` | `run_api_to_file_pipeline` | Paginated OData/REST → NDJSON |
+  | `"sql_to_file"` | `run_sql_to_file_pipeline` | SQL query → Parquet or NDJSON |
+  | `"file_to_file"` | `run_file_to_file_pipeline` | Raw byte copy (no dlt) |
+
+* **`run_extraction_pool(tasks, script_name, source_system_code, date_to_load_from, start_time, resource_label="resource", max_workers=4)`** — shared
+  orchestration helper that runs multiple `PipelineTask` items concurrently via
+  `ThreadPoolExecutor`, collects outcomes, and writes a script-level NDJSON
+  summary record (per-task status, total duration, success/failure counts).
+  Raises `RuntimeError` on any task failure after attempting all tasks.
+  Used by both extraction orchestrators (DDD and Rfam) to eliminate duplication.
 
 **The key idea: yield records one at a time.** Both the API and SQL handlers define
 an inner `@dlt.resource` generator that `yield`s **individual dicts** — one per API
@@ -393,13 +400,7 @@ def get_api_data(...):
 the way through. It also truncates over-long fractional seconds in timestamps via
 the `_TS_MICROSEC` regex (DuckDB/Arrow only want microsecond precision).
 
-**Two flavours of the API resource** — note there are *two* `@dlt.resource`
-definitions guarded by `if source_api_incremental_field:`. The incremental one
-carries a `dlt.sources.incremental` cursor parameter that dlt detects to manage
-state across runs; the full-extract one is a plain generator. The page-fetching
-logic is shared by `_iter_odata_pages` so the duplication is minimal.
-
-**The destination** is built by `_make_destination`, which again branches on
+**The destination** is built by `_make_destination`, which branches on
 `STORAGE_TARGET`: local uses a `file://` bucket, OneLake uses an `az://` bucket with
 service-principal credentials. A custom `layout` + `_resolve_path` placeholder
 forces dlt to write your exact timestamped filename instead of dlt's default naming.
@@ -432,16 +433,26 @@ exception rather than a bare `except`.
 types (like `pendulum.DateTime`) into plain JSON-serialisable values. These are
 small but have dedicated unit tests (`test_serialize_trace.py`, `test_json_default.py`).
 
+**`run_extraction_pool(tasks, script_name, source_system_code, date_to_load_from, start_time, resource_label="resource", max_workers=4)`**
+is a shared orchestration helper that eliminates duplication between the DDD and Rfam
+extraction scripts. It takes a list of `PipelineTask` items (each with `"name"`,
+`"source_system_code"`, `"pipeline_type"`, and `"kwargs"` keys), submits them to a
+`ThreadPoolExecutor(max_workers=4)` by default, collects outcomes, and writes a
+script-level NDJSON summary record that includes per-task status, total duration,
+and a count of successes/failures. The `source_system_code` and `pipeline_type` are
+forwarded as explicit arguments to `execute_pipeline`; the remaining kwargs are
+forwarded as `**kwargs`. Any failed task is collected and the function raises
+`RuntimeError` at the end with all failed names listed, so the orchestrator can fail
+the entire job. Log write failures are downgraded to warnings so they never mask the
+real pipeline result.
+
 ### 5.2 `dlt_run_extraction_pipelines_danish_parliament_data.py` — DDD orchestrator
 
 [ddd_python/ddd_dlt/dlt_run_extraction_pipelines_danish_parliament_data.py](../ddd_python/ddd_dlt/dlt_run_extraction_pipelines_danish_parliament_data.py)
 
 A runnable script (`python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data`).
-It loops over the 18 entities and submits each to `execute_pipeline` via a
-`ThreadPoolExecutor(max_workers=4)` — extraction is I/O-bound (waiting on the
-network), so threads give real concurrency here.
-
-For each entity it decides the OData filter:
+It builds a task list by looping over the DDD entities, deciding the OData filter
+for each:
 
 ```python
 api_filter = (
@@ -451,11 +462,12 @@ api_filter = (
 )
 ```
 
-`incremental_set` is a `set(...)` for O(1) membership tests. After all futures
-complete (`as_completed`), it builds a **script-level** NDJSON summary (totals,
-per-pipeline status, duration) and writes it once. Any failed pipeline is collected
-and re-raised at the end as a single `RuntimeError`, so the process exits non-zero
-for the orchestrator to notice.
+Each task includes the entity name and a kwargs dict with all parameters for
+`execute_pipeline`. The `incremental_set` is a `set(...)` for O(1) membership tests.
+
+Once all tasks are built, the script calls `run_extraction_pool()` (see §5.1), which
+runs them concurrently via `ThreadPoolExecutor`, collects results, writes a
+script-level NDJSON summary, and raises `RuntimeError` if any pipeline failed.
 
 The `if __name__ == "__main__":` block wires up `argparse` for
 `--date_to_load_from` and `--file_names_to_retrieve`, so you can run an ad-hoc
@@ -465,9 +477,9 @@ backfill of just a couple of entities from a specific date.
 
 [ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py](../ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py)
 
-Structurally identical to the DDD orchestrator (same thread pool, same summary
-logging) but for the MySQL source. The notable difference is how it builds the
-query and **prevents SQL injection**:
+Parallel to the DDD orchestrator but for the MySQL source. Like DDD, it builds a
+task list by looping over the Rfam tables. The notable difference from DDD is
+how it builds the query and **prevents SQL injection**:
 
 ```python
 if table_name in incremental_set:
@@ -482,6 +494,10 @@ The date is passed as a **named bind parameter** (`:updated_from`), not interpol
 into the SQL string. SQLAlchemy substitutes it safely. Even though
 `resolve_date_to_load_from` already validates the date format, this is defence in
 depth.
+
+Once all tasks are built, the script calls `run_extraction_pool()` — the same
+shared orchestration helper as DDD — which runs them concurrently, collects
+results, writes a script-level NDJSON summary, and raises on any failure.
 
 ### 5.4 `export_main_silver_to_fabric_silver.py` — Silver → Delta Lake
 
@@ -714,13 +730,13 @@ dbt Gold (all models)
 barrier_dbt_gold_complete      (no-op gate)
         │
         ▼
-Silver exports                 (25 tables, incremental append)
+Silver exports                 (incremental append)
         │
         ▼
 barrier_all_silver_exported    (no-op gate)
         │
         ▼
-Gold exports                   (9 tables, full overwrite)
+Gold exports                   (full overwrite)
         │
         ▼
 barrier_all_gold_exported      (no-op gate)
@@ -781,7 +797,7 @@ start_metabase_asset = build_start_metabase_asset(_asset_keys(_materialization_a
 
 [ddd_python/ddd_dagster/jobs.py](../ddd_python/ddd_dagster/jobs.py)
 
-Defines ~18 jobs via `define_asset_job`, selecting assets by group or by dbt-select
+Defines multiple jobs via `define_asset_job`, selecting assets by group or by dbt-select
 string. The two big design points:
 
 * **Executor choice.** Extraction/export jobs use
@@ -915,28 +931,28 @@ target state or times out. Skips the call if already in the desired state.
 
 ## 9. The test suite
 
-Location: [tests/](../tests/). **132 tests across 15 modules**, runnable with
-`pytest tests/`. They split into two kinds.
+Location: [tests/](../tests/). Tests are runnable with `pytest tests/`. They split into two kinds.
 
 **Unit tests** (fast, no database) check the pure-Python logic:
 
 | File | What it verifies |
-|------|------------------|
-| `test_configuration_variables.py` | Entity counts (18/6/7/2), incremental ⊂ all, PK/date/query maps cover every table, no duplicates |
+| --- | --- |
+| `test_configuration_variables.py` | Entity list consistency, incremental ⊂ all, PK/date/query maps cover every table, no duplicates |
 | `test_string_utils.py` | Every Danish-char replacement and date resolution path |
 | `test_generate_dbt_models.py` | The generator picks the right macro (incremental vs full) and emits `_cv`/`_latest` correctly |
 | `test_path_utils.py` | Local vs OneLake path construction and storage options |
 | `test_require_env.py` | Lazy env var raises only when missing |
 | `test_scrub_secrets.py` | Sensitive keys redacted, others preserved |
 | `test_serialize_trace.py`, `test_json_default.py` | dlt trace + exotic-type serialisation |
+| `test_dagster_asset_graph.py` | Dagster Definitions loads; all extraction, dbt, and export assets; all schedules and sensors register correctly |
 
 **Integration tests** (spin up a real in-memory DuckDB and run the actual dbt SQL /
 macros against fixture JSON):
 
 | File | What it verifies |
-|------|------------------|
+| --- | --- |
 | `test_integration_bronze.py` | `read_json_auto`, filename extraction, `_latest` view |
-| `test_integration_silver_cdc.py` | CDC insert/update/delete detection, `_cv` view, dedup |
+| `test_integration_silver_cdc.py` | CDC insert/update/delete detection, `_cv` view, dedup, and incremental delete path (`_current_temp` → `bronze_latest` anti-join, carried-forward 'D' rows, idempotency) |
 | `test_integration_gold.py` | Surrogate keys, SCD2 date chaining, the "Unknown" id=0 row, fact joins |
 | `test_integration_e2e_pipeline.py` | Bronze → Silver → Delta round-trip with incremental append |
 | `test_export_silver.py`, `test_export_gold.py` | Export logic with mocked OneLake |
@@ -956,7 +972,7 @@ predictable:
 1. **Single source of truth** — entity lists live only in
    `configuration_variables.py`; everything else is derived with comprehensions.
    Tests enforce consistency.
-2. **Factory functions** — 18 DDD assets, 7 Rfam assets, 34 export assets are all
+2. **Factory functions** — extraction and export assets are all
    produced from a handful of `_make_*` factories in loops.
 3. **Lazy everything** — required env vars and Azure imports are deferred until
    first use, so local mode and tests need no credentials.
@@ -1000,37 +1016,29 @@ next person."
   loops, and log-write failures downgraded to warnings so they never mask the real
   result.
 
-### 11.2 Duplication: the two extraction orchestrators
+### 11.2 Extraction orchestrator duplication: resolved
 
+The two extraction orchestrators,
 [dlt_run_extraction_pipelines_danish_parliament_data.py](../ddd_python/ddd_dlt/dlt_run_extraction_pipelines_danish_parliament_data.py)
 and
-[dlt_run_extraction_pipelines_rfam.py](../ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py)
-are ~85% identical: the same `ThreadPoolExecutor` loop, the same `as_completed`
-result-collection, and a **verbatim copy** of the ~25-line script-level NDJSON summary
-block. The only real differences are the filter/query construction and a couple of
-constants.
+[dlt_run_extraction_pipelines_rfam.py](../ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py),
+originally shared ~85% of their code: the `ThreadPoolExecutor` loop,
+`concurrent.futures.as_completed` result-collection, and script-level NDJSON summary logging.
+Both now delegate to the shared `run_extraction_pool()` helper (see §5.1), which owns
+the thread pool, result aggregation, and summary logging. Each orchestrator now
+only builds its own task list (differing in filter/query construction) and calls
+the shared helper. This eliminates the drift risk and is cleaner.
 
-*Why it matters:* a change to the summary schema or the concurrency model has to be
-made in two places and they will eventually drift. *Improvement:* extract a shared
-`run_extraction(source_system_code, build_task, items, ...)` helper (or a small class)
-that owns the thread pool and the summary log, and pass in a per-system callback that
-builds each `execute_pipeline` call. This is the same factory thinking already used so
-well in the Dagster assets — it just wasn't applied to the standalone scripts.
+### 11.3 Environment variable loading: modernised with PEP 562
 
-### 11.3 `get_variables_from_env.py`: clever, but fragile and un-idiomatic
-
-The `_LazyEnv(types.ModuleType)` + `sys.modules[__name__] = _mod` swap (see §4.3)
-achieves real lazy loading, but at a cost:
-
-* It **defeats static analysis** — type checkers and IDE autocomplete cannot see the
-  attributes, which is why the file is peppered with `# type: ignore[attr-defined]`.
-* Replacing a module object in `sys.modules` is a known foot-gun (import edge cases,
-  pickling, reload behaviour) that a future maintainer may not expect.
-
-*Improvement:* the modern idioms give the same laziness without the swap:
-module-level `__getattr__` (PEP 562) alone, or — cleaner still — a typed settings
-object via `pydantic-settings`/a frozen dataclass with lazily-resolved properties.
-Either restores autocomplete and lets you delete every `# type: ignore`.
+The module now uses PEP 562 module-level `__getattr__` (see §4.3) instead of the
+older `_LazyEnv(types.ModuleType)` class + `sys.modules` swap pattern. This
+achieves the same lazy resolution of required env vars without the downsides of
+replacing the module object in `sys.modules`. Optional vars are plain module globals
+and resolve immediately; required vars go through `__getattr__` only on first access.
+IDE autocomplete and type checkers can now see module-level names cleanly, with no
+need for `# type: ignore` comments. The change follows Python's recommended pattern
+for lazy module attributes.
 
 ### 11.4 SQL-as-f-strings in the model generator
 
@@ -1059,18 +1067,20 @@ project dir) and pass `timeout=` to long-running subprocess calls.
 
 ### 11.6 Test coverage skews toward SQL, away from the Python glue
 
-The 132 tests are strong on what they cover — config consistency, the dbt CDC/SCD2
-logic, path/string helpers, export logic. But the **orchestration layer is largely
-untested**: there are no tests for the Dagster assets/jobs/sensors
-(`assets.py`, `rfam_assets.py`, `export_assets.py` barriers, `jobs.py`, `sensors.py`),
-nor for `backup_platform`/`restore_platform` or `fabric_capacity_pause_resume`.
+The test suite is strong on what it covers — config consistency, the dbt CDC/SCD2
+logic, path/string helpers, export logic, and Dagster graph structure
+(`test_dagster_asset_graph.py`). But the **orchestration layer logic is largely
+untested**: there are no tests for the Dagster asset implementations themselves
+(`assets.py`, `rfam_assets.py`, `export_assets.py` barriers, individual job logic,
+sensors as business logic), nor for `backup_platform`/`restore_platform` or
+`fabric_capacity_pause_resume` operation sequences.
 
 *Why it matters:* the factory functions and barrier wiring are exactly the kind of code
 that breaks silently on a refactor (a renamed asset key, a wrong `deps=` list).
 *Improvement:* Dagster ships testing utilities — `materialize([...])` with a mocked
 `DltOneLakeResource`, and `build_asset_context()` — that make these cheap to test
-without touching the network. Even a handful of "the graph has the expected keys and
-dependencies" tests would catch the most likely regressions.
+without touching the network. Even a handful of materialization tests for the asset
+implementations would catch the most likely regressions.
 
 ### 11.7 The Silver export anti-join (resolved: now reads via `delta_scan`)
 
@@ -1118,12 +1128,23 @@ In rough priority order:
 
 1. **Add `ruff` + `mypy` to `dev` and CI** — highest leverage, lowest effort; catches
    future mistakes automatically.
-2. **De-duplicate the two extraction orchestrators** (§11.2) — removes the most likely
-   drift point in the codebase.
-3. **Add Dagster-level tests** for asset keys and dependency wiring (§11.6) — protects
-   the part most exposed to refactors.
-4. **Replace the `sys.modules` env swap** with PEP 562 `__getattr__` or
-   `pydantic-settings` (§11.3) — restores tooling support, deletes the `type: ignore`s.
+2. **Add Dagster asset-implementation tests** (§11.6) — protects the orchestration
+   layer most exposed to refactors. Tests like `test_dagster_asset_graph.py` verify
+   graph structure; additional tests for asset materializations would catch runtime
+   regressions.
+3. **Resolve subprocess paths and add timeouts** (§11.5) — Metabase and dbt subprocess
+   calls run with relative paths and no timeouts; make them robust.
+4. **SQL-as-f-strings in the model generator** (§11.4) — improve readability with
+   Jinja2 templates or `textwrap.dedent` instead of multi-line f-strings with
+   `PREFIX/SUFFIX` constants.
+
+*Resolved improvements:*
+
+* §11.2 — the two extraction orchestrators no longer duplicate the thread pool and
+  summary logic; both use `run_extraction_pool()`.
+* §11.3 — `get_variables_from_env.py` now uses PEP 562 module-level `__getattr__`
+  instead of the `sys.modules` swap, restoring IDE autocomplete and type-checker
+  support.
 
 Everything else is opportunistic: do it when you're already in that file.
 

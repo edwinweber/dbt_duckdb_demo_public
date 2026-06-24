@@ -1,51 +1,19 @@
-"""Dagster software-defined assets for Danish Parliament data extraction.
+"""Dagster software-defined assets for Danish Parliament OData extraction.
 
-Each of the 18 Danish Parliament OData API resources is represented as a
-single Dagster ``@asset``.  Assets are split into two groups:
+18 assets (one per entity) created via a factory function to stay DRY. Incremental
+assets use OData date filtering; full-extract assets always load fully for clean
+delete detection. Date range is configurable via Dagster Config. Concurrent
+execution via multiprocess executor (max 4). Retry policy handles transient API
+failures. dlt state tracking manages the high-water mark.
 
-* **ingestion/DDD** — resources that support OData date filtering via
-  ``opdateringsdato``.  One file is written per resource per run, exactly
-  as the original script did.  The lower-bound date is controlled by the
-  ``date_to_load_from`` run-config field (defaults to
-  ``today - DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD`` days).
-
-* **ingestion/DDD** (full-extract) — resources that are always fully extracted
-  on every run.  The API does support ``opdateringsdato`` filtering for these
-  entities, but they are small tables and a full extraction on every run keeps
-  delete detection simple — no date config is applied.
-
-Design notes
-------------
-* No daily partitions — one job run produces exactly one file per resource,
-  matching the behaviour of the original script.
-
-* ``date_to_load_from`` is exposed as a Dagster ``Config`` field so a
-  specific historical date can be supplied from the UI or CLI without any
-  code changes (useful for ad-hoc backfills).
-
-* Assets are created with a **factory pattern** so the 18 definitions stay
-  DRY.  Each factory call closes over the ``api_resource`` name, producing
-  a distinct :class:`dagster.AssetsDefinition` with the correct key.
-
-* All extraction logic delegates to :class:`~.resources.DltOneLakeResource`,
-  which wraps ``dlt_pipeline_execution_functions.execute_pipeline()``.
-  Per-pipeline NDJSON run logs are written to OneLake **inside** that
-  function; assets additionally emit structured metadata visible in the
-  Dagster UI via ``context.add_output_metadata()``.
-
-* A :class:`dagster.RetryPolicy` with exponential backoff retries transient
-  API / network failures up to two times before marking an asset as failed.
-
-* Concurrent execution is managed by the Dagster multiprocess executor
-  configured in ``jobs.py`` (``max_concurrent=4``, mirroring the original
-  ``ThreadPoolExecutor(max_workers=4)``).
+See documentation/python_code_explained.md for design rationale.
 """
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from dagster import (
     AssetExecutionContext,
-    AssetKey,
     AssetsDefinition,
     Config,
     MaterializeResult,
@@ -53,7 +21,7 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
@@ -79,8 +47,7 @@ class ExtractionConfig(Config):
 # ---------------------------------------------------------------------------
 
 _SOURCE_SYSTEM_CODE = "DDD"
-_PIPELINE_TYPE = "api_to_file"
-_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
+_PIPELINE_TYPE: Literal["api_to_file"] = "api_to_file"
 
 _INCREMENTAL_NAMES: frozenset[str] = frozenset(
     configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
@@ -132,7 +99,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_incremental",
-        deps=[_STOP_METABASE_KEY],
+        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{api_resource}** from the Danish "
@@ -175,6 +142,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
 
         result = dlt_onelake.execute_pipeline(
             pipeline_type=_PIPELINE_TYPE,
+            source_system_code=_SOURCE_SYSTEM_CODE,
             pipeline_name=base,
             source_api_base_url=get_variables_from_env.DANISH_DEMOCRACY_BASE_URL,
             source_api_resource=api_resource,
@@ -185,7 +153,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         )
 
         duration = (datetime.now(UTC) - ts).total_seconds()
-        records = result.get("records_written") or 0
+        records = result.get("records_written", 0)
 
         logger.info(
             "END incremental extraction — resource=%s  date_from=%s  records=%d  duration_s=%.1f",
@@ -229,7 +197,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_full_extract",
-        deps=[_STOP_METABASE_KEY],
+        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{api_resource}** from the Danish Parliament "
@@ -258,6 +226,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
 
         result = dlt_onelake.execute_pipeline(
             pipeline_type=_PIPELINE_TYPE,
+            source_system_code=_SOURCE_SYSTEM_CODE,
             pipeline_name=base,
             source_api_base_url=get_variables_from_env.DANISH_DEMOCRACY_BASE_URL,
             source_api_resource=api_resource,
@@ -268,7 +237,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         )
 
         duration = (datetime.now(UTC) - ts).total_seconds()
-        records = result.get("records_written") or 0
+        records = result.get("records_written", 0)
 
         logger.info(
             "END full extraction — resource=%s  records=%d  duration_s=%.1f",

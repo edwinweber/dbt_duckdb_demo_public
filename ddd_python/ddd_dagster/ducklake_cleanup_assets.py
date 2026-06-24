@@ -24,6 +24,7 @@ from dagster import AssetExecutionContext, AssetKey, MaterializeResult, Metadata
 
 import duckdb
 from ddd_python.ddd_utils import get_variables_from_env
+from ddd_python.ddd_utils.path_utils import silver_storage_is_ducklake
 
 _STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
@@ -44,8 +45,8 @@ SNAPSHOT_RETENTION_DAYS = 31
     deps=[_STOP_METABASE_KEY],
 )
 def ducklake_cleanup_asset(context: AssetExecutionContext) -> MaterializeResult:
-    silver_format = getattr(get_variables_from_env, "SILVER_STORAGE_FORMAT", "duckdb")
-    if silver_format != "ducklake":
+    if not silver_storage_is_ducklake():
+        silver_format = getattr(get_variables_from_env, "SILVER_STORAGE_FORMAT", "duckdb")
         context.log.info("SILVER_STORAGE_FORMAT=%s — DuckLake cleanup skipped.", silver_format)
         return MaterializeResult(metadata={"skipped": MetadataValue.bool(True)})
 

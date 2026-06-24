@@ -8,30 +8,30 @@ Usage::
 
 import argparse
 import logging
-import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-load_dotenv(find_dotenv())
-
 from ddd_python.ddd_utils import get_variables_from_env
+
+load_dotenv(find_dotenv())
 
 logger = logging.getLogger(__name__)
 
 
-def generate_log_filename() -> str:
+def _generate_log_filename() -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     return f"dbt_build_log_{timestamp}.json"
 
 
-def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> int:
+def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> None:
     """Run ``dbt build`` and capture output to *log_file_local*.
 
-    Returns:
-        The subprocess return code.
+    Raises:
+        RuntimeError: If dbt exits with a non-zero return code or times out.
     """
     dbt_command = ["dbt", "build", "--log-format", "json", "--no-use-colors"]
 
@@ -39,13 +39,19 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> i
         dbt_command.extend(["--select", models_to_select])
 
     with open(log_file_local, "w") as log_output:
-        result = subprocess.run(
-            dbt_command,
-            cwd=get_variables_from_env.DBT_PROJECT_DIRECTORY,
-            stdout=log_output,
-            stderr=subprocess.STDOUT,
-        )
-    return result.returncode
+        try:
+            subprocess.run(
+                dbt_command,
+                cwd=get_variables_from_env.DBT_PROJECT_DIRECTORY,
+                stdout=log_output,
+                stderr=subprocess.STDOUT,
+                timeout=3600,
+                check=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("dbt process timed out after 3600 seconds") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"dbt build failed with return code {exc.returncode}") from exc
 
 
 def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
@@ -53,7 +59,8 @@ def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
     from ddd_python.ddd_utils import get_fabric_onelake_clients
 
     log_dir_fabric = get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC
-    assert log_dir_fabric is not None, "DBT_LOGS_DIRECTORY_FABRIC must be set"
+    if log_dir_fabric is None:
+        raise OSError("DBT_LOGS_DIRECTORY_FABRIC must be set")
     file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
         log_dir_fabric,
         log_file_name,
@@ -65,13 +72,14 @@ def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
 
 def main(models_to_select: str | None = None) -> None:
     log_dir = get_variables_from_env.DBT_LOGS_DIRECTORY
-    assert log_dir is not None, "DBT_LOGS_DIRECTORY must be set"
-    os.makedirs(log_dir, exist_ok=True)
+    if log_dir is None:
+        raise OSError("DBT_LOGS_DIRECTORY must be set")
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
 
-    log_file_name = generate_log_filename()
-    log_file_local = os.path.join(log_dir, log_file_name)
+    log_file_name = _generate_log_filename()
+    log_file_local = str(Path(log_dir) / log_file_name)
 
-    return_code = run_dbt_build(log_file_local, models_to_select)
+    run_dbt_build(log_file_local, models_to_select)
     logger.info("dbt build logs saved locally at: %s", log_file_local)
 
     if get_variables_from_env.STORAGE_TARGET != "local":
@@ -81,9 +89,6 @@ def main(models_to_select: str | None = None) -> None:
             get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC,
             log_file_name,
         )
-
-    if return_code != 0:
-        raise RuntimeError(f"dbt build failed with exit code {return_code} — see {log_file_local}")
 
 
 if __name__ == "__main__":

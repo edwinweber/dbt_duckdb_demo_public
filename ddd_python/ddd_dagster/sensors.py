@@ -1,51 +1,30 @@
-"""Dagster run-status sensors that persist job-run summaries and send ntfy.sh alerts.
+"""Dagster run-status sensors that persist job summaries and send ntfy.sh alerts.
 
-Two ``@run_status_sensor`` definitions cover all Dagster jobs:
-
-``danish_parliament_run_success_sensor``
-    Fires when any job transitions to **SUCCESS**. Writes an NDJSON record to
-    the configured log destination and sends a push notification via ntfy.sh
-    (``NTFY_TOPIC``).
-
-``danish_parliament_run_failure_sensor``
-    Fires when any job transitions to **FAILURE**. Writes an NDJSON record to
-    the configured log destination and sends a high-priority push notification
-    via ntfy.sh (``NTFY_TOPIC``).
-
-Run summary records are written to::
-
-    <DLT_PIPELINE_RUN_LOG_DIR>/DDD/<job_name>_run_log.ndjson   (STORAGE_TARGET=onelake)
-    <DLT_PIPELINES_LOG_DIR>/DDD/<job_name>_run_log.ndjson      (STORAGE_TARGET=local)
-
-The record contains job name, Dagster run ID, UTC start/end times, duration,
-overall status, and a per-step summary (step key, status, duration) ranked by
-step key.
-
-Write failures
---------------
-If the log write or the ntfy.sh POST fails (e.g. transient connectivity), the
-exception is caught, logged as a warning, and the sensor tick is marked
-successful. A notification failure must never block or delay the next Dagster run.
+Two sensors monitor all jobs: ``danish_parliament_run_success_sensor`` and
+``danish_parliament_run_failure_sensor``. Each fires on job SUCCESS/FAILURE,
+writes an NDJSON record (job name, run ID, times, duration, per-step summary),
+and sends a push alert via ntfy.sh (if ``NTFY_TOPIC`` is set). Write or alert
+failures are caught, logged as warnings, and never block the next run.
 """
 
 from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from typing import Literal
 
 import requests
-from dotenv import find_dotenv, load_dotenv
-
-load_dotenv(find_dotenv())
-
 from dagster import (
     DagsterRunStatus,
     DefaultSensorStatus,
     RunStatusSensorContext,
     run_status_sensor,
 )
+from dotenv import find_dotenv, load_dotenv
 
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
+
+load_dotenv(find_dotenv())
 
 _NTFY_BASE_URL = "https://ntfy.sh"
 
@@ -56,7 +35,9 @@ _NTFY_STATUS_CONFIG = {
 }
 
 
-def _send_ntfy_alert(job_name: str, run_id: str, environment: str, status: str, logger) -> None:
+def _send_ntfy_alert(
+    job_name: str, run_id: str, environment: str, status: Literal["success", "failure"], logger
+) -> None:
     """POST a run-status alert to ntfy.sh.
 
     Reads NTFY_TOPIC from the environment at call time. Logs a warning and
@@ -65,7 +46,7 @@ def _send_ntfy_alert(job_name: str, run_id: str, environment: str, status: str, 
     """
     ntfy_topic = os.getenv("NTFY_TOPIC")
     if not ntfy_topic:
-        logger.warning("NTFY_TOPIC is not set — skipping ntfy.sh alert")
+        logger.debug("NTFY_TOPIC is not set — skipping ntfy.sh alert")
         return
 
     cfg = _NTFY_STATUS_CONFIG[status]
@@ -90,7 +71,7 @@ def _send_ntfy_alert(job_name: str, run_id: str, environment: str, status: str, 
             status,
             environment,
         )
-    except Exception as exc:
+    except requests.exceptions.RequestException as exc:
         logger.warning(
             "Failed to send ntfy.sh alert — job=%s run_id=%s: %s",
             job_name,
@@ -106,10 +87,10 @@ def _send_ntfy_alert(job_name: str, run_id: str, environment: str, status: str, 
 
 def _build_and_write_run_summary(
     context: RunStatusSensorContext,
-    status: str,
+    status: Literal["success", "failure"],
     dlt_onelake: DltOneLakeResource,
 ) -> None:
-    """Collect run stats from the Dagster instance and write an NDJSON record to the log destination.
+    """Collect run stats from the Dagster instance and write an NDJSON log record.
 
     Args:
         context: The sensor evaluation context injected by Dagster.
@@ -186,7 +167,7 @@ def _build_and_write_run_summary(
             status,
         )
     except Exception as exc:
-        # A log-write failure must never block the next Dagster run.
+        # Broad catch intentional — log-write failure must never block the sensor tick.
         logger.warning(
             "Failed to write job run summary — job=%s run_id=%s: %s",
             run.job_name,

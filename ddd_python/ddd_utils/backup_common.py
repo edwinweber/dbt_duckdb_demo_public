@@ -15,6 +15,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from ddd_python.ddd_utils.path_utils import silver_storage_is_ducklake
+
 load_dotenv()
 
 __all__ = [
@@ -93,16 +95,6 @@ _DUCKDB_DATA_DIR = Path(
 _DUCKLAKE_DATA_DIR = Path(os.environ.get("DUCKLAKE_DATA_PATH", "/data/ducklake"))
 
 
-def _silver_storage_is_ducklake() -> bool:
-    """True when ``SILVER_STORAGE_FORMAT=ducklake``.
-
-    In that mode the Silver layer is stored as DuckLake-managed Parquet files,
-    so both the DuckLake **data files** and the DuckLake **catalog** must be part
-    of the backup (the catalog rides along in the ``duckdb`` target).
-    """
-    return os.environ.get("SILVER_STORAGE_FORMAT", "duckdb").strip().lower() == "ducklake"
-
-
 # ── Backup targets ────────────────────────────────────────────────────────────
 #
 # ``containers`` holds Docker *container names* (not Compose service names).
@@ -167,7 +159,7 @@ def _build_backup_targets(include_ducklake: bool) -> tuple[BackupTarget, ...]:
     return tuple(targets)
 
 
-BACKUP_TARGETS: tuple[BackupTarget, ...] = _build_backup_targets(_silver_storage_is_ducklake())
+BACKUP_TARGETS: tuple[BackupTarget, ...] = _build_backup_targets(silver_storage_is_ducklake())
 
 TARGET_NAMES: tuple[str, ...] = tuple(t.name for t in BACKUP_TARGETS)
 

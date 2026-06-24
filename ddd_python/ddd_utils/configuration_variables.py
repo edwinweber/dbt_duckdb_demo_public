@@ -1,10 +1,16 @@
+"""Canonical source of truth for all pipeline entity lists and configuration.
+
+All entity names, primary keys, date columns, model names, and SQL query
+templates are defined here. Adding a new entity means updating only this file;
+the rest of the codebase (dbt model generation, Dagster assets, dlt pipelines)
+derives its configuration from these lists.
+"""
+
 # Danish Democracy settings
 # DANISH_DEMOCRACY_BASE_URL and DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD are
 # defined in .env and loaded via get_variables_from_env.
 
-from ddd_python.ddd_utils.string_utils import (
-    normalize_danish_name,  # noqa: F401 — re-exported for callers that import from here
-)
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 # All 18 API entity names to retrieve data from.
 DANISH_DEMOCRACY_FILE_NAMES = [
@@ -53,6 +59,7 @@ DANISH_DEMOCRACY_MODELS_SILVER: list[str] = [
 
 # Primary key column name per DDD table.  Used by the dbt model generator
 # to parameterize the Silver macros and _cv views.
+# All 18 entities expose "id" as their primary key.
 DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS: dict[str, str] = {
     "afstemning": "id",
     "afstemningstype": "id",
@@ -63,12 +70,12 @@ DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS: dict[str, str] = {
     "moedetype": "id",
     "periode": "id",
     "sag": "id",
-    "sagskategori": "id",
-    "sagsstatus": "id",
     "sagstrin": "id",
     "sagstrinaktoer": "id",
     "sagstrinsstatus": "id",
     "sagstrinstype": "id",
+    "sagskategori": "id",
+    "sagsstatus": "id",
     "sagstype": "id",
     "stemme": "id",
     "stemmetype": "id",
@@ -165,3 +172,24 @@ RFAM_TABLE_QUERIES: dict[str, str] = {
     "literature_reference": ("SELECT * FROM literature_reference"),
     "dead_family": ("SELECT * FROM dead_family"),
 }
+
+# Import-time invariant guards: catch config drift the moment the module loads.
+# Using ValueError (not assert) so these checks survive python -O optimisation.
+_expected_dd_pk_keys = {normalize_danish_name(n) for n in DANISH_DEMOCRACY_FILE_NAMES}
+if set(DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS) != _expected_dd_pk_keys:
+    raise ValueError(
+        "DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS keys must match "
+        "the normalised form of DANISH_DEMOCRACY_FILE_NAMES"
+    )
+if set(RFAM_TABLE_PRIMARY_KEYS) != set(RFAM_TABLE_NAMES):
+    raise ValueError("RFAM_TABLE_PRIMARY_KEYS keys must match RFAM_TABLE_NAMES")
+# RFAM_TABLE_DATE_COLUMNS covers ALL tables (empty string for full-extract ones
+# that lack a date column or are extracted in full by design).
+if set(RFAM_TABLE_DATE_COLUMNS) != set(RFAM_TABLE_NAMES):
+    raise ValueError("RFAM_TABLE_DATE_COLUMNS keys must match RFAM_TABLE_NAMES")
+# Every incremental table must have a non-empty date column entry.
+if not all(RFAM_TABLE_DATE_COLUMNS.get(t) for t in RFAM_TABLE_NAMES_INCREMENTAL):
+    raise ValueError(
+        "Every table in RFAM_TABLE_NAMES_INCREMENTAL must have "
+        "a non-empty entry in RFAM_TABLE_DATE_COLUMNS"
+    )

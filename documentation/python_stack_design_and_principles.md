@@ -128,7 +128,7 @@ This provides the Dagster UI — the asset graph, run history, and manual launch
 
 #### pytest
 
-`pytest` runs the test suite — 133 test functions spanning unit tests of the pure helpers and integration tests that exercise real behaviour. The most notable use is that the integration tests reproduce the Silver CDC macro logic directly in an in-memory DuckDB instance against fixture files, asserting that inserts, updates, and deletes are detected correctly. That is a deliberate strategy: the project's hardest logic is SQL, so the tests run that SQL rather than mocking around it.
+`pytest` runs the test suite — spanning unit tests of the pure helpers and integration tests that exercise real behaviour. The most notable use is that the integration tests reproduce the Silver CDC macro logic directly in an in-memory DuckDB instance against fixture files, asserting that inserts, updates, and deletes are detected correctly. That is a deliberate strategy: the project's hardest logic is SQL, so the tests run that SQL rather than mocking around it.
 
 #### ruff
 
@@ -176,11 +176,11 @@ All the real logic lives in the macro, shared across every entity. The result is
 
 The dbt macros are where the project's intellectual weight sits, and they exist for the same DRY reason as the generator: the Silver CDC logic is genuinely complex (hash comparison across file snapshots, valid-from derived from filename timestamps, insert/update/delete classification, a watermark table to avoid reprocessing), and it should be written once and applied everywhere. Writing that logic 25 times would be 25 chances to introduce a subtle inconsistency. Writing it once, parameterized by table name and primary key, means a fix or improvement lands everywhere at once.
 
-### The lazy-environment module and its type stub
+### The lazy-environment module via PEP 562
 
-Configuration is read through a small module wrapper, `_LazyEnv`, that resolves *required* variables only on first access via `__getattr__`, while *optional* variables are read eagerly at import time. The reason for the laziness is concrete: some tooling (such as the dbt model generator) needs to import the configuration module without having the full cloud credential set present. Resolving required secrets lazily means importing the module never fails just because, say, an Azure secret is absent in a context that does not need it — but the moment code actually *uses* that secret, a missing value raises a clear error.
+Configuration is read through a module with PEP 562 `__getattr__` that resolves *required* variables only on first access, while *optional* variables are read eagerly at import time. The reason for the laziness is concrete: some tooling (such as the dbt model generator) needs to import the configuration module without having the full cloud credential set present. Resolving required secrets lazily means importing the module never fails just because, say, an Azure secret is absent in a context that does not need it — but the moment code actually *uses* that secret, a missing value raises a clear error.
 
-The cost of this cleverness is that a static type checker cannot see attributes created through `__getattr__`. The project pays that cost honestly by shipping a `.pyi` stub that declares every attribute and its type. The stub turns a dynamic pattern back into something fully typed, restoring both autocomplete and `mypy` coverage. It is a good example of a recurring theme: when a clever runtime pattern defeats the tooling, add the small artifact that teaches the tooling about it, rather than abandoning either.
+The PEP 562 approach (a plain module-level `__getattr__` function) is cleaner than the older class-wrapper pattern. Optional vars live in the module's `__dict__` as plain globals (read eagerly, no performance cost) and resolve immediately; required vars go through `__getattr__` on first access. This restores IDE autocomplete and type-checker support without needing a separate `.pyi` stub.
 
 ### Secret scrubbing
 

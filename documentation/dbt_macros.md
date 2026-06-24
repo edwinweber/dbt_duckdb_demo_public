@@ -2,7 +2,7 @@
 
 Last updated: April 2026
 
-This document describes all 9 Jinja macros in `dbt/macros/`. They are the core
+This document describes the Jinja macros in `dbt/macros/`. They are the core
 building blocks of the pipeline: every Bronze view, every Silver CDC table, and
 every surrogate key in Gold is produced by calling one of these macros.
 
@@ -13,6 +13,7 @@ every surrogate key in Gold is produced by calling one of these macros.
 1. [Utility macros](#utility-macros)
    - [`cast_hash_to_bigint`](#cast_hash_to_bigint)
    - [`generate_base_for_hash`](#generate_base_for_hash)
+   - [`parse_filename_ts`](#parse_filename_ts)
 2. [Bronze layer macros](#bronze-layer-macros)
    - [`generate_model_bronze`](#generate_model_bronze)
    - [`generate_model_bronze_latest`](#generate_model_bronze_latest)
@@ -125,6 +126,57 @@ CONCAT(
 |----------|---------|---------|
 | `hash_null_replacement` | `<NULL>` | Token substituted for `NULL` column values |
 | `hash_delimiter` | `]##[` | Separator between column values in the concat string |
+
+---
+
+### `parse_filename_ts`
+
+**File:** [dbt/macros/parse_filename_ts.sql](../dbt/macros/parse_filename_ts.sql)
+
+```jinja
+{{ parse_filename_ts(col) }}
+```
+
+**Purpose:** Extracts the `YYYYMMDD_HHMMSS` timestamp embedded in every dlt
+filename and returns a DuckDB `TIMESTAMP` value. Used throughout the Silver
+macros to derive `LKHS_date_valid_from` — the SCD Type 2 validity start date
+for each row.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `col` | column name | Column containing the filename (e.g., `'LKHS_filename'`) |
+
+**How it works:**
+
+The macro expands to:
+
+```sql
+strptime(SUBSTRING(col, LENGTH(col) - POSITION('.' IN REVERSE(col)) - 14, 15), '%Y%m%d_%H%M%S')
+```
+
+Working from right to left:
+1. `REVERSE(col)` — reverses the filename string
+2. `POSITION('.' IN REVERSE(col))` — finds the position of the rightmost dot
+   (the start of the file extension when reading backwards)
+3. `LENGTH(col) - ... - 14` — calculates the start position of the 15-character
+   timestamp (14 chars for `YYYYMMDD_HHMMSS` plus the underscore separator)
+4. `SUBSTRING(...)` — extracts the timestamp substring
+5. `strptime(..., '%Y%m%d_%H%M%S')` — parses it into a DuckDB `TIMESTAMP`
+
+Example: given `stemme_20240115_143022.json`, extracts `20240115_143022` and
+returns `TIMESTAMP '2024-01-15 14:30:22'`.
+
+**Used by:** All Silver macros (`generate_model_silver_full_extraction`,
+`generate_model_silver_incr_extraction`) and both Silver hook macros
+(`generate_pre_hook_silver`, `generate_post_hook_silver`) to compute
+`LKHS_date_valid_from` from the filename timestamp.
+
+**Why a macro:** This expression — 11 verbatim occurrences across 4 Silver macro
+files — is the single point of change if the filename convention ever evolves.
+Centralizing it as a dedicated macro ensures consistency and simplifies future
+maintenance.
 
 ---
 

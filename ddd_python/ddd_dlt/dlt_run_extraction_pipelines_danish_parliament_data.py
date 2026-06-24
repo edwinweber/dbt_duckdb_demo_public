@@ -1,14 +1,11 @@
 import argparse
-import concurrent.futures
-import json
 import logging
 import sys
-import time
-import traceback
-import warnings
 from datetime import UTC, datetime
+from typing import Literal
 
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
+from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import PipelineTask
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
@@ -16,7 +13,7 @@ from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_dat
 logger = logging.getLogger(__name__)
 
 SOURCE_SYSTEM_CODE = "DDD"
-PIPELINE_TYPE = "api_to_file"
+PIPELINE_TYPE: Literal["api_to_file"] = "api_to_file"
 SCRIPT_NAME = "dlt_run_extraction_pipelines_danish_parliament_data"
 
 
@@ -48,118 +45,61 @@ def run_extraction_pipelines_danish_parliament_data(
         ValueError: If ``date_to_load_from`` does not match 'YYYY-MM-DD'.
         RuntimeError: If one or more pipeline tasks fail during execution.
     """
-    script_start = time.monotonic()
     start_time = datetime.now(UTC)
 
-    # Resolve date_to_load_from
     date_to_load_from = resolve_date_to_load_from(
         date_to_load_from,
         get_variables_from_env.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD,
         start_time,
     )
 
-    # Resolve file_names_to_retrieve
     if file_names_to_retrieve is None:
         file_names_to_retrieve = configuration_variables.DANISH_DEMOCRACY_FILE_NAMES
 
     # Use a set for O(1) incremental membership checks
     incremental_set = set(configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL)
 
-    # Per-pipeline outcome accumulated for the script-level log
-    pipeline_results: list[dict] = []
-    failed: list[str] = []
+    tasks: list[PipelineTask] = []
+    for file_name in file_names_to_retrieve:
+        # Incremental entities use an opdateringsdato date filter so only
+        # new/changed records are fetched.  The remaining entities also
+        # support opdateringsdato, but they are small tables and a full
+        # extract on every run keeps delete detection simple.
+        api_filter = (
+            f"$filter=opdateringsdato ge DateTime'{date_to_load_from}'&$orderby=id"
+            if file_name in incremental_set
+            else "$inlinecount=allpages&$orderby=id"
+        )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_name: dict[concurrent.futures.Future, str] = {}
+        base_file_name_lower = normalize_danish_name(file_name)
+        destination_file_name = f"{base_file_name_lower}_{start_time:%Y%m%d_%H%M%S}.json"
+        dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, base_file_name_lower)
 
-        for file_name in file_names_to_retrieve:
-            # Incremental entities use an opdateringsdato date filter so only
-            # new/changed records are fetched.  The remaining entities also
-            # support opdateringsdato, but they are small tables and a full
-            # extract on every run keeps delete detection simple.
-            api_filter = (
-                f"$filter=opdateringsdato ge DateTime'{date_to_load_from}'&$orderby=id"
-                if file_name in incremental_set
-                else "$inlinecount=allpages&$orderby=id"
-            )
-
-            base_file_name_lower = normalize_danish_name(file_name)
-            destination_file_name = f"{base_file_name_lower}_{start_time:%Y%m%d_%H%M%S}.json"
-            dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, base_file_name_lower)
-
-            future = executor.submit(
-                dpef.execute_pipeline,
-                pipeline_type=PIPELINE_TYPE,
-                source_system_code=SOURCE_SYSTEM_CODE,
-                pipeline_name=base_file_name_lower,
-                source_api_base_url=get_variables_from_env.DANISH_DEMOCRACY_BASE_URL,
-                source_api_resource=file_name,
-                source_api_filter=api_filter,
-                source_api_date_to_load_from=date_to_load_from,
-                destination_directory_path=dest_dir,
-                destination_file_name=destination_file_name,
-            )
-            future_to_name[future] = file_name
-
-        for future in concurrent.futures.as_completed(future_to_name):
-            name = future_to_name[future]
-            try:
-                result = future.result()
-                pipeline_results.append(
-                    {
-                        "resource": name,
-                        "status": "success",
-                        "records_written": result.get("records_written"),
-                    }
-                )
-            except Exception as exc:
-                pipeline_results.append(
-                    {
-                        "resource": name,
-                        "status": "failure",
-                        "error": traceback.format_exc(),
-                    }
-                )
-                failed.append(name)
-                logger.error("Pipeline failed for resource %s: %s", name, exc)
-
-    end_time = datetime.now(UTC)
-    duration_seconds = time.monotonic() - script_start
-    overall_status = "failure" if failed else "success"
-
-    log_record = (
-        json.dumps(
+        tasks.append(
             {
-                "script_name": SCRIPT_NAME,
+                "name": file_name,
                 "source_system_code": SOURCE_SYSTEM_CODE,
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-                "duration_seconds": round(duration_seconds, 3),
-                "date_to_load_from": date_to_load_from,
-                "status": overall_status,
-                "pipelines_total": len(pipeline_results),
-                "pipelines_succeeded": sum(1 for p in pipeline_results if p["status"] == "success"),
-                "pipelines_failed": len(failed),
-                "pipelines": sorted(pipeline_results, key=lambda p: p["resource"]),
-            },
-            ensure_ascii=False,
+                "pipeline_type": PIPELINE_TYPE,
+                "kwargs": {
+                    "pipeline_name": base_file_name_lower,
+                    "source_api_base_url": get_variables_from_env.DANISH_DEMOCRACY_BASE_URL,
+                    "source_api_resource": file_name,
+                    "source_api_filter": api_filter,
+                    "source_api_date_to_load_from": date_to_load_from,
+                    "destination_directory_path": dest_dir,
+                    "destination_file_name": destination_file_name,
+                },
+            }
         )
-        + "\n"
+
+    dpef.run_extraction_pool(
+        tasks=tasks,
+        script_name=SCRIPT_NAME,
+        source_system_code=SOURCE_SYSTEM_CODE,
+        date_to_load_from=date_to_load_from,
+        start_time=start_time,
+        resource_label="resource",
     )
-
-    log_dir = dpef.build_log_dir(SOURCE_SYSTEM_CODE)
-    log_file = f"{SCRIPT_NAME}_log.ndjson"
-    try:
-        dpef.write_log_to_onelake(log_record, log_dir, log_file)
-    except Exception as log_exc:
-        warnings.warn(
-            f"Failed to write script-level run log: {log_exc}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-    if failed:
-        raise RuntimeError(f"The following pipelines failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

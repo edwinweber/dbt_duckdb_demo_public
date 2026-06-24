@@ -32,7 +32,7 @@ Safety
 
 Usage
 -----
-    python -m ddd_python.ddd_utils.migrate_silver_to_ducklake            # dry run off, skip existing
+    python -m ddd_python.ddd_utils.migrate_silver_to_ducklake  # dry run off, skip existing
     python -m ddd_python.ddd_utils.migrate_silver_to_ducklake --dry-run  # show plan only
     python -m ddd_python.ddd_utils.migrate_silver_to_ducklake --overwrite
     python -m ddd_python.ddd_utils.migrate_silver_to_ducklake --silver-schema main_silver

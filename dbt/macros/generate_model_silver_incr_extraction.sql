@@ -12,11 +12,11 @@ FROM {{ ref(bronze_table_name) }} src
 )
 ,CTE_FILES AS   (
                 SELECT LKHS_filename
-                ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S') AS LKHS_date_valid_from
+                ,      {{ parse_filename_ts('LKHS_filename') }} AS LKHS_date_valid_from
                 ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
                 ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
-                ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-                ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15),'%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
+                ,      LAG({{ parse_filename_ts('LKHS_filename') }}) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
+                ,      LEAD({{ parse_filename_ts('LKHS_filename') }}) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
                 FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
                         FROM read_text('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*')
                         ) files

@@ -11,6 +11,7 @@ Used by:
   for the Dagster asset factories)
 """
 
+import contextlib
 import os
 
 import duckdb
@@ -38,12 +39,15 @@ def open_export_connection() -> duckdb.DuckDBPyConnection:
     them — resolve.
     """
     db_path = get_variables_from_env.DUCKDB_DATABASE_LOCATION
-    assert db_path is not None, "DUCKDB_DATABASE_LOCATION must be set"
+    if db_path is None:
+        raise OSError("DUCKDB_DATABASE_LOCATION must be set")
     connection = duckdb.connect(db_path, read_only=True)
     if silver_storage_is_ducklake():
         catalog = get_variables_from_env.DUCKLAKE_CATALOG_LOCATION
         data_path = get_variables_from_env.DUCKLAKE_DATA_PATH
-        connection.execute("INSTALL ducklake; LOAD ducklake;")
+        with contextlib.suppress(Exception):  # Already installed — safe under concurrency
+            connection.execute("INSTALL ducklake;")
+        connection.execute("LOAD ducklake;")
         connection.execute(
             f"ATTACH 'ducklake:{catalog}' AS ducklake_catalog (DATA_PATH '{data_path}', READ_ONLY)"
         )

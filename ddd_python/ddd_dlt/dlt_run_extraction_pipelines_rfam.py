@@ -16,20 +16,18 @@ Usage::
 
     python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam
     python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam --date_to_load_from 2024-01-01
-    python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam --table_names_to_retrieve family genome
+    python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam \
+        --table_names_to_retrieve family genome
 """
 
 import argparse
-import concurrent.futures
-import json
 import logging
 import sys
-import time
-import traceback
-import warnings
 from datetime import UTC, datetime
+from typing import Literal
 
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
+from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import PipelineTask
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
@@ -37,7 +35,7 @@ from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
 logger = logging.getLogger(__name__)
 
 SOURCE_SYSTEM_CODE = "RFAM"
-PIPELINE_TYPE = "sql_to_file"
+PIPELINE_TYPE: Literal["sql_to_file"] = "sql_to_file"
 SCRIPT_NAME = "dlt_run_extraction_pipelines_rfam"
 
 
@@ -58,118 +56,59 @@ def run_extraction_pipelines_rfam(
         ValueError: If ``date_to_load_from`` does not match ``YYYY-MM-DD``.
         RuntimeError: If one or more pipeline tasks fail during execution.
     """
-    script_start = time.monotonic()
     start_time = datetime.now(UTC)
 
-    # Resolve date_to_load_from
     date_to_load_from = resolve_date_to_load_from(
         date_to_load_from,
         get_variables_from_env.RFAM_DEFAULT_DAYS_TO_LOAD,
         start_time,
     )
 
-    # Resolve table_names_to_retrieve
     if table_names_to_retrieve is None:
         table_names_to_retrieve = configuration_variables.RFAM_TABLE_NAMES
 
     incremental_set = set(configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL)
 
-    pipeline_results: list[dict] = []
-    failed: list[str] = []
+    tasks: list[PipelineTask] = []
+    for table_name in table_names_to_retrieve:
+        query_template = configuration_variables.RFAM_TABLE_QUERIES[table_name]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_name: dict[concurrent.futures.Future, str] = {}
+        # build_rfam_sql injects a WHERE clause and binds :updated_from for
+        # incremental tables; full-extract tables get an empty clause and no params.
+        sql_query, sql_params = dpef.build_rfam_sql(
+            query_template,
+            is_incremental=table_name in incremental_set,
+            date_to_load_from=date_to_load_from,
+        )
 
-        for table_name in table_names_to_retrieve:
-            query_template = configuration_variables.RFAM_TABLE_QUERIES[table_name]
+        destination_file_name = f"{table_name}_{start_time:%Y%m%d_%H%M%S}.json"
+        dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, table_name)
 
-            # Build the SQL query with optional date filter.
-            # Incremental tables use a SQLAlchemy named parameter (:updated_from)
-            # rather than string interpolation — this prevents SQL injection even
-            # if the date value ever bypasses the format check above.
-            if table_name in incremental_set:
-                sql_query = query_template.format(where_clause=" WHERE updated >= :updated_from")
-                sql_params: dict = {"updated_from": date_to_load_from}
-            else:
-                sql_query = query_template.format(where_clause="")
-                sql_params = {}
-
-            destination_file_name = f"{table_name}_{start_time:%Y%m%d_%H%M%S}.json"
-            dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, table_name)
-
-            future = executor.submit(
-                dpef.execute_pipeline,
-                pipeline_type=PIPELINE_TYPE,
-                source_system_code=SOURCE_SYSTEM_CODE,
-                pipeline_name=table_name,
-                source_connection_string=get_variables_from_env.RFAM_CONNECTION_STRING,
-                source_sql_query=sql_query,
-                sql_params=sql_params,
-                destination_directory_path=dest_dir,
-                destination_file_name=destination_file_name,
-                loader_file_format="jsonl",
-            )
-            future_to_name[future] = table_name
-
-        for future in concurrent.futures.as_completed(future_to_name):
-            name = future_to_name[future]
-            try:
-                result = future.result()
-                pipeline_results.append(
-                    {
-                        "resource": name,
-                        "status": "success",
-                        "records_written": result.get("records_written"),
-                    }
-                )
-            except Exception as exc:
-                pipeline_results.append(
-                    {
-                        "resource": name,
-                        "status": "failure",
-                        "error": traceback.format_exc(),
-                    }
-                )
-                failed.append(name)
-                logger.error("Pipeline failed for table %s: %s", name, exc)
-
-    end_time = datetime.now(UTC)
-    duration_seconds = time.monotonic() - script_start
-    overall_status = "failure" if failed else "success"
-
-    log_record = (
-        json.dumps(
+        tasks.append(
             {
-                "script_name": SCRIPT_NAME,
+                "name": table_name,
                 "source_system_code": SOURCE_SYSTEM_CODE,
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-                "duration_seconds": round(duration_seconds, 3),
-                "date_to_load_from": date_to_load_from,
-                "status": overall_status,
-                "pipelines_total": len(pipeline_results),
-                "pipelines_succeeded": sum(1 for p in pipeline_results if p["status"] == "success"),
-                "pipelines_failed": len(failed),
-                "pipelines": sorted(pipeline_results, key=lambda p: p["resource"]),
-            },
-            ensure_ascii=False,
+                "pipeline_type": PIPELINE_TYPE,
+                "kwargs": {
+                    "pipeline_name": table_name,
+                    "source_connection_string": get_variables_from_env.RFAM_CONNECTION_STRING,
+                    "source_sql_query": sql_query,
+                    "sql_params": sql_params,
+                    "destination_directory_path": dest_dir,
+                    "destination_file_name": destination_file_name,
+                    "loader_file_format": "jsonl",
+                },
+            }
         )
-        + "\n"
+
+    dpef.run_extraction_pool(
+        tasks=tasks,
+        script_name=SCRIPT_NAME,
+        source_system_code=SOURCE_SYSTEM_CODE,
+        date_to_load_from=date_to_load_from,
+        start_time=start_time,
+        resource_label="resource",
     )
-
-    log_dir = dpef.build_log_dir(SOURCE_SYSTEM_CODE)
-    log_file = f"{SCRIPT_NAME}_log.ndjson"
-    try:
-        dpef.write_log_to_onelake(log_record, log_dir, log_file)
-    except Exception as log_exc:
-        warnings.warn(
-            f"Failed to write script-level run log: {log_exc}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-    if failed:
-        raise RuntimeError(f"The following pipelines failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

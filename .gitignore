@@ -28,6 +28,7 @@ export_environment_variables.sh
 .user.yml
 .vscode/
 .pytest_cache/
+.coverage
 *.egg-info/
 .ruff_cache/
 .mypy_cache/

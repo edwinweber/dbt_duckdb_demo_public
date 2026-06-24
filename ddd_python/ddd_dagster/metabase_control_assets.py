@@ -1,3 +1,12 @@
+"""Dagster assets for Metabase lifecycle control.
+
+Stops Metabase before dbt runs and restarts it afterward. This is necessary
+because DuckDB is single-writer: when dbt runs a transformation, it needs an
+exclusive write lock on the .duckdb file. Metabase holds a persistent read
+connection to the same file and must release it first. These assets are no-ops
+in non-Docker environments (no-op if scripts are not present or not executable).
+"""
+
 import subprocess
 from collections.abc import Iterable
 

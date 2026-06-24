@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from dagster import ConfigurableResource
 
@@ -48,7 +48,11 @@ class DltOneLakeResource(ConfigurableResource):
     # Pipeline execution
     # ------------------------------------------------------------------
 
-    def execute_pipeline(self, pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
+    def execute_pipeline(
+        self,
+        pipeline_type: Literal["api_to_file", "sql_to_file", "file_to_file"],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """Dispatch a single DLT pipeline run and return the result dict.
 
         This is a thin pass-through to

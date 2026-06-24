@@ -22,8 +22,24 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dagster,dev]"
 
+      - name: Generate dbt manifest
+        run: |
+          dbt deps --project-dir dbt/ --profiles-dir dbt/
+          dbt parse --project-dir dbt/ --profiles-dir dbt/
+        env:
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: duckdb
+          LOCAL_STORAGE_PATH: /tmp/ddd_ci
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
+          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
+          DUCKDB_DATABASE: danish_democracy_data
+          DBT_PROJECT_DIRECTORY: ${{ github.workspace }}/dbt
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --cov=ddd_python --cov-fail-under=35 --cov-report=term-missing
         env:
           # Minimal env vars required by the lazy env-loading module.
           # Tests use monkeypatch / MagicMock for everything else.
@@ -67,22 +83,42 @@ jobs:
         env:
           STORAGE_TARGET: local
           SILVER_STORAGE_FORMAT: duckdb
-          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
-          DUCKDB_DATABASE: danish_democracy_data
-          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
-          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DUCKDB_DATABASE_LOCATION: /tmp/ci_test.duckdb
+          DUCKDB_DATABASE: ci_test
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/bronze_ddd
+          RFAM_DATA_SOURCE: /tmp/bronze_rfam
+          DBT_PROJECT_DIRECTORY: dbt/
+          LOCAL_STORAGE_PATH: /tmp
           DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
           DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
 
-      - name: dbt parse (validates all SQL + YAML without a live database)
-        run: dbt parse --project-dir dbt --profiles-dir dbt
+      - name: dbt parse — duckdb mode (validates all SQL + YAML, no database needed)
+        run: dbt parse --project-dir dbt --profiles-dir dbt --target local
         env:
           STORAGE_TARGET: local
           SILVER_STORAGE_FORMAT: duckdb
-          DUCKDB_DATABASE_LOCATION: /tmp/ddd_ci/test.duckdb
-          DUCKDB_DATABASE: danish_democracy_data
-          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/DDD
-          RFAM_DATA_SOURCE: /tmp/ddd_ci/Files/Bronze/RFAM
+          DUCKDB_DATABASE_LOCATION: /tmp/ci_test.duckdb
+          DUCKDB_DATABASE: ci_test
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/bronze_ddd
+          RFAM_DATA_SOURCE: /tmp/bronze_rfam
+          DBT_PROJECT_DIRECTORY: dbt/
+          LOCAL_STORAGE_PATH: /tmp
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+
+      - name: dbt parse — ducklake mode (validates DuckLake target SQL + YAML)
+        run: dbt parse --project-dir dbt --profiles-dir dbt --target local_ducklake
+        env:
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: ducklake
+          DUCKDB_DATABASE_LOCATION: /tmp/ci_ducklake_test.duckdb
+          DUCKDB_DATABASE: ci_ducklake_test
+          DUCKLAKE_CATALOG_LOCATION: /tmp/ci_ducklake.ducklake
+          DUCKLAKE_DATA_PATH: /tmp/ci_ducklake_data
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/bronze_ddd
+          RFAM_DATA_SOURCE: /tmp/bronze_rfam
+          DBT_PROJECT_DIRECTORY: dbt/
+          LOCAL_STORAGE_PATH: /tmp
           DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
           DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
 
@@ -108,4 +144,4 @@ jobs:
         run: ruff format --check .
 
       - name: mypy
-        run: mypy ddd_python/ --ignore-missing-imports
+        run: mypy --package ddd_python --config-file pyproject.toml

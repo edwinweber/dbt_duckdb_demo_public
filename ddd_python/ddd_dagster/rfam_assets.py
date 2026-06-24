@@ -13,10 +13,10 @@ are architecturally consistent.
 """
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from dagster import (
     AssetExecutionContext,
-    AssetKey,
     AssetsDefinition,
     Config,
     MaterializeResult,
@@ -24,8 +24,9 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
 from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import build_rfam_sql
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
@@ -44,8 +45,7 @@ class RfamExtractionConfig(Config):
 
 
 _SOURCE_SYSTEM_CODE = "RFAM"
-_PIPELINE_TYPE = "sql_to_file"
-_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
+_PIPELINE_TYPE: Literal["sql_to_file"] = "sql_to_file"
 
 _INCREMENTAL_NAMES: frozenset[str] = frozenset(configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL)
 
@@ -63,7 +63,7 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_incremental",
-        deps=[_STOP_METABASE_KEY],
+        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{table_name}** from the Rfam MySQL "
@@ -96,9 +96,9 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
 
         ts = datetime.now(UTC)
         destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
-        # Use a SQLAlchemy named parameter (:updated_from) rather than
-        # interpolating the date string — prevents SQL injection.
-        sql_query = query_template.format(where_clause=" WHERE updated >= :updated_from")
+        sql_query, sql_params = build_rfam_sql(
+            query_template, is_incremental=True, date_to_load_from=date_from
+        )
 
         result = dlt_onelake.execute_pipeline(
             pipeline_type=_PIPELINE_TYPE,
@@ -106,14 +106,14 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
             pipeline_name=table_name,
             source_connection_string=get_variables_from_env.RFAM_CONNECTION_STRING,
             source_sql_query=sql_query,
-            sql_params={"updated_from": date_from},
+            sql_params=sql_params,
             destination_directory_path=_destination_path(table_name),
             destination_file_name=destination_file,
             loader_file_format="jsonl",
         )
 
         duration = (datetime.now(UTC) - ts).total_seconds()
-        records = result.get("records_written") or 0
+        records = result.get("records_written", 0)
 
         logger.info(
             "END incremental extraction — table=%s  date_from=%s  records=%d  duration_s=%.1f",
@@ -145,7 +145,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_full_extract",
-        deps=[_STOP_METABASE_KEY],
+        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{table_name}** from the Rfam MySQL "
@@ -165,7 +165,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
 
         ts = datetime.now(UTC)
         destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
-        sql_query = query_template.format(where_clause="")
+        sql_query, _ = build_rfam_sql(query_template, is_incremental=False)
 
         result = dlt_onelake.execute_pipeline(
             pipeline_type=_PIPELINE_TYPE,
@@ -179,7 +179,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
         )
 
         duration = (datetime.now(UTC) - ts).total_seconds()
-        records = result.get("records_written") or 0
+        records = result.get("records_written", 0)
 
         logger.info(
             "END full extraction — table=%s  records=%d  duration_s=%.1f",

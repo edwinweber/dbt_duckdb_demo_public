@@ -6,7 +6,7 @@ DDD extraction jobs
     Runs all assets in the ``ingestion/DDD`` group (6 incremental entities).
 
 ``danish_parliament_full_extract_job``
-    Runs all assets in the ``ingestion/DDD`` group (12 full-extract entities).
+    Runs all assets in the ``ingestion_DDD_full_extract`` group (12 full-extract entities).
 
 ``danish_parliament_all_job``
     All 18 DDD extraction assets in a single job.
@@ -69,6 +69,11 @@ from dagster import (
 )
 from dagster_dbt import build_dbt_asset_selection
 
+from ddd_python.ddd_dagster._constants import (
+    DUCKLAKE_CLEANUP_ASSET_KEY,
+    START_METABASE_ASSET_KEY,
+    STOP_METABASE_ASSET_KEY,
+)
 from ddd_python.ddd_utils import configuration_variables
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
@@ -96,9 +101,9 @@ _DBT_SILVER_DEFAULT_CONFIG = {"ops": {"dbt_silver_assets": {"config": {"full_ref
 
 def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
     return (
-        AssetSelection.keys("stop_metabase_asset")
+        AssetSelection.assets(STOP_METABASE_ASSET_KEY)
         | selection
-        | AssetSelection.keys("start_metabase_asset")
+        | AssetSelection.assets(START_METABASE_ASSET_KEY)
     )
 
 
@@ -106,7 +111,11 @@ def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
 # Shared executor: 4-way concurrency, mirrors ThreadPoolExecutor(max_workers=4)
 # ---------------------------------------------------------------------------
 
-_concurrent_executor = multiprocess_executor.configured({"max_concurrent": 4})
+_MAX_CONCURRENT_PROCESSES = 4
+
+_concurrent_executor = multiprocess_executor.configured(
+    {"max_concurrent": _MAX_CONCURRENT_PROCESSES}
+)
 
 
 danish_parliament_incremental_job = define_asset_job(
@@ -458,7 +467,7 @@ export_silver_job = define_asset_job(
     ),
     tags={
         "team": "data-engineering",
-        "source_system": "DDD",
+        "source_system": "all",
         "layer": "export_silver",
     },
 )
@@ -503,13 +512,14 @@ def _full_pipeline_selection():
 
 ducklake_cleanup_job = define_asset_job(
     name="ducklake_cleanup_job",
-    selection=_with_metabase_control(AssetSelection.keys("ducklake_cleanup_asset")),
+    selection=_with_metabase_control(AssetSelection.assets(DUCKLAKE_CLEANUP_ASSET_KEY)),
     executor_def=in_process_executor,
     description=(
         "Vacuums the DuckLake catalog: expires snapshots older than 31 days, deletes orphaned "
-        "Parquet files, and removes residual _current_temp / __dbt_tmp "
-        "directories left by dbt's incremental strategy.  No-op when "
-        "SILVER_STORAGE_FORMAT != 'ducklake'."
+        "Parquet files, and removes residual _current_temp directories "
+        "left by Silver pre/post-hooks. __dbt_tmp directories are intentionally preserved — "
+        "DuckLake stores live table data there and removing them would corrupt Silver. "
+        "No-op when SILVER_STORAGE_FORMAT != 'ducklake'."
     ),
     tags={
         "team": "data-engineering",

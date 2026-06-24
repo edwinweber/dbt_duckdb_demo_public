@@ -4,7 +4,7 @@ Last updated: June 2026
 
 ## What This Project Is
 
-This is a **demo project** that builds a modern data engineering pipeline using low-cost tooling. It extracts open data from two sources — the Danish Parliament (Folketing) (18 OData entities including members of parliament, meetings, cases, and votes) from the official REST API at `oda.ft.dk`, and the Rfam public MySQL database (7 tables of RNA family data) at EBI — and transforms it through a medallion architecture (Bronze → Silver → Gold).
+This is a **demo project** that builds a modern data engineering pipeline using low-cost tooling. It extracts open data from two sources — the Danish Parliament (Folketing) OData entities including members of parliament, meetings, cases, and votes from the official REST API at `oda.ft.dk`, and the Rfam public MySQL database with RNA family data at EBI — and transforms it through a medallion architecture (Bronze → Silver → Gold).
 
 The pipeline has **two independent storage switches**, each a single environment variable:
 
@@ -26,7 +26,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 │  │  EXTRACT     │     │  TRANSFORM           │     │  EXPORT          │ │
 │  │  (dlt + py)  │────▶│  (dbt + DuckDB)      │────▶│  (deltalake +   │ │
 │  │              │     │                      │     │   pyarrow)       │ │
-│  │  25 entities  │     │  SQL models          │     │  Delta Lake      │ │
+│  │  Entities    │     │  SQL models          │     │  Delta Lake      │ │
 │  │  from API +   │     │  + macros            │     │  tables          │ │
 │  │  SQL database │     │                      │     │                 │ │
 │  └──────┬───────┘     └──────────┬───────────┘     └────────┬─────────┘ │
@@ -37,7 +37,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 │   BRONZE        │   │   SILVER              │   │   GOLD                │
 │   (JSON files)  │   │   (SCD Type 2 tables) │   │   (Analytic views)    │
 │                 │   │   CDC with hash-based  │   │   English names,      │
-│   25 entities   │   │   change detection     │   │   surrogate keys,     │
+│   Entities      │   │   change detection     │   │   surrogate keys,     │
 │   as raw JSON   │   │   Full history kept    │   │   XML parsing         │
 └─────────────────┘   └───────────────────────┘   └───────────────────────┘
           │                        │                          │
@@ -65,7 +65,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 
 | Step | Tool | What Happens |
 | --- | --- | --- |
-| **Extract** | Python + dlt | 18 entities fetched from Danish Parliament API (6 incremental, 12 full) + 7 tables from Rfam MySQL database (2 incremental, 5 full). Written as timestamped JSON. |
+| **Extract** | Python + dlt | Entities fetched from Danish Parliament API (incremental and full-refresh) and tables from Rfam MySQL database (incremental and full-extract). Written as timestamped JSON. |
 | **Bronze** | dbt views | Raw JSON exposed as queryable views via DuckDB. |
 | **Silver** | dbt incremental tables | SCD Type 2 history with SHA-256 hash-based change detection. Inserts, updates, and deletes tracked. Stored as native DuckDB tables or DuckLake Parquet (per `SILVER_STORAGE_FORMAT`). |
 | **Gold** | dbt views | Business-friendly English names, surrogate keys (signed BIGINT for Power BI compatibility), XML biography parsing, current-version views. |
@@ -75,7 +75,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 
 ## What It Demonstrates
 
-- **Medallion architecture** with SCD Type 2 historical tracking across all 25 entities (18 DDD + 7 Rfam)
+- **Medallion architecture** with SCD Type 2 historical tracking across entities from multiple sources
 - **Runs anywhere**: entirely on a laptop with Docker (free), or connected to Microsoft Fabric — same codebase
 - **Switchable Silver storage**: native DuckDB tables or DuckLake (open table format — Parquet + catalog, with snapshot time-travel), flipped by one environment variable
 - **Daily automation** via Dagster (two schedules, disabled by default) with run-status sensors and per-run log files
@@ -129,20 +129,13 @@ reference project rather than an enterprise platform, and intentionally leaves o
 
 ---
 
-## Key Numbers
+## Key Configuration
 
-As of June 2026:
-
-| Metric | Value |
+| Item | Details |
 | --- | --- |
-| Data source entities | 25 (18 DDD + 7 Rfam) |
-| DDD incremental entities | 6 (date-filtered) |
-| DDD full-refresh entities | 12 |
-| Rfam incremental tables | 2 (date-filtered) |
-| Rfam full-extract tables | 5 |
-| Silver storage formats | 2 (DuckDB native or DuckLake) |
-| Docker services | 4 (one-off runner, Dagster UI, Metabase, backup) |
-| Backup targets | 3, or 4 in DuckLake mode (dagster, metabase, duckdb, +ducklake) |
+| Data sources | Danish Parliament API (OData entities, both incremental and full-refresh) + Rfam MySQL database (tables, both incremental and full-extract) |
+| Silver storage formats | DuckDB native tables (default) or DuckLake (Parquet + catalog) |
+| Docker services | One-off runner, Dagster UI, Metabase, backup |
 | License | MIT |
 
-> Model and macro counts change as the project evolves. Run `find dbt/models -name '*.sql' | wc -l` and `ls dbt/macros/*.sql | wc -l` for current counts.
+> For current model and macro counts, run `find dbt/models -name '*.sql' | wc -l` and `ls dbt/macros/*.sql | wc -l`.

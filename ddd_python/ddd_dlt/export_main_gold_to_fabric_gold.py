@@ -1,18 +1,8 @@
-"""Export Gold-layer tables from DuckDB to Fabric OneLake as Delta Lake tables.
+"""Export Gold-layer tables from DuckDB to Fabric OneLake as Delta Lake.
 
-Reads each Gold table via DuckDB, converts it to a PyArrow table, and writes
-it as a Delta Lake table to OneLake using ``deltalake``.  Gold tables are
-always fully overwritten (``mode="overwrite"``).
-
-The connection comes from ``open_export_connection()``: in DuckLake mode it
-attaches the DuckLake catalog read-only, because the Gold views (which live in
-the main DuckDB database) reference ``ducklake_catalog.main_silver.*`` and would
-otherwise fail to resolve.
-
-Usage::
-
-    python -m ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
-    python -m ddd_python.ddd_dlt.export_main_gold_to_fabric_gold --tables actor vote
+Full overwrite: reads each Gold view (which reference Silver via ``ducklake_catalog``
+in DuckLake mode), converts to PyArrow, and overwrites the Delta table. Connection
+comes from ``open_export_connection()`` which attaches the DuckLake catalog if needed.
 """
 
 import argparse
@@ -36,7 +26,10 @@ def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) 
         Number of rows written.
     """
     target_table_path, storage_options = build_delta_export_path("gold", table)
-    query = f"SELECT * FROM {get_variables_from_env.DUCKDB_DATABASE}.main_gold.{table}"
+    db = get_variables_from_env.DUCKDB_DATABASE
+    if db is None:
+        raise OSError("DUCKDB_DATABASE must be set")
+    query = f"SELECT * FROM {db}.main_gold.{table}"
     result = connection.execute(query)
     df = result.to_arrow_table()
     write_deltalake(
@@ -65,7 +58,7 @@ def write_tables_to_onelake_gold(connection: duckdb.DuckDBPyConnection, tables: 
         try:
             export_single_gold_table(connection, table)
         except Exception as e:
-            logger.error("Failed to export Gold table %s: %s", table, e)
+            logger.error("Failed to export Gold table %s: %s", table, e, exc_info=True)
             failed.append(table)
 
     if failed:

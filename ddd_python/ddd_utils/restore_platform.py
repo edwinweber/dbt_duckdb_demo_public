@@ -41,7 +41,8 @@ Usage:
     python -m ddd_python.ddd_utils.restore_platform --targets duckdb
 
     # Combine flags:
-    python -m ddd_python.ddd_utils.restore_platform --targets dagster --timestamp 20260513_020000 --yes
+    python -m ddd_python.ddd_utils.restore_platform \
+        --targets dagster --timestamp 20260513_020000 --yes
 
 Environment variables:
     DAGSTER_BACKUP_DIR        Override for /data_backup/dagster

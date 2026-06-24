@@ -2,25 +2,31 @@
 dlt Pipeline Execution Functions for Microsoft Fabric OneLake.
 
 This module provides a unified execution layer for dlt (data load tool) pipelines
-that extract data from various sources and land it in Microsoft Fabric OneLake.
+that extract data from various sources and land it in Microsoft Fabric OneLake or
+local filesystem.
 
 Three pipeline types are supported:
 
 * **api_to_file** — Fetches paginated JSON from an OData / REST API, streaming
-  individual records through dlt page by page, and writes them as NDJSON to
-  OneLake.  dlt handles batching, schema inference, and pipeline state.
+  individual records through dlt page by page, and writes them as NDJSON.
+  dlt handles batching, schema inference, and pipeline state.
 * **sql_to_file** — Executes a SQL query via SQLAlchemy, streams individual rows
   through dlt in configurable chunks, and writes the result as a single Parquet
-  file to OneLake.
+  or NDJSON file.
 * **file_to_file** — Reads an arbitrary local file and uploads the raw bytes
-  as-is to OneLake.  dlt is not used here; it adds no value for a plain copy.
+  as-is to storage.  dlt is not used here; it adds no value for a plain copy.
 
-Every pipeline run — successful or failed — is logged as an NDJSON record in
-OneLake via :func:`write_log_to_onelake`.
+Every pipeline run — successful or failed — is logged as an NDJSON record via
+:func:`write_log_to_onelake`.
+
+Storage destination
+-------------------
+Output is written to either local filesystem or Fabric OneLake, controlled by
+the ``STORAGE_TARGET`` environment variable (``local`` or ``onelake``).
 
 Authentication
 --------------
-All OneLake I/O is authenticated via an Azure AD service principal using
+OneLake I/O is authenticated via an Azure AD service principal using
 ``azure-identity`` ``ClientSecretCredential``.  The three required values are
 read from environment variables (typically a ``.env`` file) by
 ``ddd_python.ddd_utils.get_variables_from_env``:
@@ -52,6 +58,7 @@ Typical usage::
     )
 """
 
+import concurrent.futures
 import io
 import json
 import logging
@@ -60,9 +67,10 @@ import re
 import time
 import traceback
 import warnings
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import requests
 from dlt.destinations import filesystem as dlt_filesystem
@@ -75,9 +83,13 @@ logger = logging.getLogger(__name__)
 from ddd_python.ddd_utils import get_variables_from_env
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
-# Ensure the dlt state directory exists — critical when running in Docker with a
-# freshly-mounted volume where the path does not yet exist in the container FS.
-os.makedirs(get_variables_from_env.DLT_PIPELINES_DIR, exist_ok=True)
+
+class PipelineTask(TypedDict):
+    name: str
+    source_system_code: str
+    pipeline_type: Literal["api_to_file", "sql_to_file", "file_to_file"]
+    kwargs: dict[str, Any]
+
 
 # Disable gzip compression so the filesystem destination writes plain JSONL files,
 # not .jsonl.gz — downstream dbt models glob for *.json / *.jsonl.
@@ -86,6 +98,10 @@ os.environ.setdefault("NORMALIZE__DATA_WRITER__DISABLE_COMPRESSION", "true")
 # Prevent dlt from normalizing the dataset_name (which we use as a directory path
 # containing dots and slashes, e.g. "<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD").
 os.environ.setdefault("DESTINATION__FILESYSTEM__ENABLE_DATASET_NAME_NORMALIZATION", "false")
+
+# Maximum concurrent pipeline tasks in ThreadPoolExecutor (extraction pool).
+# Mirror of _MAX_CONCURRENT_PROCESSES in jobs.py — keep them in sync.
+_MAX_PIPELINE_WORKERS = 4
 
 # Keys whose values are redacted in run logs to prevent credential leakage.
 _SENSITIVE_KEYS = frozenset({"connection_string", "secret", "password", "token"})
@@ -143,8 +159,8 @@ def _upload_to_onelake(data: bytes | str, directory_path: str, file_name: str) -
 
 def _upload_to_local(data: bytes | str, directory_path: str, file_name: str) -> None:
     """Write data to a local file, overwriting any existing content."""
-    os.makedirs(directory_path, exist_ok=True)
-    file_path = os.path.join(directory_path, file_name)
+    Path(directory_path).mkdir(parents=True, exist_ok=True)
+    file_path = Path(directory_path) / file_name
     mode = "wb" if isinstance(data, bytes) else "w"
     with open(file_path, mode) as f:
         f.write(data)
@@ -263,8 +279,8 @@ def write_log_to_onelake(
     *destination_directory_path*.  Otherwise it is appended to OneLake.
     """
     if get_variables_from_env.STORAGE_TARGET == "local":
-        os.makedirs(destination_directory_path, exist_ok=True)
-        file_path = os.path.join(destination_directory_path, destination_file_name)
+        Path(destination_directory_path).mkdir(parents=True, exist_ok=True)
+        file_path = Path(destination_directory_path) / destination_file_name
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(data)
         return
@@ -300,34 +316,21 @@ def run_api_to_file_pipeline(
     source_api_date_to_load_from: str,
     destination_directory_path: str,
     destination_file_name: str,
-    source_api_incremental_field: str | None = None,
-    full_refresh: bool = False,
 ) -> dict[str, Any]:
     """Fetch data from a paginated OData / REST API and write it as NDJSON to OneLake.
 
     Records are yielded **individually** as dlt resource items — one dict per
     API record — rather than as a single serialised blob.  This means dlt can
     infer and track the schema, manage pipeline state, and control memory usage
-    through its normal batching mechanism (``batch_size=1_000_000_000`` in
-    :func:`_make_onelake_ndjson_destination`).
+    through its normal batching mechanism.
 
     Pagination follows ``odata.nextLink`` automatically until exhausted.  The
     destination writes all records as a single NDJSON file in one call.
 
-    **Incremental mode** (``source_api_incremental_field`` is set):
-
-    dlt manages the date cursor via :class:`dlt.sources.incremental`.  On the
-    first run — or after ``full_refresh=True`` — the lower-bound date is
-    *source_api_date_to_load_from*.  On subsequent runs dlt automatically
-    advances the cursor to the maximum value of *source_api_incremental_field*
-    seen across all yielded records, so only new or updated records are fetched.
-    The date filter is appended to *source_api_filter* automatically; do
-    **not** embed it manually in *source_api_filter* when using this mode.
-
-    **Full-extract mode** (``source_api_incremental_field`` is ``None``):
-
-    *source_api_filter* is used as-is (the caller is responsible for any date
-    filter).  Every run fetches all matching records.  *full_refresh* is ignored.
+    Date filtering is always handled by the caller via *source_api_filter*
+    (e.g. ``"$filter=opdateringsdato ge DateTime'2024-01-01'&$orderby=id"``).
+    Silver CDC handles deduplication — dlt cursor state is not used for
+    incremental logic.
 
     Args:
         pipeline_name: Unique dlt pipeline identifier used for state tracking
@@ -337,23 +340,15 @@ def run_api_to_file_pipeline(
             (e.g. ``"https://oda.ft.dk/api"``).
         source_api_resource: OData entity set or path segment
             (e.g. ``"Afstemning"``).
-        source_api_filter: Base OData query-string options appended after ``?``
-            (e.g. ``"$inlinecount=allpages"``).  In incremental mode the date
-            filter is appended automatically — do **not** include it here.
-        source_api_date_to_load_from: ISO-8601 date string (``YYYY-MM-DD``)
-            used as the initial incremental lower-bound and as the reload
-            start when ``full_refresh=True``.
+        source_api_filter: OData query-string options appended after ``?``
+            (e.g. ``"$filter=opdateringsdato ge DateTime'2024-01-01'&$orderby=id"``).
+            The caller is responsible for embedding any date filter.
+        source_api_date_to_load_from: ISO-8601 date string (``YYYY-MM-DD``).
+            Recorded in the run log; not used to modify the request URL.
         destination_directory_path: OneLake directory for the output file
             (e.g. ``"<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
         destination_file_name: Output file name including extension
             (e.g. ``"afstemning_20240101_120000.json"``).
-        source_api_incremental_field: OData field name to use as the
-            incremental cursor (e.g. ``"opdateringsdato"``).  When ``None``
-            the function runs in full-extract mode.
-        full_refresh: When ``True`` and *source_api_incremental_field* is set,
-            the stored dlt cursor state is dropped before running so the load
-            starts fresh from *source_api_date_to_load_from*.  Has no effect
-            in full-extract mode.
 
     Returns:
         A dictionary with:
@@ -369,7 +364,7 @@ def run_api_to_file_pipeline(
     num_rows = 0
     session = requests.Session()  # reuse TCP connection across pages
 
-    def _iter_odata_pages(initial_url: str) -> Any:
+    def _iter_odata_pages(initial_url: str) -> Iterator[dict[str, Any]]:
         """Yield individual records from a paginated OData endpoint.
 
         Follows ``odata.nextLink`` until exhausted.  Each call to this
@@ -397,34 +392,9 @@ def run_api_to_file_pipeline(
                 }
             api_url = body.get("odata.nextLink")  # follow OData pagination
 
-    # Two @dlt.resource definitions are necessary here: the incremental variant
-    # carries a dlt.sources.incremental cursor parameter that dlt detects at
-    # decoration time to manage state.  The full-extract variant is a plain
-    # function with no cursor.  The page-fetching logic is shared via
-    # _iter_odata_pages above.
-    if source_api_incremental_field:
-        _incr_field: str = source_api_incremental_field
-
-        @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
-        def get_api_data(
-            api_url_base: str,
-            updated_at: dlt.sources.incremental[str] = dlt.sources.incremental(
-                _incr_field,
-                initial_value=source_api_date_to_load_from,
-            ),
-        ):
-            # Truncate to YYYY-MM-DD for the OData DateTime'...' literal syntax
-            last_date = str(updated_at.last_value)[:10]
-            date_filter = f"$filter={source_api_incremental_field} ge DateTime'{last_date}'"
-            combined_filter = (
-                f"{source_api_filter}&{date_filter}" if source_api_filter else date_filter
-            )
-            yield from _iter_odata_pages(f"{api_url_base}?{combined_filter}")
-    else:
-
-        @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
-        def get_api_data(api_url: str):  # type: ignore[no-redef]
-            yield from _iter_odata_pages(api_url)
+    @dlt.resource(name=pipeline_name, write_disposition="append", max_table_nesting=0)
+    def get_api_data(api_url: str) -> Any:
+        yield from _iter_odata_pages(api_url)
 
     destination, dataset_name = _make_destination(
         destination_directory_path,
@@ -440,16 +410,9 @@ def run_api_to_file_pipeline(
         restore_from_destination=True,
     )
 
-    if full_refresh and source_api_incremental_field:
-        pipeline.drop()  # wipes stored cursor so next run starts from source_api_date_to_load_from
-
     try:
-        if source_api_incremental_field:
-            url_base = f"{source_api_base_url}/{source_api_resource}"
-            pipeline.run(get_api_data(url_base), loader_file_format="jsonl")
-        else:
-            api_url = f"{source_api_base_url}/{source_api_resource}?{source_api_filter}"
-            pipeline.run(get_api_data(api_url), loader_file_format="jsonl")
+        api_url = f"{source_api_base_url}/{source_api_resource}?{source_api_filter}"
+        pipeline.run(get_api_data(api_url), loader_file_format="jsonl")
     finally:
         session.close()
 
@@ -467,17 +430,14 @@ def run_sql_to_file_pipeline(
     destination_directory_path: str,
     destination_file_name: str,
     chunk_size: int = 100_000,
-    parquet_compression: str = "snappy",
     loader_file_format: str = "parquet",
     sql_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Execute a SQL query and write the result as a Parquet file to OneLake.
+    """Execute a SQL query and write the result as a Parquet or NDJSON file to OneLake.
 
     Rows are yielded **individually** from the SQL cursor in chunks of
     *chunk_size* — one dict per row — so dlt can infer the schema and control
-    memory usage.  The destination (:func:`_make_onelake_parquet_destination`)
-    collects all rows via a large ``batch_size`` and writes a single Parquet
-    file, preserving the original column names and types as inferred by PyArrow.
+    memory usage.
 
     Args:
         pipeline_name: Unique dlt pipeline identifier.
@@ -493,9 +453,6 @@ def run_sql_to_file_pipeline(
         chunk_size: Rows fetched per database round-trip.  Defaults to
             ``100_000``.  Controls memory pressure on the database cursor side;
             the destination still receives all rows in one batch.
-        parquet_compression: Parquet codec.  Accepted values: ``"snappy"``
-            (default), ``"gzip"``, ``"brotli"``, ``"zstd"``, ``"none"``.
-            Only applies when *loader_file_format* is ``"parquet"``.
         loader_file_format: Output file format.  ``"parquet"`` (default)
             or ``"jsonl"``.  When ``"jsonl"`` the output is NDJSON, compatible
             with the Bronze layer's ``read_json_auto()`` views.
@@ -521,7 +478,7 @@ def run_sql_to_file_pipeline(
     _bound_params: dict[str, Any] = sql_params or {}
 
     @dlt.resource(name=pipeline_name, write_disposition="append")
-    def get_sql_data(connection_string: str, sql_query: str):
+    def get_sql_data(connection_string: str, sql_query: str) -> Iterator[dict[str, Any]]:
         nonlocal num_rows
         engine = create_engine(
             connection_string,
@@ -639,12 +596,27 @@ def build_log_dir(source_system_code: str, pipeline_name: str | None = None) -> 
     return f"{base}/{pipeline_name}" if pipeline_name else base
 
 
+def _ensure_pipelines_dir() -> None:
+    Path(get_variables_from_env.DLT_PIPELINES_DIR).mkdir(parents=True, exist_ok=True)
+
+
+_PIPELINE_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "api_to_file": run_api_to_file_pipeline,
+    "sql_to_file": run_sql_to_file_pipeline,
+    "file_to_file": run_file_to_file_pipeline,
+}
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
 
-def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
+def execute_pipeline(
+    pipeline_type: Literal["api_to_file", "sql_to_file", "file_to_file"],
+    source_system_code: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Execute a named pipeline type and write a structured log entry to OneLake.
 
     This is the primary entry point for all pipeline runs.  It dispatches to the
@@ -658,12 +630,14 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
             * ``"sql_to_file"`` — calls :func:`run_sql_to_file_pipeline`
             * ``"file_to_file"`` — calls :func:`run_file_to_file_pipeline`
 
+        source_system_code: Short source-system identifier used to build the
+            log path ``<log_root>/<source_system_code>/<pipeline_name>/``
+            (e.g. ``"DDD"``, ``"RFAM"``).
+
         **kwargs: Keyword arguments forwarded to the selected handler.
 
-            Keys required by **all** pipeline types:
+            Required for **all** pipeline types:
 
-            * ``source_system_code`` (*str*) — used to build the log path
-              ``<log_root>/<source_system_code>/<pipeline_name>/``.
             * ``pipeline_name`` (*str*) — unique pipeline identifier.
 
             Additional keys by pipeline type:
@@ -671,15 +645,13 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
             **api_to_file**:
             ``source_api_base_url``, ``source_api_resource``,
             ``source_api_filter``, ``source_api_date_to_load_from``,
-            ``destination_directory_path``, ``destination_file_name``;
-            optional: ``source_api_incremental_field`` (default ``None`` —
-            full-extract mode), ``full_refresh`` (default ``False``)
+            ``destination_directory_path``, ``destination_file_name``
 
             **sql_to_file**:
             ``source_connection_string``, ``source_sql_query``,
             ``destination_directory_path``, ``destination_file_name``;
             optional: ``chunk_size`` (default ``100_000``),
-            ``parquet_compression`` (default ``"snappy"``)
+            ``loader_file_format`` (default ``"parquet"``)
 
             **file_to_file**:
             ``source_file_path``,
@@ -694,47 +666,20 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
         Exception: Re-raises any exception thrown by the handler after the log
             entry has been written.
     """
+    _ensure_pipelines_dir()
     start_timestamp = time.time()
-    log_dir = build_log_dir(kwargs["source_system_code"], kwargs["pipeline_name"])
-    log_file = f"{kwargs['pipeline_name']}_log.ndjson"
+    pipeline_name: str = kwargs["pipeline_name"]
+    log_dir = build_log_dir(source_system_code, pipeline_name)
+    log_file = f"{pipeline_name}_log.ndjson"
 
     result = {"status": "failure"}
     level, message, error = "ERROR", "Pipeline execution failed", None
 
     try:
-        if pipeline_type == "api_to_file":
-            result = run_api_to_file_pipeline(
-                pipeline_name=kwargs["pipeline_name"],
-                source_api_base_url=kwargs["source_api_base_url"],
-                source_api_resource=kwargs["source_api_resource"],
-                source_api_filter=kwargs.get("source_api_filter", ""),
-                source_api_date_to_load_from=kwargs["source_api_date_to_load_from"],
-                destination_directory_path=kwargs["destination_directory_path"],
-                destination_file_name=kwargs["destination_file_name"],
-                source_api_incremental_field=kwargs.get("source_api_incremental_field"),
-                full_refresh=kwargs.get("full_refresh", False),
-            )
-        elif pipeline_type == "sql_to_file":
-            result = run_sql_to_file_pipeline(
-                pipeline_name=kwargs["pipeline_name"],
-                source_connection_string=kwargs["source_connection_string"],
-                source_sql_query=kwargs["source_sql_query"],
-                destination_directory_path=kwargs["destination_directory_path"],
-                destination_file_name=kwargs["destination_file_name"],
-                chunk_size=kwargs.get("chunk_size", 100_000),
-                parquet_compression=kwargs.get("parquet_compression", "snappy"),
-                loader_file_format=kwargs.get("loader_file_format", "parquet"),
-                sql_params=kwargs.get("sql_params"),
-            )
-        elif pipeline_type == "file_to_file":
-            result = run_file_to_file_pipeline(
-                pipeline_name=kwargs["pipeline_name"],
-                source_file_path=kwargs["source_file_path"],
-                destination_directory_path=kwargs["destination_directory_path"],
-                destination_file_name=kwargs["destination_file_name"],
-            )
-        else:
+        handler = _PIPELINE_HANDLERS.get(pipeline_type)
+        if handler is None:
             raise ValueError(f"Unsupported pipeline type: {pipeline_type}")
+        result = handler(**kwargs)
 
         level, message = "INFO", "Pipeline execution completed successfully"
         return result
@@ -745,6 +690,7 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
 
     finally:
         end_timestamp = time.time()
+        log_params = {"source_system_code": source_system_code, **kwargs}
         try:
             write_log_to_onelake(
                 json.dumps(
@@ -755,7 +701,7 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
                         "start_time": datetime.fromtimestamp(start_timestamp, tz=UTC).isoformat(),
                         "end_time": datetime.fromtimestamp(end_timestamp, tz=UTC).isoformat(),
                         "duration_seconds": round(end_timestamp - start_timestamp, 3),
-                        "parameters": _scrub_secrets(kwargs),
+                        "parameters": _scrub_secrets(log_params),
                         "result": result,
                         "error": error,
                     },
@@ -772,3 +718,136 @@ def execute_pipeline(pipeline_type: str, **kwargs: Any) -> dict[str, Any]:
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+
+# ---------------------------------------------------------------------------
+# Shared orchestration helper
+# ---------------------------------------------------------------------------
+
+
+def build_rfam_sql(
+    query_template: str,
+    is_incremental: bool,
+    date_to_load_from: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Format an Rfam SQL query template and return the query + bound parameters.
+
+    Args:
+        query_template: SQL template with a ``{where_clause}`` placeholder.
+        is_incremental: When ``True``, injects a ``WHERE updated >= :updated_from``
+            clause and binds ``date_to_load_from`` as a named parameter.
+        date_to_load_from: Required when *is_incremental* is ``True``; the lower-
+            bound date for the ``updated`` column filter (``YYYY-MM-DD``).
+
+    Returns:
+        ``(sql_query, sql_params)`` where *sql_params* is a dict suitable for
+        SQLAlchemy parameterised execution (empty for full-extract tables).
+    """
+    if is_incremental:
+        return (
+            query_template.format(where_clause=" WHERE updated >= :updated_from"),
+            {"updated_from": date_to_load_from},
+        )
+    return query_template.format(where_clause=""), {}
+
+
+def run_extraction_pool(
+    tasks: list[PipelineTask],
+    script_name: str,
+    source_system_code: str,
+    date_to_load_from: str,
+    start_time: datetime,
+    resource_label: str = "resource",
+    max_workers: int = _MAX_PIPELINE_WORKERS,
+) -> None:
+    """Run a set of pipeline tasks concurrently and write a script-level summary log.
+
+    Each item in *tasks* must be a ``PipelineTask`` with:
+      - ``"name"`` (str): human-readable resource/table name for logging.
+      - ``"source_system_code"`` (str): source system identifier forwarded to
+        :func:`execute_pipeline` as an explicit argument.
+      - ``"pipeline_type"`` (str): one of ``"api_to_file"``, ``"sql_to_file"``,
+        ``"file_to_file"``.
+      - ``"kwargs"`` (dict): remaining keyword arguments forwarded to
+        :func:`execute_pipeline`.
+
+    Raises:
+        RuntimeError: If one or more pipeline tasks fail.
+    """
+    pipeline_results: list[dict] = []
+    failed: list[str] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_name: dict[concurrent.futures.Future, str] = {}
+        for task in tasks:
+            task_source_system_code: str = task["source_system_code"]
+            task_pipeline_type: Literal["api_to_file", "sql_to_file", "file_to_file"] = task[
+                "pipeline_type"
+            ]
+            future = executor.submit(
+                execute_pipeline,
+                task_pipeline_type,
+                task_source_system_code,
+                **task["kwargs"],
+            )
+            future_to_name[future] = task["name"]
+
+        for future in concurrent.futures.as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                result = future.result()
+                pipeline_results.append(
+                    {
+                        resource_label: name,
+                        "status": "success",
+                        "records_written": result.get("records_written"),
+                    }
+                )
+            except Exception as exc:
+                pipeline_results.append(
+                    {
+                        resource_label: name,
+                        "status": "failure",
+                        "error": traceback.format_exc(),
+                    }
+                )
+                failed.append(name)
+                logger.error("Pipeline failed for %s %s: %s", resource_label, name, exc)
+
+    end_time = datetime.now(UTC)
+    duration_seconds = (end_time - start_time).total_seconds()
+    overall_status = "failure" if failed else "success"
+
+    log_record = (
+        json.dumps(
+            {
+                "script_name": script_name,
+                "source_system_code": source_system_code,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "duration_seconds": round(duration_seconds, 3),
+                "date_to_load_from": date_to_load_from,
+                "status": overall_status,
+                "pipelines_total": len(pipeline_results),
+                "pipelines_succeeded": sum(1 for p in pipeline_results if p["status"] == "success"),
+                "pipelines_failed": len(failed),
+                "pipelines": sorted(pipeline_results, key=lambda p: p.get(resource_label, "")),
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+    log_dir = build_log_dir(source_system_code)
+    log_file = f"{script_name}_log.ndjson"
+    try:
+        write_log_to_onelake(log_record, log_dir, log_file)
+    except Exception as log_exc:
+        warnings.warn(
+            f"Failed to write script-level run log: {log_exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    if failed:
+        raise RuntimeError(f"The following pipelines failed: {', '.join(failed)}")

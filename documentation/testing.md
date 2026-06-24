@@ -6,15 +6,16 @@ deliberately left out of scope**.
 
 The project has two complementary layers of automated tests:
 
-| Layer | Tool | Count | Scope |
-| --- | --- | --- | --- |
-| **Python tests** | `pytest` | 132 tests across 15 modules | The Python codebase + the SQL *logic* of the dbt models, run against an ephemeral DuckDB |
-| **Data-quality tests** | `dbt test` | ~263 tests (262 generic + 1 custom) | The *materialised data* in DuckDB after a pipeline run |
+| Layer | Tool | Scope |
+| --- | --- | --- |
+| **Python tests** | `pytest` | The Python codebase + the SQL *logic* of the dbt models, run against an ephemeral DuckDB |
+| **Data-quality tests** | `dbt test` | The *materialised data* in DuckDB after a pipeline run |
 
 The two layers answer different questions. The pytest layer answers *"is the
 code and the transformation logic correct?"* and runs with no external
 dependencies. The dbt layer answers *"is the data that landed in the warehouse
-valid?"* and runs against a populated database.
+valid?"* and runs against a populated database. Together, they provide
+comprehensive coverage of both code and data quality.
 
 ---
 
@@ -76,27 +77,28 @@ A typical Silver-CDC test:
 
 #### Unit tests (pure Python, no DuckDB)
 
-| Module | Tests | What / How / Why |
-| --- | --- | --- |
-| `test_configuration_variables.py` | 15 | **What:** the single-source-of-truth config lists. **How:** asserts counts (18 DDD entities, 6 incremental, 7 Rfam tables), subset relationships, parallel Bronze↔Silver derivation, primary-key coverage, and the absence of duplicates. **Why:** adding an entity touches several lists; this catches a half-finished edit immediately. |
-| `test_generate_dbt_models.py` | 17 | **What:** the dbt model-generator (`generate_dbt_models.py`). **How:** generates SQL into a temp dir and asserts the right macro is called per model — crucially that **incremental vs full-extraction selection is derived from config**, not hardcoded. **Why:** a wrong macro choice would silently corrupt CDC for an entity. |
-| `test_string_utils.py` | 20 | **What:** `normalize_danish_name` (ø→oe, æ→ae, å→aa, lowercasing) and `resolve_date_to_load_from` (incremental load-date validation/derivation). **How:** parametrised input→output assertions plus error cases. **Why:** these functions map API names to filesystem/schema identifiers everywhere — a regression would misroute every entity. |
-| `test_path_utils.py` | 12 | **What:** `build_bronze_destination_path` and `build_delta_export_path`. **How:** patches env vars + the Fabric token, then asserts local vs OneLake path construction and `storage_options`. **Why:** the local/OneLake switch is the project's central abstraction; both branches must produce correct paths. |
-| `test_require_env.py` | 3 | **What:** the `_require` lazy env-var helper. **How:** sets/unsets env vars via `monkeypatch` and asserts a clear `EnvironmentError` on missing/empty values. **Why:** confirms importing modules for codegen/testing does not fail when credentials are absent (the `__getattr__` lazy-loading pattern). |
-| `test_scrub_secrets.py` | 8 | **What:** `_scrub_secrets`, which redacts secrets before logging dlt run params. **How:** asserts case-insensitive redaction of `secret`/`password`/`token`/`connection_string` keys while preserving non-sensitive values. **Why:** prevents credentials leaking into logs/traces. |
-| `test_serialize_trace.py` | 4 | **What:** `_serialize_trace`, which turns a dlt trace object into a JSON-safe dict. **How:** feeds `None` and mocked trace objects and checks the serialised shape (timestamps, steps, failed jobs). **Why:** trace logging must never crash the pipeline. |
-| `test_json_default.py` | 5 | **What:** the custom JSON `default` serializer. **How:** round-trips `datetime`/`date`/`time` and other edge-case types. **Why:** extraction writes NDJSON; non-serialisable types would abort a run. |
+| Module | What / How / Why |
+| --- | --- |
+| `test_configuration_variables.py` | **What:** the single-source-of-truth config lists. **How:** asserts subset relationships, parallel Bronze↔Silver derivation, primary-key coverage, and the absence of duplicates. **Why:** adding an entity touches several lists; this catches a half-finished edit immediately. |
+| `test_generate_dbt_models.py` | **What:** the dbt model-generator (`generate_dbt_models.py`). **How:** generates SQL into a temp dir and asserts the right macro is called per model — crucially that **incremental vs full-extraction selection is derived from config**, not hardcoded. **Why:** a wrong macro choice would silently corrupt CDC for an entity. |
+| `test_string_utils.py` | **What:** `normalize_danish_name` (ø→oe, æ→ae, å→aa, lowercasing) and `resolve_date_to_load_from` (incremental load-date validation/derivation). **How:** parametrised input→output assertions plus error cases. **Why:** these functions map API names to filesystem/schema identifiers everywhere — a regression would misroute every entity. |
+| `test_path_utils.py` | **What:** `build_bronze_destination_path` and `build_delta_export_path`. **How:** patches env vars + the Fabric token, then asserts local vs OneLake path construction and `storage_options`. **Why:** the local/OneLake switch is the project's central abstraction; both branches must produce correct paths. |
+| `test_require_env.py` | **What:** the `_require` lazy env-var helper. **How:** sets/unsets env vars via `monkeypatch` and asserts a clear `EnvironmentError` on missing/empty values. **Why:** confirms importing modules for codegen/testing does not fail when credentials are absent (the `__getattr__` lazy-loading pattern). |
+| `test_scrub_secrets.py` | **What:** `_scrub_secrets`, which redacts secrets before logging dlt run params. **How:** asserts case-insensitive redaction of `secret`/`password`/`token`/`connection_string` keys while preserving non-sensitive values. **Why:** prevents credentials leaking into logs/traces. |
+| `test_serialize_trace.py` | **What:** `_serialize_trace`, which turns a dlt trace object into a JSON-safe dict. **How:** feeds `None` and mocked trace objects and checks the serialised shape (timestamps, steps, failed jobs). **Why:** trace logging must never crash the pipeline. |
+| `test_json_default.py` | **What:** the custom JSON `default` serializer. **How:** round-trips `datetime`/`date`/`time` and other edge-case types. **Why:** extraction writes NDJSON; non-serialisable types would abort a run. |
 
 #### Integration tests (real in-memory DuckDB)
 
-| Module | Tests | What / How / Why |
-| --- | --- | --- |
-| `test_integration_bronze.py` | 5 | **What:** the Bronze view pattern. **How:** writes two dated JSON files, then runs `read_json_auto(..., filename=True)` to verify it reads all rows from all files, extracts `LKHS_filename` from the path, selects only the newest file in the `_latest` variant, and excludes `_dlt_*` and raw `filename` columns. **Why:** Bronze is the foundation; wrong file/column handling poisons every downstream layer. |
-| `test_integration_silver_cdc.py` | 11 | **What:** the hash-based CDC / SCD Type 2 engine. **How:** a 3-file lifecycle fixture drives assertions on Insert/Update/Delete detection, `LKHS_date_valid_from` derived from the filename timestamp, the NOT-EXISTS guard against re-inserting unchanged rows, and the `_cv` current-version view (one row per PK, latest version, delete handling). **Why:** this is the most intricate logic in the project and the easiest to break subtly. |
-| `test_integration_gold.py` | 11 | **What:** the Gold star-schema transformations. **How:** pre-populates Silver-like tables, then verifies surrogate-key generation (`cast_hash_to_bigint` — deterministic, unsigned→signed `BIGINT`), business keys (`source_system_code + '-' + id`), SCD2 `date_valid_to` via `LEAD`, version numbering via `ROW_NUMBER`, fact→dimension joins, the unknown/default row (`id = 0`), and filtering of deleted rows in facts. **Why:** Gold is what BI tools and Power BI consume; surrogate-key or join bugs surface as wrong dashboards. |
-| `test_integration_e2e_pipeline.py` | 4 | **What:** the full Bronze→Silver→Delta Lake path end-to-end. **How:** writes JSON fixtures, runs the Bronze read + Silver CDC, materialises a Silver table, exports it to a **real local Delta Lake table** via `write_deltalake`, reads it back, and verifies row counts/PKs/CDC ops — then runs a **second incremental export** and asserts no duplicates. **Why:** proves the layers compose correctly and that incremental Delta appends are idempotent. |
-| `test_export_silver.py` | 7 | **What:** the Silver→Delta incremental export. **How:** in-memory DuckDB Silver table + patched `DeltaTable`/`write_deltalake`/Fabric token/env vars; asserts that only genuinely new rows are appended (LEFT JOIN on PK + `LKHS_date_valid_from`), first-load overwrite behaviour, and that DDD vs Rfam primary keys are honoured. **Why:** an incorrect append predicate would either duplicate history or drop rows. |
-| `test_export_gold.py` | 3 | **What:** the Gold→Delta full-overwrite export. **How:** patched `write_deltalake`; asserts `mode='overwrite'`, the returned row count, and the `abfss://.../Gold/<table>/` target path. **Why:** Gold is rebuilt every run; it must overwrite, not append. |
+| Module | What / How / Why |
+| --- | --- |
+| `test_integration_bronze.py` | **What:** the Bronze view pattern. **How:** writes two dated JSON files, then runs `read_json_auto(..., filename=True)` to verify it reads all rows from all files, extracts `LKHS_filename` from the path, selects only the newest file in the `_latest` variant, and excludes `_dlt_*` and raw `filename` columns. **Why:** Bronze is the foundation; wrong file/column handling poisons every downstream layer. |
+| `test_integration_silver_cdc.py` | **What:** the hash-based CDC / SCD Type 2 engine. **How:** a 3-file lifecycle fixture drives assertions on Insert/Update/Delete detection, `LKHS_date_valid_from` derived from the filename timestamp, the NOT-EXISTS guard against re-inserting unchanged rows, and the `_cv` current-version view (one row per PK, latest version, delete handling). Includes tests covering the `--full-refresh` delete path: the `_current_temp → bronze_latest` anti-join, carried-forward prior 'D' rows, and idempotency. **Why:** this is the most intricate logic in the project and the easiest to break subtly. |
+| `test_integration_gold.py` | **What:** the Gold star-schema transformations. **How:** pre-populates Silver-like tables, then verifies surrogate-key generation (`cast_hash_to_bigint` — deterministic, unsigned→signed `BIGINT`), business keys (`source_system_code + '-' + id`), SCD2 `date_valid_to` via `LEAD`, version numbering via `ROW_NUMBER`, fact→dimension joins, the unknown/default row (`id = 0`), and filtering of deleted rows in facts. **Why:** Gold is what BI tools and Power BI consume; surrogate-key or join bugs surface as wrong dashboards. |
+| `test_integration_e2e_pipeline.py` | **What:** the full Bronze→Silver→Delta Lake path end-to-end. **How:** writes JSON fixtures, runs the Bronze read + Silver CDC, materialises a Silver table, exports it to a **real local Delta Lake table** via `write_deltalake`, reads it back, and verifies row counts/PKs/CDC ops — then runs a **second incremental export** and asserts no duplicates. **Why:** proves the layers compose correctly and that incremental Delta appends are idempotent. |
+| `test_export_silver.py` | **What:** the Silver→Delta incremental export. **How:** in-memory DuckDB Silver table + patched `DeltaTable`/`write_deltalake`/Fabric token/env vars; asserts that only genuinely new rows are appended (LEFT JOIN on PK + `LKHS_date_valid_from`), first-load overwrite behaviour, and that DDD vs Rfam primary keys are honoured. **Why:** an incorrect append predicate would either duplicate history or drop rows. |
+| `test_export_gold.py` | **What:** the Gold→Delta full-overwrite export. **How:** patched `write_deltalake`; asserts `mode='overwrite'`, the returned row count, and the `abfss://.../Gold/<table>/` target path. **Why:** Gold is rebuilt every run; it must overwrite, not append. |
+| `test_dagster_asset_graph.py` | **What:** the Dagster asset graph structure. **How:** loads the Definitions object with minimal env vars; asserts extraction assets, dbt Bronze/Silver/Gold assets, export assets, schedules, sensors, and key jobs are registered. **Why:** catching silent graph regressions during refactoring. Tests skip gracefully when `dbt/target/manifest.json` is absent. |
 
 ### 1.4 Shared fixtures
 
@@ -176,7 +178,7 @@ No cloud credentials are required.
 ```bash
 pip install -e ".[dev]"     # installs pytest
 
-pytest tests/                                  # all 132 tests
+pytest tests/                                  # run all tests
 pytest tests/ -v                               # verbose
 pytest tests/test_integration_silver_cdc.py    # one module
 pytest -k "incremental"                        # keyword filter
@@ -201,4 +203,3 @@ manual pre-deploy step:
 A green `pytest` run proves the code and transformation logic are sound; a green
 `dbt test` run proves the data that landed in the warehouse is valid. Both
 together are the project's definition of "safe to ship."
-```

@@ -1,21 +1,11 @@
-"""Export Silver-layer tables from DuckDB to Fabric OneLake as Delta Lake tables.
+"""Export Silver-layer tables from DuckDB to Fabric OneLake as Delta Lake.
 
-For each Silver table, new rows are determined by anti-joining the DuckDB
-Silver table against the **existing** Delta table — read in-place with DuckDB's
-``delta_scan`` (delta extension), so the target is never materialised into
-Python/PyArrow memory.  Only the delta is appended.  On first load (no existing
-Delta table) the full table is written with ``mode="overwrite"``.
+Incremental append: reads the target Delta table via DuckDB's ``delta_scan``
+(no Python materialization) and anti-joins to find new rows. Dedup read stays
+in DuckDB; PyArrow write via ``deltalake`` (DuckDB's delta extension is
+read-only). First load overwrites; subsequent runs append.
 
-Note on the read/write split: DuckDB's delta extension is **read-only**
-(``delta_scan`` reads; there is no ``COPY ... (FORMAT delta)``), so the existence
-check stays on ``deltalake.DeltaTable.is_deltatable`` and the actual write stays
-on ``deltalake.write_deltalake``.  The expensive part that moved into DuckDB is
-the dedup read.
-
-Usage::
-
-    python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
-    python -m ddd_python.ddd_dlt.export_main_silver_to_fabric_silver --tables silver_ddd_aktoer silver_ddd_moede
+See CLAUDE.md Silver Storage Format for context on storage mode switching.
 """
 
 import argparse
@@ -50,7 +40,8 @@ def _silver_source_database() -> str:
     if silver_storage_is_ducklake():
         return "ducklake_catalog"
     db = get_variables_from_env.DUCKDB_DATABASE
-    assert db is not None, "DUCKDB_DATABASE must be set"
+    if db is None:
+        raise OSError("DUCKDB_DATABASE must be set")
     return db
 
 
@@ -69,7 +60,8 @@ def _prepare_delta_read(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute("INSTALL delta; LOAD delta;")
     if get_variables_from_env.STORAGE_TARGET == "onelake":
         db_loc = get_variables_from_env.DUCKDB_DATABASE_LOCATION
-        assert db_loc is not None, "DUCKDB_DATABASE_LOCATION must be set"
+        if db_loc is None:
+            raise OSError("DUCKDB_DATABASE_LOCATION must be set")
         secret_dir = os.path.dirname(db_loc)
         connection.execute(f"SET secret_directory='{secret_dir}';")
         connection.execute("INSTALL azure; LOAD azure;")
@@ -147,7 +139,7 @@ def write_tables_to_onelake_silver(
         try:
             export_single_silver_table(connection, table)
         except Exception as e:
-            logger.error("Failed to export Silver table %s: %s", table, e)
+            logger.error("Failed to export Silver table %s: %s", table, e, exc_info=True)
             failed.append(table)
 
     if failed:

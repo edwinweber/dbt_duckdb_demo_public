@@ -1,6 +1,4 @@
 import os
-import sys
-import types
 
 from dotenv import load_dotenv
 
@@ -51,56 +49,39 @@ _LAZY_REQUIRED: dict[str, str] = {
 }
 
 
-class _LazyEnv(types.ModuleType):
-    """Module wrapper that defers ``_require()`` calls until first attribute access.
+def __getattr__(name: str) -> str:
+    """PEP 562 module-level __getattr__: resolve required env vars on first access.
 
-    Optional variables (``os.getenv`` with no required assertion) are set as
-    plain instance attributes at module-load time — they never raise.  Required
-    variables listed in ``_LAZY_REQUIRED`` are resolved via ``__getattr__``
-    only when actually accessed, so importing this module for code generation
-    or testing does not fail when Azure credentials are absent.
-
-    Because required vars go through ``__getattr__`` (not ``@property``),
-    ``unittest.mock.patch`` can freely set and delete instance attributes for
-    testing without hitting property descriptor issues.
+    Called by Python only when *name* is not found in the module's __dict__,
+    so optional variables that are set as plain module globals at import time
+    are returned immediately without going through this function.
     """
+    env_var = _LAZY_REQUIRED.get(name)
+    if env_var is not None:
+        return _require(env_var)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    def __getattr__(self, name: str) -> str:
-        env_var = _LAZY_REQUIRED.get(name)
-        if env_var is not None:
-            return _require(env_var)
-        raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
-
-
-# Instantiate the lazy module and copy over the eager (optional) attributes.
-_mod = _LazyEnv(__name__)
-_mod.__file__ = __file__
-_mod.__package__ = __package__
-_mod.__path__ = []  # type: ignore[attr-defined]
-_mod.__spec__ = __spec__
-# Re-export the helper so tests can import it directly.
-_mod._require = _require  # type: ignore[attr-defined]
 
 # ── Fabric / OneLake (optional — eager) ──────────────────────────────────
-_mod.FABRIC_CAPACITY_NAME = os.getenv("FABRIC_CAPACITY_NAME")  # type: ignore[attr-defined]
-_mod.FABRIC_ONELAKE_MOUNT = os.getenv("FABRIC_ONELAKE_MOUNT")  # type: ignore[attr-defined]
+FABRIC_CAPACITY_NAME = os.getenv("FABRIC_CAPACITY_NAME")
+FABRIC_ONELAKE_MOUNT = os.getenv("FABRIC_ONELAKE_MOUNT")
 
 # ── DuckDB / dbt (optional — eager) ─────────────────────────────────────
-_mod.DUCKDB_DATABASE_LOCATION = os.getenv("DUCKDB_DATABASE_LOCATION")  # type: ignore[attr-defined]
-_mod.DUCKDB_DATABASE = os.getenv("DUCKDB_DATABASE")  # type: ignore[attr-defined]
-_mod.DBT_PROJECT_DIRECTORY = os.getenv("DBT_PROJECT_DIRECTORY")  # type: ignore[attr-defined]
-_mod.DBT_MODELS_DIRECTORY = os.getenv("DBT_MODELS_DIRECTORY")  # type: ignore[attr-defined]
-_mod.DBT_LOGS_DIRECTORY = os.getenv("DBT_LOGS_DIRECTORY")  # type: ignore[attr-defined]
-_mod.DBT_LOGS_DIRECTORY_FABRIC = os.getenv("DBT_LOGS_DIRECTORY_FABRIC")  # type: ignore[attr-defined]
+DUCKDB_DATABASE_LOCATION = os.getenv("DUCKDB_DATABASE_LOCATION")
+DUCKDB_DATABASE = os.getenv("DUCKDB_DATABASE")
+DBT_PROJECT_DIRECTORY = os.getenv("DBT_PROJECT_DIRECTORY")
+DBT_MODELS_DIRECTORY = os.getenv("DBT_MODELS_DIRECTORY")
+DBT_LOGS_DIRECTORY = os.getenv("DBT_LOGS_DIRECTORY")
+DBT_LOGS_DIRECTORY_FABRIC = os.getenv("DBT_LOGS_DIRECTORY_FABRIC")
 
 # ── dlt (optional — eager) ───────────────────────────────────────────────
-_mod.DLT_PIPELINES_DIR = os.getenv("DLT_PIPELINES_DIR", "dlt/pipelines_dir")  # type: ignore[attr-defined]
-_mod.DLT_PIPELINES_LOG_DIR = os.getenv("DLT_PIPELINES_LOG_DIR")  # type: ignore[attr-defined]
-_mod.DLT_PIPELINE_RUN_LOG_FILE = os.getenv("DLT_PIPELINE_RUN_LOG_FILE")  # type: ignore[attr-defined]
+DLT_PIPELINES_DIR = os.getenv("DLT_PIPELINES_DIR", "dlt/pipelines_dir")
+DLT_PIPELINES_LOG_DIR = os.getenv("DLT_PIPELINES_LOG_DIR")
+DLT_PIPELINE_RUN_LOG_FILE = os.getenv("DLT_PIPELINE_RUN_LOG_FILE")
 
 # ── Azure AD (optional — eager) ─────────────────────────────────────────
-_mod.AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")  # type: ignore[attr-defined]
-_mod.AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")  # type: ignore[attr-defined]
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
 
 # ── Storage target (optional — eager) ───────────────────────────────────
 # Set STORAGE_TARGET=local to write to a Docker volume instead of Fabric OneLake.
@@ -112,8 +93,8 @@ if _storage_target not in _VALID_STORAGE_TARGETS:
         f"Invalid STORAGE_TARGET={_storage_target!r}. "
         f"Must be one of: {sorted(_VALID_STORAGE_TARGETS)}"
     )
-_mod.STORAGE_TARGET = _storage_target  # type: ignore[attr-defined]
-_mod.LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "data")  # type: ignore[attr-defined]
+STORAGE_TARGET = _storage_target
+LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "data")
 
 # ── Silver storage format (optional — eager) ─────────────────────────────
 # "duckdb"   — silver tables are native DuckDB tables (default)
@@ -127,24 +108,22 @@ if _silver_storage_format not in _VALID_SILVER_STORAGE_FORMATS:
         f"Invalid SILVER_STORAGE_FORMAT={_silver_storage_format!r}. "
         f"Must be one of: {sorted(_VALID_SILVER_STORAGE_FORMATS)}"
     )
-_mod.SILVER_STORAGE_FORMAT = _silver_storage_format  # type: ignore[attr-defined]
-_mod.DUCKLAKE_CATALOG_LOCATION = os.getenv("DUCKLAKE_CATALOG_LOCATION")  # type: ignore[attr-defined]
-_mod.DUCKLAKE_DATA_PATH = os.getenv("DUCKLAKE_DATA_PATH")  # type: ignore[attr-defined]
+SILVER_STORAGE_FORMAT = _silver_storage_format
+DUCKLAKE_CATALOG_LOCATION = os.getenv("DUCKLAKE_CATALOG_LOCATION")
+DUCKLAKE_DATA_PATH = os.getenv("DUCKLAKE_DATA_PATH")
 
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
-_mod.DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")  # type: ignore[attr-defined]
-_mod.DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = _int_env("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", 31)  # type: ignore[attr-defined]
-_mod.DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")  # type: ignore[attr-defined]
-_mod.DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")  # type: ignore[attr-defined]
+DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")
+DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = _int_env("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", 31)
+DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")
+DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")
+
+# ── Danish Democracy data source (optional — eager) ──────────────────────
+DANISH_DEMOCRACY_DATA_SOURCE = os.getenv("DANISH_DEMOCRACY_DATA_SOURCE")
 
 # ── Rfam data retrieval (optional — eager) ───────────────────────────────
-_mod.RFAM_CONNECTION_STRING = os.getenv(
+RFAM_CONNECTION_STRING = os.getenv(
     "RFAM_CONNECTION_STRING", "mysql+pymysql://rfamro@mysql-rfam-public.ebi.ac.uk:4497/Rfam"
-)  # type: ignore[attr-defined]
-_mod.RFAM_DATA_SOURCE = os.getenv("RFAM_DATA_SOURCE")  # type: ignore[attr-defined]
-_mod.RFAM_DEFAULT_DAYS_TO_LOAD = _int_env("RFAM_DEFAULT_DAYS_TO_LOAD", 365)  # type: ignore[attr-defined]
-
-# Replace this module in sys.modules so that all existing
-# ``from ddd_python.ddd_utils import get_variables_from_env`` and
-# ``get_variables_from_env.SOME_VAR`` accesses go through the lazy wrapper.
-sys.modules[__name__] = _mod
+)
+RFAM_DATA_SOURCE = os.getenv("RFAM_DATA_SOURCE")
+RFAM_DEFAULT_DAYS_TO_LOAD = _int_env("RFAM_DEFAULT_DAYS_TO_LOAD", 365)
