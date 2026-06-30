@@ -8,28 +8,28 @@ readme = "README.md"
 authors = [{name = "Edwin Weber"}]
 dependencies = [
     # Extraction & loading
-    "dlt>=1.24,<2",
-    "requests>=2.33",
+    "dlt>=1.28.1,<2",
+    "requests>=2.34.2",
     "python-dotenv>=1.0",
 
     # Azure / Fabric OneLake
-    "adlfs>=2026.2",
-    "azure-identity>=1.25",
-    "azure-storage-file-datalake>=12.23",
+    "adlfs>=2026.5.0",
+    "azure-identity>=1.25.3",
+    "azure-storage-file-datalake>=12.25.0",
 
     # Transformation
     # dbt-core is capped at <1.12 — dagster-dbt 0.29.x hard limit
     "dbt-core>=1.11,<1.12",
     "dbt-duckdb>=1.10,<2",
-    "duckdb>=1.5.1,<1.6",
+    "duckdb>=1.5.4,<1.6",
 
     # Export to Delta Lake
-    "deltalake>=1.5",
-    "pyarrow>=17",
+    "deltalake>=1.6.1",
+    "pyarrow>=24.0.0",
 
     # SQL source pipeline (used by dlt_pipeline_execution_functions.py)
-    "sqlalchemy>=2.0",
-    "pymysql>=1.1",
+    "sqlalchemy>=2.0.51",
+    "pymysql>=1.2.0",
 ]
 
 [project.urls]
@@ -42,17 +42,17 @@ dagster = [
     # dagster-dbt's minor version tracks dagster's (0.29.x ↔ 1.13.x); keep the
     # ranges wide enough that pip can resolve a matching dagster-dbt for whatever
     # dagster<2 it selects.
-    "dagster>=1.12,<2",
-    "dagster-webserver>=1.12,<2",
-    "dagster-dbt>=0.29,<1",
+    "dagster>=1.13.11,<2",
+    "dagster-webserver>=1.13.11,<2",
+    "dagster-dbt>=0.29.11,<1",
 ]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-cov>=5.0",
-    "ruff>=0.9",
+    "ruff>=0.15.20",
     "mypy>=1.10",
     "types-requests",  # mypy stubs for requests; without this, newer mypy raises import-untyped
-    "pandas>=2.0",  # needed by duckdb.fetchdf() in integration tests
+    "pandas>=3.0.3",  # needed by duckdb.fetchdf() in integration tests
 ]
 
 [tool.setuptools.packages.find]
@@ -99,7 +99,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "E501"]  # assert is fine in tests; inline test data is exempt from line-length
 "scripts/*" = ["E501"]  # HTML/SQL template strings cannot be broken without changing content
-"upgrade_check.py" = ["E501"]  # generated output strings
 # load_dotenv() must run before app imports so env vars are available at import time;
 # the E402 violations below are intentional.
 "ddd_python/ddd_dagster/definitions.py" = ["E402"]

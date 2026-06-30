@@ -8,7 +8,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Extraction & Loading
 
-#### `dlt` (Data Load Tool) `>=1.24,<2`
+#### `dlt` (Data Load Tool) `>=1.28.1,<2`
 **Role:** Incremental data extraction from the Danish Parliament OData API and the Rfam MySQL database into local files or OneLake.
 
 **Why chosen:**
@@ -17,7 +17,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Supports multiple destinations (filesystem, databases, cloud storage) via a unified interface — the same pipeline code works whether writing locally or to OneLake.
 - Actively maintained with a large community; widely adopted in the modern data engineering ecosystem.
 
-#### `requests` `>=2.33`
+#### `requests` `>=2.34.2`
 **Role:** HTTP client used internally by `dlt` for OData API calls, and directly in any custom API probing code.
 
 **Why chosen:**
@@ -36,21 +36,21 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Azure / Fabric OneLake
 
-#### `adlfs` `>=2026.2`
+#### `adlfs` `>=2026.5.0`
 **Role:** Filesystem abstraction over Azure Data Lake Storage Gen2 (ADLS Gen2), used by `dlt` and `pyarrow` to read/write files on OneLake transparently.
 
 **Why chosen:**
 - Implements the `fsspec` interface, meaning any library that accepts a filesystem object (dlt, PyArrow, pandas) can address OneLake paths as if they were local paths.
 - The canonical fsspec-compatible ADLS driver — no alternative has comparable adoption for this use case.
 
-#### `azure-identity` `>=1.25`
+#### `azure-identity` `>=1.25.3`
 **Role:** Provides credential objects (service principal, managed identity, interactive browser) for authenticating to Azure services.
 
 **Why chosen:**
 - Official Microsoft SDK; supports the full range of authentication flows with a single `ClientSecretCredential` or `DefaultAzureCredential` object.
 - Integrates directly with `adlfs`, `azure-storage-file-datalake`, and the DuckDB `azure` extension.
 
-#### `azure-storage-file-datalake` `>=12.23`
+#### `azure-storage-file-datalake` `>=12.25.0`
 **Role:** Azure SDK client for ADLS Gen2 file-system operations — listing directories, reading file properties, and writing log files to OneLake.
 
 **Why chosen:**
@@ -60,7 +60,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Transformation
 
-#### `dbt-core` `>=1.10,<1.12`
+#### `dbt-core` `>=1.11,<1.12`
 
 **Role:** SQL transformation framework that runs the Bronze → Silver → Gold models, enforces tests, and manages model dependencies via a DAG.
 
@@ -71,14 +71,14 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 #### `dbt-duckdb` `>=1.10,<2`
 
-**Role:** DuckDB adapter for dbt-core — connects dbt to a local `.duckdb` file (or MotherDuck) and enables DuckDB-specific SQL features.
+**Role:** DuckDB adapter for dbt-core — connects dbt to a local `.duckdb` file and enables DuckDB-specific SQL features.
 
 **Why chosen:**
 - The standard DuckDB adapter for dbt; developed in close coordination with the DuckDB project.
 - Supports the `httpfs`, `delta`, `azure`, and `parquet` DuckDB extensions that are central to reading JSON from OneLake and writing Delta tables.
 - Makes it possible to run the full transformation stack locally without any cloud infrastructure.
 
-#### `duckdb` `>=1.5.1,<1.6`
+#### `duckdb` `>=1.5.4,<1.6`
 **Role:** The embedded analytical query engine that executes all SQL — Bronze views, Silver CDC tables, and Gold star-schema views.
 
 **Why chosen:**
@@ -91,7 +91,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Export to Delta Lake
 
-#### `deltalake` `>=1.5`
+#### `deltalake` `>=1.6.1`
 **Role:** Writes Delta Lake tables from PyArrow `RecordBatch` objects to OneLake (Silver incremental export and Gold full-overwrite export).
 
 **Why chosen:**
@@ -99,7 +99,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Supports ACID writes, schema enforcement, and `mode="overwrite"` / `mode="append"` — exactly the semantics needed for the incremental Silver and full-refresh Gold export patterns.
 - Wide adoption as the Spark-free Delta Lake writer of choice in the Python ecosystem.
 
-#### `pyarrow` `>=17`
+#### `pyarrow` `>=24.0.0`
 **Role:** In-memory columnar data format used as the interchange layer between DuckDB query results and Delta Lake writes.
 
 **Why chosen:**
@@ -110,7 +110,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### SQL Source Pipeline
 
-#### `sqlalchemy` `>=2.0`
+#### `sqlalchemy` `>=2.0.51`
 **Role:** Database connection layer for the Rfam MySQL source — creates connection engines, manages connection pools, and executes parameterized SQL queries.
 
 **Why chosen:**
@@ -118,7 +118,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Version 2.0 brings a cleaner, fully typed interface compared to the legacy 1.x API.
 - Used here with `connect_timeout=30` and `engine.dispose()` in a `finally` block for production-safe connection handling.
 
-#### `pymysql` `>=1.1`
+#### `pymysql` `>=1.2.0`
 **Role:** Pure-Python MySQL DBAPI-2 driver used by SQLAlchemy to connect to the public Rfam MySQL database at EBI.
 
 **Why chosen:**
@@ -131,7 +131,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 
 ### Orchestration (`[dagster]`)
 
-#### `dagster` `>=1.12,<2`
+#### `dagster` `>=1.13.11,<2`
 
 **Role:** Orchestration framework — defines assets, jobs, schedules, and sensors; provides the Dagster UI for monitoring pipeline runs.
 
@@ -139,37 +139,63 @@ This document describes every Python library declared in `pyproject.toml`, why i
 - Asset-based orchestration model maps naturally to the medallion architecture: each Bronze, Silver, and Gold model is a software-defined asset with explicit lineage.
 - Built-in support for retries, partitions, run history, and alerting without external infrastructure.
 - `dagster-dbt` integration represents dbt models as Dagster assets, enabling mixed Python/SQL pipelines in a single DAG.
-- Lower bound set to `>=1.12` to match the lockstep versioning with `dagster-dbt 0.29.x` (0.29.x = 1.13.x by Dagster's offset convention).
+- Lower bound set to `>=1.13.11` to match the lockstep versioning with `dagster-dbt 0.29.x` (0.29.x = 1.13.x by Dagster's offset convention).
 
-#### `dagster-webserver` `>=1.12,<2`
+#### `dagster-webserver` `>=1.13.11,<2`
 
 **Role:** Serves the Dagster UI (`http://localhost:3000`) for local development and monitoring.
 
 **Why chosen:** Ships with Dagster; the standard way to run the web UI locally.
 
-#### `dagster-dbt` `>=0.29,<0.30`
+#### `dagster-dbt` `>=0.29.11,<1`
 **Role:** Dagster integration that wraps dbt models as Dagster software-defined assets, enabling dbt runs to be orchestrated alongside Python extraction and export assets.
 
 **Why chosen:**
 - Official integration maintained by the Dagster team; provides `DbtCliResource` and `@dbt_assets` decorator.
-- Version-pinned to `0.29.x` (matching `dagster 1.13.x`) to ensure compatibility.
+- Lower bound set to `>=0.29.11` (matching `dagster 1.13.x`) to ensure compatibility.
 
 ---
 
 ### Development & Testing (`[dev]`)
 
-#### `pytest` `>=8.0`
+#### `pytest` `>=9.1.1`
 **Role:** Test runner for the test suite (unit, integration, and end-to-end).
 
 **Why chosen:**
 - The dominant Python test framework; fixture system, parametrization, and plugin ecosystem make it suitable for both unit and integration tests.
-- Version 8.x brings improved error messages and performance over the 7.x series.
+- Version 9.x brings improved error messages and performance over the 8.x series.
 
-#### `pandas` (transitive — not declared)
+#### `pytest-cov` `>=5.0`
+**Role:** Coverage measurement plugin for pytest — generates coverage reports to ensure test suites exercise the codebase adequately.
+
+**Why chosen:**
+- Standard tool for pytest-based projects; integrates seamlessly with the test runner and CI pipelines.
+
+#### `ruff` `>=0.15.20`
+**Role:** Fast Python linter and formatter used for code style enforcement and static analysis.
+
+**Why chosen:**
+- Single-tool replacement for flake8, isort, and other legacy linters; written in Rust for speed.
+- Configured in `pyproject.toml` with rules for error detection (E/F), import sorting (I), and code simplification (SIM).
+
+#### `mypy` `>=1.10`
+**Role:** Static type checker for Python — detects type errors at development time without running code.
+
+**Why chosen:**
+- Industry-standard type checker; configured in `pyproject.toml` with `disallow_untyped_defs = true` to enforce complete type annotations on public functions.
+- Prevents class of bugs related to incorrect function signatures and attribute access.
+
+#### `types-requests`
+**Role:** Type stubs for the `requests` library — provides type hints so mypy can check code that uses the requests HTTP library.
+
+**Why chosen:**
+- Required for strict mypy checking when `requests` is used; without it, mypy raises "import-untyped" errors on `import requests`.
+
+#### `pandas` `>=3.0.3`
 **Role:** Never imported directly. DuckDB's `.fetchdf()` returns a pandas `DataFrame`, which the integration tests (`test_integration_bronze.py`, `test_integration_silver_cdc.py`, `test_integration_gold.py`, `test_integration_e2e_pipeline.py`) use to read query results and assert on them (e.g. `df["col"].tolist()`).
 
 **Why present:**
-- Not declared in `pyproject.toml` and carries no version pin here; it is available at runtime because DuckDB requires it for the `.fetchdf()` convenience method.
+- Declared in the `[dev]` extras in `pyproject.toml` with version constraint `>=3.0.3`.
 - `DataFrame` indexing is an ergonomic way to assert on DuckDB query results in tests. (The export tests, by contrast, build their fixtures with PyArrow `pa.table(...)`, not pandas.)
 
 ---

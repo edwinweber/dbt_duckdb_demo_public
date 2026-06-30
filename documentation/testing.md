@@ -87,6 +87,7 @@ A typical Silver-CDC test:
 | `test_scrub_secrets.py` | **What:** `_scrub_secrets`, which redacts secrets before logging dlt run params. **How:** asserts case-insensitive redaction of `secret`/`password`/`token`/`connection_string` keys while preserving non-sensitive values. **Why:** prevents credentials leaking into logs/traces. |
 | `test_serialize_trace.py` | **What:** `_serialize_trace`, which turns a dlt trace object into a JSON-safe dict. **How:** feeds `None` and mocked trace objects and checks the serialised shape (timestamps, steps, failed jobs). **Why:** trace logging must never crash the pipeline. |
 | `test_json_default.py` | **What:** the custom JSON `default` serializer. **How:** round-trips `datetime`/`date`/`time` and other edge-case types. **Why:** extraction writes NDJSON; non-serialisable types would abort a run. |
+| `test_backup_targets.py` | **What:** backup target assembly and the DuckLake ordering invariant. **How:** asserts that DuckLake data files are backed up before the catalog, that retention ages match, and that the catalog lives in the DuckDB target directory. **Why:** in DuckLake mode the catalog references Parquet files; files-first ordering ensures the catalog snapshot never points at an un-backed-up file. |
 
 #### Integration tests (real in-memory DuckDB)
 

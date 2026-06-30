@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+FROM eclipse-temurin:21-jre-noble
+
+ARG METABASE_VERSION=v0.60.7.x
+ARG DUCKDB_DRIVER_VERSION=1.5.3.0
+
+LABEL org.opencontainers.image.title="metabase-duckdb" \
+      org.opencontainers.image.description="Metabase with DuckDB community driver" \
+      org.opencontainers.image.version="${METABASE_VERSION}"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl tini ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /app /plugins /metabase-data && \
+    curl -fsSL --retry 3 --retry-delay 2 \
+        "https://downloads.metabase.com/${METABASE_VERSION}/metabase.jar" \
+        -o /app/metabase.jar && \
+    curl -fsSL --retry 3 --retry-delay 2 \
+        "https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/${DUCKDB_DRIVER_VERSION}/duckdb.metabase-driver.jar" \
+        -o /plugins/duckdb.metabase-driver.jar && \
+    groupadd -g 2000 metabase && \
+    useradd -u 2000 -g metabase -m -d /home/metabase -s /usr/sbin/nologin metabase && \
+    mkdir -p /home/metabase/.duckdb/extensions && \
+    mkdir -p /opt/duckdb-extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64 && \
+    curl -fsSL --retry 3 --retry-delay 2 \
+        "https://extensions.duckdb.org/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension.gz" \
+        | gunzip -c > /opt/duckdb-extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension && \
+    chown -R metabase:metabase /app /plugins /metabase-data /home/metabase /opt/duckdb-extensions
+
+# Entrypoint stages baked-in DuckDB extensions (e.g. ducklake) into the persisted
+# extensions volume, which would otherwise shadow them on a fresh deploy or
+# version bump.  See docker-entrypoint.metabase.sh.
+COPY --chown=metabase:metabase docker/docker-entrypoint.metabase.sh /usr/local/bin/docker-entrypoint.metabase.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.metabase.sh
+
+ENV MB_PLUGINS_DIR=/plugins \
+    MB_DB_FILE=/metabase-data/metabase.db \
+    MB_JETTY_HOST=0.0.0.0 \
+    MB_JETTY_PORT=3000 \
+    HOME=/home/metabase \
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=50.0 -XX:InitialRAMPercentage=25.0"
+
+WORKDIR /app
+USER metabase
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD curl -fsS http://localhost:3000/api/health || exit 1
+
+ENTRYPOINT ["tini", "--", "/usr/local/bin/docker-entrypoint.metabase.sh"]

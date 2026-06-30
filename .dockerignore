@@ -17,7 +17,6 @@ duckdb/*.duckdb.wal
 documentation/
 tests/
 
-Dockerfile
 docker-compose.yml
-docker-seed-volumes.sh
-DOCKER_USAGE.md
+docker/docker-seed-volumes.sh
+docker/DOCKER_USAGE.md

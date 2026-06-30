@@ -131,16 +131,16 @@ Despite the simplicity, the pipeline demonstrates several patterns that scale:
 | Layer | Tool | Version |
 | --- | --- | --- |
 | Language | Python | ≥3.12 |
-| Orchestration | Dagster | ≥1.12 |
-| Extraction | dlt | ≥1.24 |
-| Transformation | dbt + dbt-duckdb | ≥1.10 |
-| Query engine | DuckDB | ≥1.5.1, <1.6 |
+| Orchestration | Dagster | ≥1.13.11 |
+| Extraction | dlt | ≥1.28.1 |
+| Transformation | dbt-core + dbt-duckdb | ≥1.11 / ≥1.10 |
+| Query engine | DuckDB | ≥1.5.4, <1.6 |
 | Cloud storage (optional) | Microsoft Fabric OneLake | ADLS Gen2 / Delta Lake |
 | Data quality | dbt-utils 1.3.0 + dbt tests | — |
 | BI (optional) | Metabase | with DuckDB driver |
 | Alerting (optional) | ntfy.sh | open-source push notifications |
 | Container | Docker + Compose | — |
-| Testing | pytest | ≥8.0 |
+| Testing | pytest | ≥9.1.1 |
 
 ## Lessons Learned
 
@@ -165,6 +165,7 @@ What I'd tell someone starting a similar project:
 | `documentation/` | Markdown guides and dbt-docs |
 | `data/` | Local storage root (git-ignored) — mirrors OneLake layout |
 | `duckdb/` | DuckDB init scripts |
+| `docker/` | Dockerfiles, entrypoints, seed script, Metabase init SQL, usage guide |
 | `docker-compose.yml` | Services: run, dagster, metabase, backup |
 
 ## Data Sources

@@ -55,7 +55,9 @@ x-path-overrides: &path-overrides
   LOCAL_STORAGE_PATH: /data/local
 
 x-common: &common
-  build: .
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
   image: danish-democracy-data:latest
   env_file: .env
   environment:
@@ -173,12 +175,12 @@ services:
   # In the Metabase setup wizard choose "DuckDB" and set the database path to:
   #   /data/duckdb/danish_democracy_data.duckdb
   # For the DuckDB connection's init-script, paste the contents of
-  # metabase-duckdb-init.sql (the canonical copy — installs the extensions and
+  # docker/metabase-duckdb-init.sql (the canonical copy — installs the extensions and
   # attaches the DuckLake catalog read-only via a self-healing DETACH-then-ATTACH).
   metabase:
     build:
       context: .
-      dockerfile: Dockerfile.metabase
+      dockerfile: docker/Dockerfile.metabase
     image: ddd-metabase:latest
     container_name: ddd-metabase
     ports:

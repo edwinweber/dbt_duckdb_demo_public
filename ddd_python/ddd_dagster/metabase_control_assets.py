@@ -15,7 +15,7 @@ from dagster import AssetKey, AssetsDefinition, asset
 
 @asset(name="stop_metabase_asset", description="Stops Metabase before pipeline runs.")
 def stop_metabase_asset():
-    subprocess.run(["./stop_metabase_and_wait.sh"], check=True)
+    subprocess.run(["scripts/stop_metabase_and_wait.sh"], check=True)
 
 
 def build_start_metabase_asset(upstream_asset_keys: Iterable[AssetKey]) -> AssetsDefinition:
@@ -27,6 +27,6 @@ def build_start_metabase_asset(upstream_asset_keys: Iterable[AssetKey]) -> Asset
         description="Starts Metabase after pipeline runs.",
     )
     def start_metabase_asset():
-        subprocess.run(["./start_metabase_and_wait.sh"], check=True)
+        subprocess.run(["scripts/start_metabase_and_wait.sh"], check=True)
 
     return start_metabase_asset

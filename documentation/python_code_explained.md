@@ -782,8 +782,8 @@ pipeline's run metadata into queryable fact/dimension tables.
 [ddd_python/ddd_dagster/metabase_control_assets.py](../ddd_python/ddd_dagster/metabase_control_assets.py)
 
 Two assets that shell out to scripts: `stop_metabase_asset` runs
-`./stop_metabase_and_wait.sh` *before* the pipeline, and `start_metabase_asset` runs
-`./start_metabase_and_wait.sh` *after* everything. Why? Metabase holds a read
+`scripts/stop_metabase_and_wait.sh` *before* the pipeline, and `start_metabase_asset` runs
+`scripts/start_metabase_and_wait.sh` *after* everything. Why? Metabase holds a read
 connection to the DuckDB file, and DuckDB allows only a single writer. Stopping
 Metabase frees the file so dbt can write. Every materialising asset declares a
 dependency on `stop_metabase_asset`; `start_metabase_asset` is built dynamically to
@@ -1054,7 +1054,7 @@ moves to templates, which is where it belongs.
 ### 11.5 Subprocess robustness
 
 * [metabase_control_assets.py](../ddd_python/ddd_dagster/metabase_control_assets.py)
-  calls `subprocess.run(["./stop_metabase_and_wait.sh"], check=True)` with a
+  calls `subprocess.run(["scripts/stop_metabase_and_wait.sh"], check=True)` with a
   **relative path and no timeout**. The relative path silently depends on Dagster's
   working directory; if that ever changes, the asset fails confusingly. And a hung
   script would block the run forever.
