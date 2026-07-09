@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from deltalake import DeltaTable
 
-import ddd_python.ddd_dlt.export_main_gold_to_fabric_gold as gold_mod
+import ddd_python.ddd_dlt.export_gold as gold_mod
 import duckdb
 from ddd_python.ddd_utils.path_utils import build_delta_export_path, open_export_connection
 
@@ -31,7 +31,7 @@ def _patch_env():
     when no .env file is present, e.g. in CI).
     """
     return patch.dict(
-        "ddd_python.ddd_dlt.export_main_gold_to_fabric_gold.get_variables_from_env.__dict__",
+        "ddd_python.ddd_dlt.export_gold.get_variables_from_env.__dict__",
         _ENV_PATCHES,
         clear=False,
     )
@@ -90,6 +90,43 @@ def test_gold_export_correct_target_path(gold_connection, mock_fabric_clients):
     target_path = mock_write.call_args[0][0]
     assert "Lakehouse/Files/Gold/actor/" in target_path
     assert target_path.startswith("abfss://")
+
+
+# ── S3 storage target ─────────────────────────────────────────────────────────
+
+
+def test_gold_export_s3_path(gold_connection):
+    """When STORAGE_TARGET=s3, write_deltalake receives an s3:// path and
+    non-empty storage_options containing AWS credentials."""
+    s3_path = "s3://my-delta-bucket/Files/Gold/actor/"
+    s3_storage_options = {
+        "AWS_ACCESS_KEY_ID": "test-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret",
+        "AWS_REGION": "us-east-1",
+    }
+    # Patch DUCKDB_DATABASE so the query resolves to the in-memory fixture schema.
+    env_patches = {"STORAGE_TARGET": "s3", "DUCKDB_DATABASE": "memory"}
+    with (
+        patch.dict(
+            "ddd_python.ddd_dlt.export_gold.get_variables_from_env.__dict__",
+            env_patches,
+            clear=False,
+        ),
+        patch.object(gold_mod, "write_deltalake") as mock_write,
+        patch.object(gold_mod, "build_delta_export_path") as mock_path,
+    ):
+        mock_path.return_value = (s3_path, s3_storage_options)
+        gold_mod.export_single_gold_table(gold_connection, "actor")
+
+    mock_write.assert_called_once()
+    call_path = mock_write.call_args[0][0]
+    call_kwargs = mock_write.call_args
+    storage_options = call_kwargs.kwargs.get(
+        "storage_options", call_kwargs[1].get("storage_options", {})
+    )
+    assert call_path.startswith("s3://")
+    assert storage_options  # non-empty
+    assert "AWS_ACCESS_KEY_ID" in storage_options
 
 
 # ── DuckLake mode (Gold views reference ducklake_catalog.main_silver) ─────────

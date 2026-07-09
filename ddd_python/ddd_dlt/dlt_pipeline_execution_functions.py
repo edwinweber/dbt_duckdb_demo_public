@@ -1,9 +1,9 @@
 """
-dlt Pipeline Execution Functions for Microsoft Fabric OneLake.
+dlt Pipeline Execution Functions.
 
-This module provides a unified execution layer for dlt (data load tool) pipelines
-that extract data from various sources and land it in Microsoft Fabric OneLake or
-local filesystem.
+Unified execution layer for dlt (data load tool) pipelines that extract data
+from various sources and write Bronze files to local disk or S3-compatible
+storage.
 
 Three pipeline types are supported:
 
@@ -15,31 +15,27 @@ Three pipeline types are supported:
   or NDJSON file.
 * **file_to_file** — Reads an arbitrary local file and uploads the raw bytes
   as-is to storage.  dlt is not used here; it adds no value for a plain copy.
+  S3 mode (``RAW_STORAGE_TARGET=s3``) is not yet implemented for this type.
 
 Every pipeline run — successful or failed — is logged as an NDJSON record via
-:func:`write_log_to_onelake`.
+:func:`write_log_entry`.
 
 Storage destination
 -------------------
-Output is written to either local filesystem or Fabric OneLake, controlled by
-the ``STORAGE_TARGET`` environment variable (``local`` or ``onelake``).
+Two independent env vars control where data lands:
+
+* ``RAW_STORAGE_TARGET`` (``local`` | ``s3``) — governs where Bronze extraction
+  files are written by ``api_to_file`` and ``sql_to_file``.
+* Pipeline run logs are always written to the local filesystem under
+  ``DLT_PIPELINE_RUN_LOG_DIR/<source>/`` (default: ``LOCAL_STORAGE_PATH/logs``),
+  regardless of ``STORAGE_TARGET``.
 
 Authentication
 --------------
-OneLake I/O is authenticated via an Azure AD service principal using
-``azure-identity`` ``ClientSecretCredential``.  The three required values are
-read from environment variables (typically a ``.env`` file) by
-``ddd_python.ddd_utils.get_variables_from_env``:
-
-* ``AZURE_TENANT_ID``
-* ``AZURE_CLIENT_ID``
-* ``AZURE_CLIENT_SECRET``
-
-For ``api_to_file`` and ``sql_to_file``, dlt's built-in ``filesystem``
-destination writes directly to OneLake via ``adlfs`` (ADLS Gen2), using the
-same service-principal credentials.  For ``file_to_file`` and log writes, the
-``azure-storage-file-datalake`` SDK is used directly via
-``ddd_python.ddd_utils.get_fabric_onelake_clients``.
+For ``api_to_file`` and ``sql_to_file`` with ``RAW_STORAGE_TARGET=s3``,
+dlt's built-in ``filesystem`` destination writes directly to S3-compatible
+storage via the configured S3 credentials.  For ``file_to_file``, a plain
+local file write is performed; S3 is not yet implemented for this type.
 
 Typical usage::
 
@@ -53,13 +49,12 @@ Typical usage::
         source_api_resource="Stemmetype",
         source_api_filter="$inlinecount=allpages",
         source_api_date_to_load_from="2024-01-01",
-        destination_directory_path="<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/test",
+        destination_directory_path="Files/Bronze/test",
         destination_file_name="stemmetype.json",
     )
 """
 
 import concurrent.futures
-import io
 import json
 import logging
 import os
@@ -80,6 +75,7 @@ import dlt
 
 logger = logging.getLogger(__name__)
 
+from ddd_python.ddd_dagster._constants import MAX_CONCURRENT_WORKERS
 from ddd_python.ddd_utils import get_variables_from_env
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
@@ -100,8 +96,9 @@ os.environ.setdefault("NORMALIZE__DATA_WRITER__DISABLE_COMPRESSION", "true")
 os.environ.setdefault("DESTINATION__FILESYSTEM__ENABLE_DATASET_NAME_NORMALIZATION", "false")
 
 # Maximum concurrent pipeline tasks in ThreadPoolExecutor (extraction pool).
-# Mirror of _MAX_CONCURRENT_PROCESSES in jobs.py — keep them in sync.
-_MAX_PIPELINE_WORKERS = 4
+# Imported from ddd_dagster._constants — single source of truth shared with
+# the Dagster multiprocess_executor in jobs.py.
+_MAX_PIPELINE_WORKERS = MAX_CONCURRENT_WORKERS
 
 # Keys whose values are redacted in run logs to prevent credential leakage.
 _SENSITIVE_KEYS = frozenset({"connection_string", "secret", "password", "token"})
@@ -144,19 +141,6 @@ def _json_default(obj: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _upload_to_onelake(data: bytes | str, directory_path: str, file_name: str) -> None:
-    """Upload data to a Fabric OneLake file, overwriting any existing content."""
-    # Deferred import: get_fabric_onelake_clients pulls in the Azure SDK.
-    # Keeping it local means the module can be imported in local-storage mode
-    # (e.g. tests, code generation) without requiring Azure credentials.
-    from ddd_python.ddd_utils import get_fabric_onelake_clients
-
-    file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
-        directory_path, file_name
-    )
-    file_client.upload_data(data, overwrite=True, timeout=300)
-
-
 def _upload_to_local(data: bytes | str, directory_path: str, file_name: str) -> None:
     """Write data to a local file, overwriting any existing content."""
     Path(directory_path).mkdir(parents=True, exist_ok=True)
@@ -167,11 +151,19 @@ def _upload_to_local(data: bytes | str, directory_path: str, file_name: str) -> 
 
 
 def _upload(data: bytes | str, directory_path: str, file_name: str) -> None:
-    """Upload data to local or OneLake storage, based on STORAGE_TARGET."""
-    if get_variables_from_env.STORAGE_TARGET == "local":
+    """Upload data to local or S3 storage (file_to_file; S3 not yet implemented)."""
+    raw = get_variables_from_env.RAW_STORAGE_TARGET
+    if raw == "local":
         _upload_to_local(data, directory_path, file_name)
+    elif raw == "s3":
+        raise NotImplementedError(
+            "run_file_to_file_pipeline does not yet support RAW_STORAGE_TARGET=s3. "
+            "Implement _upload_to_s3() using boto3 or the dlt filesystem destination."
+        )
     else:
-        _upload_to_onelake(data, directory_path, file_name)
+        raise AssertionError(
+            f"Unreachable: RAW_STORAGE_TARGET={raw!r} should have been caught at import"
+        )
 
 
 def _make_destination(
@@ -179,12 +171,12 @@ def _make_destination(
     file_name: str,
     data_table_name: str,
 ) -> tuple[Any, str]:
-    """Build a dlt filesystem destination for either OneLake or local storage.
+    """Build a dlt filesystem destination for either local or S3 storage.
 
-    When ``STORAGE_TARGET=local``, *directory_path* is treated as a path
+    When ``RAW_STORAGE_TARGET=local``, *directory_path* is treated as a path
     relative to ``LOCAL_STORAGE_PATH`` (e.g. ``"bronze/DDD/afstemning"``).
-    When ``STORAGE_TARGET=onelake`` (default), *directory_path* is the full
-    OneLake path (e.g. ``"<LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
+    When ``RAW_STORAGE_TARGET=s3``, *directory_path* is part of the S3 key path
+    under the configured bucket.
 
     Returns:
         A tuple of ``(destination, dataset_name)`` to pass to ``dlt.pipeline``.
@@ -202,24 +194,26 @@ def _make_destination(
             return file_name
         return f"{table_name}.{file_id}.{ext}"
 
-    if get_variables_from_env.STORAGE_TARGET == "local":
+    if get_variables_from_env.RAW_STORAGE_TARGET == "s3":
+        bucket_url = f"s3://{get_variables_from_env.S3_BUCKET_BRONZE}"
+        if get_variables_from_env.S3_PREFIX_BRONZE:
+            bucket_url = f"{bucket_url}/{get_variables_from_env.S3_PREFIX_BRONZE.strip('/')}"
+        destination = dlt_filesystem(
+            bucket_url=bucket_url,
+            layout="{table_name}/{_resolve_path}",
+            extra_placeholders={"_resolve_path": _resolve_path},
+            credentials={
+                "aws_access_key_id": get_variables_from_env.S3_ACCESS_KEY_ID,
+                "aws_secret_access_key": get_variables_from_env.S3_SECRET_ACCESS_KEY,
+                "endpoint_url": get_variables_from_env.S3_ENDPOINT or None,
+                "region_name": get_variables_from_env.S3_REGION,
+            },
+        )
+    else:
         destination = dlt_filesystem(
             bucket_url=f"file://{get_variables_from_env.LOCAL_STORAGE_PATH}",
             layout="{table_name}/{_resolve_path}",
             extra_placeholders={"_resolve_path": _resolve_path},
-        )
-    else:
-        destination = dlt_filesystem(
-            bucket_url=f"az://{get_variables_from_env.FABRIC_WORKSPACE}",
-            layout="{table_name}/{_resolve_path}",
-            extra_placeholders={"_resolve_path": _resolve_path},
-            credentials={
-                "azure_storage_account_name": get_variables_from_env.FABRIC_ONELAKE_STORAGE_ACCOUNT,
-                "azure_account_host": "onelake.blob.fabric.microsoft.com",
-                "azure_client_id": get_variables_from_env.AZURE_CLIENT_ID,
-                "azure_client_secret": get_variables_from_env.AZURE_CLIENT_SECRET,
-                "azure_tenant_id": get_variables_from_env.AZURE_TENANT_ID,
-            },
         )
     return destination, parent_path
 
@@ -268,39 +262,16 @@ def _serialize_trace(trace: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def write_log_to_onelake(
+def write_log_entry(
     data: str,
     destination_directory_path: str,
     destination_file_name: str,
 ) -> None:
-    """Append a log entry to an NDJSON log file in Fabric OneLake or local storage.
-
-    When ``STORAGE_TARGET=local``, the log is written to a local file under
-    *destination_directory_path*.  Otherwise it is appended to OneLake.
-    """
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        Path(destination_directory_path).mkdir(parents=True, exist_ok=True)
-        file_path = Path(destination_directory_path) / destination_file_name
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(data)
-        return
-
-    # Deferred imports: Azure SDK + ADLS client only needed for OneLake writes.
-    from ddd_python.ddd_utils import get_fabric_onelake_clients
-
-    file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
-        destination_directory_path, destination_file_name
-    )
-    from azure.core.exceptions import ResourceNotFoundError
-
-    encoded = data.encode("utf-8")
-    try:
-        offset = file_client.get_file_properties().size
-    except ResourceNotFoundError:
-        file_client.create_file()
-        offset = 0
-    file_client.append_data(io.BytesIO(encoded), offset=offset, length=len(encoded))
-    file_client.flush_data(offset + len(encoded))
+    """Append a log entry to an NDJSON log file on the local filesystem."""
+    Path(destination_directory_path).mkdir(parents=True, exist_ok=True)
+    file_path = Path(destination_directory_path) / destination_file_name
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(data)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +288,7 @@ def run_api_to_file_pipeline(
     destination_directory_path: str,
     destination_file_name: str,
 ) -> dict[str, Any]:
-    """Fetch data from a paginated OData / REST API and write it as NDJSON to OneLake.
+    """Fetch data from a paginated OData / REST API and write it as NDJSON to local or S3 storage.
 
     Records are yielded **individually** as dlt resource items — one dict per
     API record — rather than as a single serialised blob.  This means dlt can
@@ -345,8 +316,8 @@ def run_api_to_file_pipeline(
             The caller is responsible for embedding any date filter.
         source_api_date_to_load_from: ISO-8601 date string (``YYYY-MM-DD``).
             Recorded in the run log; not used to modify the request URL.
-        destination_directory_path: OneLake directory for the output file
-            (e.g. ``"<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD/afstemning"``).
+        destination_directory_path: Bronze directory for the output file
+            (e.g. ``"Files/Bronze/DDD/afstemning"``).
         destination_file_name: Output file name including extension
             (e.g. ``"afstemning_20240101_120000.json"``).
 
@@ -359,7 +330,7 @@ def run_api_to_file_pipeline(
 
     Raises:
         requests.HTTPError: If any API request returns a non-2xx HTTP status.
-        RuntimeError: If the OneLake write fails.
+        RuntimeError: If the storage write fails.
     """
     num_rows = 0
     session = requests.Session()  # reuse TCP connection across pages
@@ -433,7 +404,7 @@ def run_sql_to_file_pipeline(
     loader_file_format: str = "parquet",
     sql_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Execute a SQL query and write the result as a Parquet or NDJSON file to OneLake.
+    """Execute a SQL query and write the result as a Parquet or NDJSON file to local or S3 storage.
 
     Rows are yielded **individually** from the SQL cursor in chunks of
     *chunk_size* — one dict per row — so dlt can infer the schema and control
@@ -447,7 +418,7 @@ def run_sql_to_file_pipeline(
             * ``"postgresql+psycopg2://user:pass@host/db"``
 
         source_sql_query: Full SQL ``SELECT`` statement to execute.
-        destination_directory_path: OneLake directory for the output file.
+        destination_directory_path: Bronze directory for the output file.
         destination_file_name: Output file name including extension
             (e.g. ``"my_table.parquet"``).
         chunk_size: Rows fetched per database round-trip.  Defaults to
@@ -471,7 +442,7 @@ def run_sql_to_file_pipeline(
 
     Raises:
         sqlalchemy.exc.SQLAlchemyError: On connection or query execution failure.
-        RuntimeError: If the OneLake write fails.
+        RuntimeError: If the storage write fails.
     """
     num_rows = 0
 
@@ -532,20 +503,19 @@ def run_file_to_file_pipeline(
     destination_directory_path: str,
     destination_file_name: str,
 ) -> dict[str, Any]:
-    """Read a local file and upload it as-is to Fabric OneLake.
+    """Read a local file and write it as-is to the configured local storage destination.
 
-    dlt is **not used** here.  A plain file copy via the ADLS Gen2 SDK is all
-    that is needed, and wrapping it in a dlt pipeline would add overhead with no
-    benefit — dlt provides no value for a binary pass-through with no schema or
-    state management requirements.
+    dlt is **not used** here.  A plain file copy is all that is needed, and
+    wrapping it in a dlt pipeline would add overhead with no benefit — dlt
+    provides no value for a binary pass-through with no schema or state
+    management requirements.
 
-    Authentication uses the same ``ClientSecretCredential`` as all other
-    OneLake I/O in this module (see module docstring for details).
+    S3 mode (``RAW_STORAGE_TARGET=s3``) is not yet implemented for this type.
 
     Args:
         pipeline_name: Used only for log messages and the run log entry.
         source_file_path: Absolute or relative path to the local source file.
-        destination_directory_path: OneLake directory for the output file.
+        destination_directory_path: Local directory for the output file.
         destination_file_name: Output file name, typically matching the source
             file name.
 
@@ -553,12 +523,12 @@ def run_file_to_file_pipeline(
         A dictionary with:
 
         * ``"status"`` — ``"success"``
-        * ``"bytes_written"`` — number of bytes in the uploaded file
+        * ``"bytes_written"`` — number of bytes in the written file
         * ``"trace"`` — empty dict (no dlt pipeline)
 
     Raises:
         FileNotFoundError: If *source_file_path* does not exist.
-        RuntimeError: If the OneLake upload fails.
+        NotImplementedError: If ``RAW_STORAGE_TARGET=s3``.
     """
     with open(source_file_path, "rb") as f:
         file_bytes = f.read()
@@ -576,9 +546,9 @@ def run_file_to_file_pipeline(
 def build_log_dir(source_system_code: str, pipeline_name: str | None = None) -> str:
     """Build the log directory path for a given source system and optional pipeline.
 
-    Branches on ``STORAGE_TARGET``: local writes land under
-    ``LOCAL_STORAGE_PATH/logs/``, OneLake writes under
-    ``DLT_PIPELINE_RUN_LOG_DIR/``.
+    Logs always go to the local filesystem under
+    ``DLT_PIPELINE_RUN_LOG_DIR/<source_system_code>/`` (default: ``LOCAL_STORAGE_PATH/logs``).
+    Override the root with the ``DLT_PIPELINE_RUN_LOG_DIR`` env var.
 
     Args:
         source_system_code: Short source-system identifier (e.g. ``"DDD"``,
@@ -589,10 +559,7 @@ def build_log_dir(source_system_code: str, pipeline_name: str | None = None) -> 
     Returns:
         A directory path string, without a trailing slash.
     """
-    if get_variables_from_env.STORAGE_TARGET == "local":
-        base = f"{get_variables_from_env.LOCAL_STORAGE_PATH}/logs/{source_system_code}"
-    else:
-        base = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{source_system_code}"
+    base = f"{get_variables_from_env.DLT_PIPELINE_RUN_LOG_DIR}/{source_system_code}"
     return f"{base}/{pipeline_name}" if pipeline_name else base
 
 
@@ -617,11 +584,11 @@ def execute_pipeline(
     source_system_code: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Execute a named pipeline type and write a structured log entry to OneLake.
+    """Execute a named pipeline type and write a structured log entry to local storage.
 
     This is the primary entry point for all pipeline runs.  It dispatches to the
     appropriate handler based on *pipeline_type*, measures wall-clock duration,
-    and unconditionally writes an NDJSON log record to OneLake — even on failure.
+    and unconditionally writes an NDJSON log record to the local filesystem — even on failure.
 
     Args:
         pipeline_type: Selects the handler to invoke.  One of:
@@ -692,7 +659,7 @@ def execute_pipeline(
         end_timestamp = time.time()
         log_params = {"source_system_code": source_system_code, **kwargs}
         try:
-            write_log_to_onelake(
+            write_log_entry(
                 json.dumps(
                     {
                         "level": level,
@@ -714,7 +681,7 @@ def execute_pipeline(
         except Exception as log_exc:
             # Log write must never mask the original pipeline result / exception.
             warnings.warn(
-                f"Failed to write pipeline run log to OneLake: {log_exc}",
+                f"Failed to write pipeline run log to local filesystem: {log_exc}",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -841,7 +808,7 @@ def run_extraction_pool(
     log_dir = build_log_dir(source_system_code)
     log_file = f"{script_name}_log.ndjson"
     try:
-        write_log_to_onelake(log_record, log_dir, log_file)
+        write_log_entry(log_record, log_dir, log_file)
     except Exception as log_exc:
         warnings.warn(
             f"Failed to write script-level run log: {log_exc}",

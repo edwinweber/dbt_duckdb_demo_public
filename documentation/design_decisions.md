@@ -75,6 +75,10 @@ For implementation details and how-to guides, see [python_code_explained.md](pyt
 - dbt model counts scale with entity count. Each Bronze entity generates a main view and a `_latest` variant; each Silver entity generates a CDC table and a `_cv` current-version view; Gold includes star-schema views for key analytics dimensions plus corresponding `_cv` views. Adding a new entity touches all three layers.
 - The `LKHS_` column prefix is used consistently across all tables so downstream tools (Power BI, Metabase) see the tracking metadata as opaque.
 
+**Schema Evolution:**
+
+Additive changes (new columns at source) propagate automatically — Bronze views use `read_json_auto` / `read_parquet`, which infer and include new columns; Silver uses `on_schema_change='append_new_columns'` in the incremental macro and `union_by_name=true` to match on name. Breaking changes (column renames, type changes, column drops) require manual intervention: edit the Bronze column alias in the model macro, then run `dbt build --select <model> --full-refresh` to rebuild Silver from Bronze. There is no automatic handling for type changes (e.g., string → int) or removals; these are explicit operations to prevent silent data loss.
+
 ---
 
 ## ADR-3: Hash-based CDC (SHA256) vs. log-based CDC
@@ -108,6 +112,10 @@ For implementation details and how-to guides, see [python_code_explained.md](pyt
 
 - Every Silver table has `LKHS_hash_value` (SHA256 hex string) and `LKHS_cdc_operation` (I/U/D) columns. The hash is stable across runs so deduplication guards can use it.
 - The `generate_base_for_hash` macro dynamically builds the hash expression by querying `information_schema.columns` at compile time. This is hidden from users but means dbt needs `DESCRIBE` or equivalent privileges.
+
+**Known Limitations:**
+
+*Incremental deletes are not captured between runs.* For date-filtered incremental sources (DDD entities), hard deletes at the source are not detected between runs. The delete anti-join at full-refresh correctly identifies missing keys against the cumulative `bronze_*_latest` view, but only when (a) the initial load pulled a complete snapshot, and (b) Bronze files are not pruned below that baseline. Between runs, a silently-removed record remains in Silver as its last-known state. For compliance use cases, a periodic full-snapshot reconciliation run (fetch the complete keyset weekly, anti-join against Silver `_cv`) would close this gap — not currently implemented. See [ARCHITECTURE_PHILOSOPHY.md](ARCHITECTURE_PHILOSOPHY.md#incremental-delete-limitation) for details and rationale.
 
 ---
 
@@ -169,7 +177,7 @@ For implementation details and how-to guides, see [python_code_explained.md](pyt
 **Consequences:**
 
 - Two executor strategies: `multiprocess_executor` for extraction/export (I/O-bound, 4 workers), and `in_process_executor` for dbt (single-writer constraint).
-- Metabase lifecycle is controlled via two mechanisms: a private `_with_metabase_control(selection)` helper in `jobs.py` that wraps asset selections with `stop_metabase_asset` and `start_metabase_asset`, and per-asset `deps=[STOP_METABASE_ASSET_KEY]` declarations that prevent any asset from starting until Metabase is stopped. This dual enforcement ensures DuckDB write access is exclusive and correct by construction.
+- Metabase lifecycle is controlled via two mechanisms: a private `_with_metabase_control(selection)` helper in `jobs.py` that wraps asset selections with `stop_metabase_asset` and `start_metabase_asset`, and per-asset `deps=[STOP_METABASE_ASSET_KEY]` declarations that prevent any asset from starting until Metabase is stopped. Both reinforce the same rule: DuckDB write access stays exclusive.
 
 ---
 
@@ -307,6 +315,77 @@ If every required var were read at module import time, you couldn't even `import
 
 ---
 
+## ADR-10: S3-compatible raw storage (independent of Delta export)
+
+**Decision:** Make Bronze raw files and DuckLake Parquet data optionally storable on
+S3-compatible storage (MinIO for local dev, AWS S3 for production) via a
+`RAW_STORAGE_TARGET=local|s3` environment variable. This is completely
+**independent** of `STORAGE_TARGET=local|onelake` (which governs Delta Lake
+export destination).
+
+**Context:** During production deployment, keeping all Bronze files on a single
+server's local disk becomes a scalability and durability risk. S3 offers:
+- Durability via versioning and replication.
+- Reduced load on the orchestration machine (I/O offloaded to S3).
+- Portability: downstream tools (Spark, Polars, other data pipelines) can read
+  Bronze and DuckLake data directly from S3 without copying to local disk.
+
+However, offline development (on a laptop, no S3) must remain viable. The solution:
+make raw storage pluggable, independent of export destination.
+
+**Alternatives considered:**
+
+- **Always use S3.** Eliminate the local path entirely. But: breaks offline dev;
+  adds credentials overhead; MinIO adds operational complexity even for local dev.
+- **Use S3 only for Delta exports.** Store Bronze locally, export to S3/OneLake.
+  But: defeats the purpose — if Bronze is local-only, downstream tools still can't
+  read it from S3; they have to wait for it to be exported.
+- **Combine `RAW_STORAGE_TARGET` and `STORAGE_TARGET` into one variable.** Have a
+  three-way switch like `STORAGE_TARGET=local|s3|onelake`. But: confuses the
+  distinction between internal storage (Bronze, DuckLake) and output storage
+  (Delta Lake). OneLake is not suitable for intermediate storage (single-writer
+  constraint breaks dlt's parallel uploads).
+
+**Trade-offs:**
+
+*Gained:*
+- **Offline dev remains viable.** Default `RAW_STORAGE_TARGET=local` requires no
+  credentials or cloud setup. Switch to S3 only when scaling up.
+- **Decoupled storage and export.** You can store Bronze on S3 but export Delta
+  Lake to local disk (or vice versa). This flexibility enables hybrid scenarios.
+- **Auto-derivation of DuckLake location.** When both `RAW_STORAGE_TARGET=s3`
+  and `SILVER_STORAGE_FORMAT=ducklake`, `DUCKLAKE_DATA_PATH` is automatically
+  computed from `S3_BUCKET_DUCKLAKE + S3_PREFIX_DUCKLAKE`. Users don't manually
+  construct S3 URIs; the S3 bucket variables are the source of truth.
+- **MinIO parity in dev.** Local development can use MinIO (S3-compatible) with
+  identical configuration, enabling production-like testing on a laptop.
+
+*Lost:*
+- **Two more env vars.** The three-way split (`STORAGE_TARGET`, `SILVER_STORAGE_FORMAT`,
+  `RAW_STORAGE_TARGET`) adds surface area; it's easier to explain one switch
+  than three. Mitigated by: clear documentation and conservative defaults.
+- **S3 configuration overhead.** When using S3, you must set 7 additional env vars
+  (`S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, etc.). For local dev with MinIO, this is
+  minor; for AWS S3, it's standard. But it's not zero.
+- **Backup strategy changes.** When `RAW_STORAGE_TARGET=s3` and Silver is on S3,
+  local archival of DuckLake is skipped — you rely on S3 versioning/lifecycle
+  instead. This is intentional (no point archiving data that's already versioned
+  in S3), but it's a different operational model.
+
+**Consequences:**
+
+- dlt extraction respects `RAW_STORAGE_TARGET`: it reads S3 credentials from env
+  and passes them to the filesystem destination, or writes locally if `local`.
+- DuckLake attach (in `path_utils.py`) auto-configures S3 secrets when
+  `DUCKLAKE_DATA_PATH` starts with `s3://`, allowing downstream tools (dbt,
+  exports) to reach S3-stored Parquet files transparently.
+- Backup/restore logic skips the local DuckLake target when data is on S3 (the
+  S3 bucket's versioning is the durability mechanism).
+- Documentation and examples include both MinIO (local) and AWS S3 (prod)
+  configurations.
+
+---
+
 ## Summary: Why These Choices
 
 | Choice | Core Reason | Acceptable For |
@@ -320,6 +399,7 @@ If every required var were read at module import time, you couldn't even `import
 | Delta export split (delta_scan + deltalake) | Memory efficiency, workaround Azure regression | Known regression is temporary |
 | Single source of truth | Maintainability, DRY | Entity-driven systems (not arbitrary code) |
 | Lazy env vars | Local mode without credentials | Multi-mode systems with optional features |
+| S3-compatible raw storage | Offline dev + production durability decoupled | Scaling Bronze files beyond single machine |
 
 ---
 

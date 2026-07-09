@@ -43,7 +43,7 @@ from ddd_python.ddd_dagster.metabase_control_assets import (
     build_start_metabase_asset,
     stop_metabase_asset,
 )
-from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_dagster.rfam_assets import all_rfam_extraction_assets
 from ddd_python.ddd_dagster.schedules import (
     danish_parliament_full_pipeline_schedule,
@@ -122,7 +122,7 @@ defs = Definitions(
         danish_parliament_run_failure_sensor,
     ],
     resources={
-        "dlt_onelake": DltOneLakeResource(),
+        "dlt_onelake": DltPipelineResource(),
         "dbt": DbtCliResource(
             project_dir=_DBT_PROJECT_DIR,
             profiles_dir=_DBT_PROJECT_DIR,

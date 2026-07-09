@@ -22,7 +22,7 @@ from dagster import (
 )
 
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
-from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
 from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
@@ -119,7 +119,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
     def _incremental_asset(
         context: AssetExecutionContext,
         config: ExtractionConfig,
-        dlt_onelake: DltOneLakeResource,
+        dlt_onelake: DltPipelineResource,
     ) -> MaterializeResult:
         logger = context.log
 
@@ -215,7 +215,7 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
     )
     def _full_extract_asset(
         context: AssetExecutionContext,
-        dlt_onelake: DltOneLakeResource,
+        dlt_onelake: DltPipelineResource,
     ) -> MaterializeResult:
         logger = context.log
         logger.info("START full extraction — resource=%s", api_resource)

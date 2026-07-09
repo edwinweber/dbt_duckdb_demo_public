@@ -1,10 +1,26 @@
 
-WITH assets AS (
-    SELECT DISTINCT
-        asset_sk
+WITH planned AS (
+    -- ASSET_MATERIALIZATION_PLANNED fires for every step of every run regardless
+    -- of outcome (success, failure, or skip), so it is the complete catalog of
+    -- every asset Dagster has ever known about -- unlike sourcing from
+    -- dagster_asset_materialization (misses assets that only ever failed) or
+    -- dagster_step_failure (misses everything that succeeded). This also keeps
+    -- the dimension independent of the fact models instead of being derived
+    -- from them.
+    SELECT DISTINCT asset_key
+    FROM sqlite_scan(
+        '{{ env_var("DAGSTER_HOME", ".dagster") }}/history/runs/index.db',
+        'event_logs'
+    )
+    WHERE dagster_event_type = 'ASSET_MATERIALIZATION_PLANNED'
+      AND asset_key IS NOT NULL
+),
+
+assets AS (
+    SELECT
+        {{ cast_hash_to_bigint('asset_key') }}                                    AS asset_sk
     ,   asset_key
-    FROM {{ ref('dagster_asset_materialization') }}
-    WHERE asset_key IS NOT NULL
+    FROM planned
 ),
 
 parsed AS (

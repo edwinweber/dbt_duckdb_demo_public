@@ -71,6 +71,7 @@ from dagster_dbt import build_dbt_asset_selection
 
 from ddd_python.ddd_dagster._constants import (
     DUCKLAKE_CLEANUP_ASSET_KEY,
+    MAX_CONCURRENT_WORKERS,
     START_METABASE_ASSET_KEY,
     STOP_METABASE_ASSET_KEY,
 )
@@ -108,14 +109,10 @@ def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
 
 
 # ---------------------------------------------------------------------------
-# Shared executor: 4-way concurrency, mirrors ThreadPoolExecutor(max_workers=4)
+# Shared executor: concurrency mirrors ThreadPoolExecutor in dlt_pipeline_execution_functions.
 # ---------------------------------------------------------------------------
 
-_MAX_CONCURRENT_PROCESSES = 4
-
-_concurrent_executor = multiprocess_executor.configured(
-    {"max_concurrent": _MAX_CONCURRENT_PROCESSES}
-)
+_concurrent_executor = multiprocess_executor.configured({"max_concurrent": MAX_CONCURRENT_WORKERS})
 
 
 danish_parliament_incremental_job = define_asset_job(

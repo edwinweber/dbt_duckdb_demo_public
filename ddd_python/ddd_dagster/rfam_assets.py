@@ -25,7 +25,7 @@ from dagster import (
 )
 
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
-from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import build_rfam_sql
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
 from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
@@ -78,7 +78,7 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
     def _incremental_asset(
         context: AssetExecutionContext,
         config: RfamExtractionConfig,
-        dlt_onelake: DltOneLakeResource,
+        dlt_onelake: DltPipelineResource,
     ) -> MaterializeResult:
         logger = context.log
 
@@ -158,7 +158,7 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
     )
     def _full_extract_asset(
         context: AssetExecutionContext,
-        dlt_onelake: DltOneLakeResource,
+        dlt_onelake: DltPipelineResource,
     ) -> MaterializeResult:
         logger = context.log
         logger.info("START full extraction — table=%s", table_name)

@@ -64,3 +64,48 @@ final AS (
         ON dates.date_id = holidays.date_holidays_id
 )
 SELECT * FROM final
+UNION ALL
+SELECT
+    DATE '1900-01-01'         AS date_day
+,   1900                      AS date_year
+,   1900                      AS iso_year
+,   DATE '1900-01-01'         AS year_start_date
+,   DATE '1900-12-31'         AS year_end_date
+,   1                         AS year_day_number
+,   NULL                      AS year_offset
+,   1                         AS year_completed
+,   1                         AS date_quarter
+,   DATE '1900-01-01'         AS quarter_start_date
+,   DATE '1900-03-31'         AS quarter_end_date
+,   1                         AS quarter_day_number
+,   NULL                      AS quarter_offset
+,   1                         AS quarter_completed
+,   1                         AS date_month
+,   DATE '1900-01-01'         AS month_start_date
+,   DATE '1900-01-31'         AS month_end_date
+,   'Unknown'                 AS month_name
+,   'Unk'                     AS month_name_short
+,   'U'                       AS month_initial
+,   'Unknown 1900'            AS month_and_year
+,   190001                    AS month_and_year_number
+,   1                         AS month_day_number
+,   NULL                      AS month_offset
+,   1                         AS month_completed
+,   1                         AS date_week
+,   1                         AS iso_week_of_year
+,   DATE '1900-01-01'         AS week_start_date
+,   DATE '1900-01-07'         AS week_end_date
+,   1                         AS week_day_number
+,   NULL                      AS week_offset
+,   1                         AS week_completed
+,   190001                    AS iso_week_year_number
+,   0                         AS has_53_iso_weeks
+,   'Not a holiday'           AS holiday_name
+,   false                     AS is_holiday
+,   false                     AS is_global_holiday
+,   'Not a holiday'           AS holiday_type
+,   false                     AS fixed
+,   0                         AS is_after_today
+,   1                         AS is_before_today
+,   0                         AS is_weekend
+,   1                         AS is_weekday

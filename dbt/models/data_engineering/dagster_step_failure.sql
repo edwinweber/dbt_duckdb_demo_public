@@ -10,7 +10,10 @@
 
 SELECT
     -- Surrogate keys
-    {{ cast_hash_to_bigint('f.run_id || f.step_key') }}                          AS failure_sk
+    -- A single step_key can expand to multiple rows here (one per planned asset,
+    -- see dagster_step_failures_raw.py), so asset_key must be part of the hash
+    -- input or every row for that step collapses onto the same failure_sk.
+    {{ cast_hash_to_bigint("f.run_id || f.step_key || coalesce(f.asset_key, '')") }} AS failure_sk
 ,   {{ cast_hash_to_bigint('f.asset_key') }}                                     AS asset_sk
 ,   {{ cast_hash_to_bigint('f.run_id') }}                                        AS run_sk
 ,   {{ cast_hash_to_bigint('pr.job_name') }}                                     AS job_sk

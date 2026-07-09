@@ -169,7 +169,7 @@ This document describes every Python library declared in `pyproject.toml`, why i
 **Role:** Coverage measurement plugin for pytest — generates coverage reports to ensure test suites exercise the codebase adequately.
 
 **Why chosen:**
-- Standard tool for pytest-based projects; integrates seamlessly with the test runner and CI pipelines.
+- Standard for pytest projects; works with the test runner and CI pipelines.
 
 #### `ruff` `>=0.15.20`
 **Role:** Fast Python linter and formatter used for code style enforcement and static analysis.

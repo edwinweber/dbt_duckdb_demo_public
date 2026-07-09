@@ -22,7 +22,7 @@ from dagster import (
 )
 from dotenv import find_dotenv, load_dotenv
 
-from ddd_python.ddd_dagster.resources import DltOneLakeResource
+from ddd_python.ddd_dagster.resources import DltPipelineResource
 
 load_dotenv(find_dotenv())
 
@@ -88,7 +88,7 @@ def _send_ntfy_alert(
 def _build_and_write_run_summary(
     context: RunStatusSensorContext,
     status: Literal["success", "failure"],
-    dlt_onelake: DltOneLakeResource,
+    dlt_onelake: DltPipelineResource,
 ) -> None:
     """Collect run stats from the Dagster instance and write an NDJSON log record.
 
@@ -192,7 +192,7 @@ def _build_and_write_run_summary(
 )
 def danish_parliament_run_success_sensor(
     context: RunStatusSensorContext,
-    dlt_onelake: DltOneLakeResource,
+    dlt_onelake: DltPipelineResource,
 ) -> None:
     """Write a success summary to the configured log destination and send a ntfy.sh push alert."""
     _build_and_write_run_summary(context, status="success", dlt_onelake=dlt_onelake)
@@ -222,7 +222,7 @@ def danish_parliament_run_success_sensor(
 )
 def danish_parliament_run_failure_sensor(
     context: RunStatusSensorContext,
-    dlt_onelake: DltOneLakeResource,
+    dlt_onelake: DltPipelineResource,
 ) -> None:
     """Write a failure summary to the configured log destination and send a ntfy.sh push alert."""
     _build_and_write_run_summary(context, status="failure", dlt_onelake=dlt_onelake)

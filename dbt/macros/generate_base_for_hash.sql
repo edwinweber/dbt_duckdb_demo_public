@@ -1,8 +1,9 @@
-{% macro generate_base_for_hash(table_name,columns_to_exclude,primary_key_columns) %}
+{% macro generate_base_for_hash(table_name,columns_to_exclude,primary_key_columns,table_schema='main_bronze') %}
     {%- set query -%}
         SELECT column_name
         FROM information_schema.columns
         WHERE table_name = '{{ table_name }}'
+        AND lower(table_schema) = lower('{{ table_schema }}')
         AND column_name NOT IN ( {{ columns_to_exclude }} )
         AND column_name NOT IN ( {{ primary_key_columns }} )
         ORDER BY ordinal_position

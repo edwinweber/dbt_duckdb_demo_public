@@ -45,6 +45,11 @@ dagster = [
     "dagster>=1.13.11,<2",
     "dagster-webserver>=1.13.11,<2",
     "dagster-dbt>=0.29.11,<1",
+    # dagster's grpc client pulls in grpcio-health-checking transitively.
+    # grpcio-health-checking>=1.82 ships pb2 gencode requiring protobuf>=7.35,
+    # but dbt-core/dbt-common/dbt-adapters/dagster all cap protobuf<7 — cap
+    # this transitive dep too until protobuf 7.x is supported upstream.
+    "grpcio-health-checking<1.82",
 ]
 dev = [
     "pytest>=9.1.1",
@@ -53,6 +58,7 @@ dev = [
     "mypy>=1.10",
     "types-requests",  # mypy stubs for requests; without this, newer mypy raises import-untyped
     "pandas>=3.0.3",  # needed by duckdb.fetchdf() in integration tests
+    "boto3>=1.34",    # S3 integration tests: bucket setup/teardown against MinIO
 ]
 
 [tool.setuptools.packages.find]
@@ -61,6 +67,9 @@ include = ["ddd_python*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
+markers = [
+    "s3_integration: tests that require a live S3-compatible endpoint (MinIO); skipped when S3_TEST_ENDPOINT is unset",
+]
 
 [tool.coverage.report]
 omit = [
@@ -146,8 +155,8 @@ disallow_untyped_defs = false
 # on functions that simply pass those values through. Suppress per-module.
 [[tool.mypy.overrides]]
 module = [
-    "ddd_python.ddd_dlt.export_main_silver_to_fabric_silver",
-    "ddd_python.ddd_dlt.export_main_gold_to_fabric_gold",
+    "ddd_python.ddd_dlt.export_silver",
+    "ddd_python.ddd_dlt.export_gold",
     "ddd_python.ddd_dlt.dlt_pipeline_execution_functions",
     "ddd_python.ddd_utils.fabric_capacity_pause_resume",
 ]

@@ -14,7 +14,7 @@ import pyarrow as pa
 import pytest
 from deltalake import DeltaTable, write_deltalake
 
-import ddd_python.ddd_dlt.export_main_silver_to_fabric_silver as silver_mod
+import ddd_python.ddd_dlt.export_silver as silver_mod
 import duckdb
 from ddd_python.ddd_utils import configuration_variables
 from ddd_python.ddd_utils.path_utils import build_delta_export_path, open_export_connection
@@ -67,7 +67,7 @@ def _local_env(tmp_path):
     both this module and path_utils reference by identity.
     """
     return patch.dict(
-        "ddd_python.ddd_dlt.export_main_silver_to_fabric_silver.get_variables_from_env.__dict__",
+        "ddd_python.ddd_dlt.export_silver.get_variables_from_env.__dict__",
         {
             "STORAGE_TARGET": "local",
             "LOCAL_STORAGE_PATH": str(tmp_path),
@@ -213,6 +213,89 @@ def test_rfam_first_load_creates_table(rfam_silver_connection, tmp_path):
 
         assert rows == 3
         assert DeltaTable(path).to_pyarrow_table().num_rows == 3
+
+
+# ── S3 storage target ────────────────────────────────────────────────
+
+
+class TestExportSilverS3:
+    """Verify that export_single_silver_table threads S3 paths and storage_options
+    through to write_deltalake when STORAGE_TARGET=s3."""
+
+    _S3_PATH = "s3://my-delta-bucket/Files/Silver/silver_ddd_aktoer/"
+    _S3_STORAGE_OPTIONS = {
+        "AWS_ACCESS_KEY_ID": "test-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret",
+        "AWS_REGION": "us-east-1",
+    }
+    # Env patches ensure _silver_source_database() resolves to the in-memory
+    # schema name ("memory") and bypasses DuckLake mode.
+    _ENV_PATCHES = {
+        "STORAGE_TARGET": "s3",
+        "SILVER_STORAGE_FORMAT": "duckdb",
+        "DUCKDB_DATABASE": "memory",
+    }
+
+    def _make_connection(self):
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main_silver")
+        conn.execute("""
+            CREATE TABLE main_silver.silver_ddd_aktoer AS
+            SELECT 1 AS id, '2024-01-01'::TIMESTAMP AS LKHS_date_valid_from, 'Alice' AS name
+        """)
+        return conn
+
+    def _env_patch(self):
+        return patch.dict(
+            "ddd_python.ddd_dlt.export_silver.get_variables_from_env.__dict__",
+            self._ENV_PATCHES,
+            clear=False,
+        )
+
+    def test_s3_write_deltalake_called_with_s3_path(self):
+        """write_deltalake receives an s3:// path when STORAGE_TARGET=s3."""
+        conn = self._make_connection()
+        try:
+            with (
+                self._env_patch(),
+                patch.object(silver_mod, "write_deltalake") as mock_write,
+                patch.object(silver_mod, "DeltaTable") as mock_dt,
+                patch.object(silver_mod, "build_delta_export_path") as mock_path,
+                patch.object(silver_mod, "open_export_connection"),
+            ):
+                mock_dt.is_deltatable.return_value = False
+                mock_path.return_value = (self._S3_PATH, self._S3_STORAGE_OPTIONS)
+                silver_mod.export_single_silver_table(conn, "silver_ddd_aktoer")
+        finally:
+            conn.close()
+
+        mock_write.assert_called_once()
+        call_path = mock_write.call_args[0][0]
+        assert call_path.startswith("s3://")
+
+    def test_s3_storage_options_contain_access_key(self):
+        """write_deltalake receives storage_options with AWS_ACCESS_KEY_ID."""
+        conn = self._make_connection()
+        try:
+            with (
+                self._env_patch(),
+                patch.object(silver_mod, "write_deltalake") as mock_write,
+                patch.object(silver_mod, "DeltaTable") as mock_dt,
+                patch.object(silver_mod, "build_delta_export_path") as mock_path,
+                patch.object(silver_mod, "open_export_connection"),
+            ):
+                mock_dt.is_deltatable.return_value = False
+                mock_path.return_value = (self._S3_PATH, self._S3_STORAGE_OPTIONS)
+                silver_mod.export_single_silver_table(conn, "silver_ddd_aktoer")
+        finally:
+            conn.close()
+
+        mock_write.assert_called_once()
+        call_kwargs = mock_write.call_args
+        storage_options = call_kwargs.kwargs.get(
+            "storage_options", call_kwargs[1].get("storage_options", {})
+        )
+        assert "AWS_ACCESS_KEY_ID" in storage_options
 
 
 # ── DuckLake mode (SILVER_STORAGE_FORMAT=ducklake) ───────────────────

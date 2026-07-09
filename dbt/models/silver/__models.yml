@@ -10,6 +10,12 @@ version: 2
 models:
   - name: silver_ddd_afstemning
     description: SCD Type 2 history for Afstemning (vote sessions).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - id
+              - LKHS_date_valid_from
     columns:
       - name: id
         data_tests:
@@ -35,6 +41,12 @@ models:
 
   - name: silver_ddd_aktoer
     description: SCD Type 2 history for Aktør (actors/members).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - id
+              - LKHS_date_valid_from
     columns:
       - name: id
         data_tests:
@@ -111,7 +123,13 @@ models:
           - not_null
 
   - name: silver_ddd_sagstrinaktoer
-    description: SCD Type 2 history for SagstrinAktør (case step actors).
+    description: >
+      SCD Type 2 history for SagstrinAktør (case step actors — the junction between
+      case steps and the actors who sponsored or handled them). Available for export
+      to Delta Lake. Intentionally not promoted to a Gold dimension in the current
+      scope — a `sagstrinaktoer` junction dimension would enable committee-level
+      analysis (which actors are associated with which legislative steps) and
+      co-sponsorship queries.
     columns:
       - name: id
         data_tests:
@@ -131,6 +149,12 @@ models:
 
   - name: silver_ddd_stemme
     description: SCD Type 2 history for Stemme (individual votes).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - id
+              - LKHS_date_valid_from
     columns:
       - name: id
         data_tests:
@@ -205,7 +229,12 @@ models:
                 values: ['I', 'U', 'D']
 
   - name: silver_ddd_periode
-    description: SCD Type 2 history for Periode (parliamentary periods).
+    description: >
+      SCD Type 2 history for Periode (parliamentary terms/periods). Available for
+      export to Delta Lake. Intentionally not promoted to a Gold dimension in the
+      current scope — a `periode` dimension would enable period-based filtering of
+      votes, cases, and meetings, and would be the natural FK for a session-level
+      analysis dimension.
     columns:
       - name: id
         data_tests:
@@ -402,7 +431,9 @@ models:
   - name: silver_ddd_sagstrinaktoer_cv
     description: >
       Current-version view of SagstrinAktør (case step actors). One row per
-      case-step–actor combination — the latest CDC version.
+      case-step–actor combination — the latest CDC version. See
+      `silver_ddd_sagstrinaktoer` for the scope note — this table is available
+      for export but is not currently promoted to a Gold dimension.
     columns:
       - name: id
         data_tests:
@@ -496,7 +527,10 @@ models:
                 values: ['I', 'U', 'D']
 
   - name: silver_ddd_periode_cv
-    description: Current-version view of Periode (parliamentary periods). One row per period.
+    description: >
+      Current-version view of Periode (parliamentary terms/periods). One row per period.
+      See `silver_ddd_periode` for the scope note — this table is available for export
+      but is not currently promoted to a Gold dimension.
     columns:
       - name: id
         data_tests:

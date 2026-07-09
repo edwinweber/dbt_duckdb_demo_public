@@ -23,12 +23,48 @@ clean-targets:         # directories to be removed by `dbt clean`
   - "target"
   - "dbt_packages"
 
+# Create an S3 secret at the start of every dbt run when RAW_STORAGE_TARGET=s3.
+# This hook covers every dbt target (local, local_ducklake, local_ducklake_s3)
+# uniformly — only local_ducklake_s3 has a secrets: block in profiles.yml, while
+# local and local_ducklake do not. Without this hook those targets would have no
+# S3 secret and Bronze read_json_auto views (s3:// paths) would fail.
+#
+# The local_ducklake_s3 profiles.yml secrets: block is ALSO kept because
+# secrets are created before the ATTACH runs, and DuckLake's ATTACH needs the
+# S3 secret already present to reach S3-backed Parquet. The hook runs only
+# after ATTACH, so it cannot substitute for the profiles.yml block there.
+# (DuckDB accepts USE_SSL 'false' as a quoted string and casts it correctly,
+# so there is no quoting issue with the profiles.yml secret.)
+#
+# ENDPOINT/URL_STYLE/USE_SSL are only emitted when S3_ENDPOINT is non-empty
+# (MinIO). Omitting them lets DuckDB fall back to AWS defaults, which is
+# correct for real AWS S3.
+on-run-start:
+  - >-
+    {% if env_var('RAW_STORAGE_TARGET', 'local') == 's3' %}
+    CREATE OR REPLACE SECRET ddd_s3_secret (
+        TYPE s3,
+        KEY_ID '{{ env_var("S3_ACCESS_KEY_ID") }}',
+        SECRET '{{ env_var("S3_SECRET_ACCESS_KEY") }}'
+        {% if env_var('S3_ENDPOINT', '') != '' %}
+        , ENDPOINT '{{ env_var("S3_ENDPOINT").split("://")[-1] }}'
+        , URL_STYLE '{{ env_var("S3_URL_STYLE", "path") }}'
+        , USE_SSL {{ env_var("S3_USE_SSL", "false") }}
+        {% endif %}
+        , REGION '{{ env_var("S3_REGION", "us-east-1") }}'
+    )
+    {% endif %}
 
 # Project variables
 vars:
-  bronze_columns_to_exclude_in_silver_hash: "'LKHS_date_inserted','LKHS_pipeline_execution_inserted','LKHS_filename'"
+  bronze_columns_to_exclude_in_silver_hash: "'LKHS_date_inserted','LKHS_filename'"
   hash_null_replacement: "'<NULL>'"
   hash_delimiter: "']##['"
+  # Earliest date covered by the gold `date` dimension's spine (bronze_dates.sql).
+  # Must stay on or before the earliest real date in the source data (meeting /
+  # case / vote dates) or the gold FK relationship tests against `date` will fail
+  # for any row whose date falls before this bound.
+  date_spine_start_date: "1950-01-01"
 
 models:
   danish_democracy_data:

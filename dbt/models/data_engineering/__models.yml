@@ -89,14 +89,44 @@ models:
           - unique
       - name: job_sk
         description: FK to dagster_job — hash of job_name.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dagster_job')
+                field: job_key
       - name: start_date_sk
         description: FK to gold.date (date_day) for the run start.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+                where: "start_date_sk is not null"
       - name: start_time_sk
-        description: FK to gold.time (time_key = TIME 'HH:MM:00', truncated to the minute) for the run start.
+        description: FK to gold.time (time_key = 100*hour + minute, truncated to the minute) for the run start.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
+                where: "start_time_sk is not null"
       - name: end_date_sk
         description: FK to gold.date (date_day) for the run end. NULL while the run is in progress.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+                where: "end_date_sk is not null"
       - name: end_time_sk
-        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the run end. NULL while the run is in progress.
+        description: FK to gold.time (time_key = 100*hour + minute) for the run end. NULL while the run is in progress.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
+                where: "end_time_sk is not null"
       - name: run_id
         description: Dagster natural run UUID.
         data_tests:
@@ -159,18 +189,60 @@ models:
           - unique
       - name: asset_sk
         description: Surrogate key — hash of asset_key.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dagster_asset')
+                field: asset_sk
+                where: "asset_sk is not null"
       - name: run_sk
         description: FK to dagster_run — hash of run_id.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dagster_run')
+                field: run_sk
       - name: job_sk
         description: FK to dagster_job — hash of pipeline_name.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dagster_job')
+                field: job_key
+                where: "job_sk is not null"
       - name: start_date_sk
-        description: FK to gold.date (date_day) for the step start.
+        description: FK to gold.date (date_day) for the step start. NULL when ASSET_MATERIALIZATION_PLANNED event is absent.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+                where: "start_date_sk is not null"
       - name: start_time_sk
-        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the step start.
+        description: FK to gold.time (time_key = 100*hour + minute) for the step start. NULL when ASSET_MATERIALIZATION_PLANNED event is absent.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
+                where: "start_time_sk is not null"
       - name: end_date_sk
-        description: FK to gold.date (date_day) for the step end.
+        description: FK to gold.date (date_day) for the step end — always set from the ASSET_MATERIALIZATION event timestamp.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
       - name: end_time_sk
-        description: FK to gold.time (time_key = TIME 'HH:MM:00') for the step end.
+        description: FK to gold.time (time_key = 100*hour + minute) for the step end — always set.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
       - name: run_id
         description: Dagster run UUID.
         data_tests:
@@ -194,3 +266,113 @@ models:
       - name: step_outcome
         description: Step terminal event — STEP_SUCCESS | STEP_FAILURE | STEP_SKIPPED.
 
+  # ---------------------------------------------------------------------------
+  # Staging — Step failure raw events (Python model, TABLE)
+  # ---------------------------------------------------------------------------
+  - name: dagster_step_failures_raw
+    description: >
+      One row per failed asset per run. Reads STEP_FAILURE events from individual
+      per-run SQLite files ($DAGSTER_HOME/history/runs/{run_id}.db) — these are not
+      in the consolidated index.db, hence the Python model. Maps step_key to asset
+      key(s) via ASSET_MATERIALIZATION_PLANNED events so that each row carries an
+      asset_key suitable for joining to dagster_asset. A single step_key can expand
+      to multiple rows when a step covers more than one planned asset (e.g. dbt_silver_assets).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - run_id
+              - step_key
+              - asset_key
+    columns:
+      - name: run_id
+        description: Dagster run UUID.
+        data_tests:
+          - not_null
+      - name: step_key
+        description: Dagster step key that failed.
+        data_tests:
+          - not_null
+      - name: asset_key
+        description: Asset key mapped from the step via ASSET_MATERIALIZATION_PLANNED. NULL when no planned event was found.
+      - name: failed_at
+        description: Timestamp when the STEP_FAILURE event was recorded.
+        data_tests:
+          - not_null
+      - name: error_class
+        description: Python exception class name (e.g. DagsterExecutionStepExecutionError).
+      - name: error_message
+        description: Full error message text from the STEP_FAILURE event.
+
+  # ---------------------------------------------------------------------------
+  # Fact — Step failures with surrogate keys (SQL model, TABLE)
+  # ---------------------------------------------------------------------------
+  - name: dagster_step_failure
+    description: >
+      One row per failed asset per run — adds surrogate keys and date/time FKs on
+      top of dagster_step_failures_raw. Joins: asset_sk → dagster_asset; run_sk →
+      dagster_run; job_sk → dagster_job; date_sk → gold.date; time_sk → gold.time.
+    columns:
+      - name: failure_sk
+        description: Surrogate key — hash of run_id || step_key.
+        data_tests:
+          - not_null
+          - unique
+      - name: asset_sk
+        description: FK to dagster_asset — hash of asset_key. NULL when asset_key is NULL.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dagster_asset')
+                field: asset_sk
+                where: "asset_sk is not null"
+      - name: run_sk
+        description: FK to dagster_run — hash of run_id.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dagster_run')
+                field: run_sk
+      - name: job_sk
+        description: FK to dagster_job — hash of job_name from dagster_pipeline_runs. NULL when the run is not found.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dagster_job')
+                field: job_key
+                where: "job_sk is not null"
+      - name: date_sk
+        description: FK to gold.date (date_day) derived from failed_at — always set.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+      - name: time_sk
+        description: FK to gold.time (time_key = 100*hour + minute) derived from failed_at — always set.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
+      - name: run_id
+        description: Dagster run UUID — natural key.
+        data_tests:
+          - not_null
+      - name: step_key
+        description: Dagster step key that failed.
+        data_tests:
+          - not_null
+      - name: asset_key
+        description: Asset key — may be NULL when no ASSET_MATERIALIZATION_PLANNED event was found for the step.
+      - name: error_class
+        description: Python exception class name.
+      - name: error_message
+        description: Full error message text.
+      - name: failed_at
+        description: Timestamp when the step failure was recorded.
+        data_tests:
+          - not_null

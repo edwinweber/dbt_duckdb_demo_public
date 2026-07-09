@@ -6,12 +6,13 @@ Last updated: June 2026
 
 This is a **demo project** that builds a modern data engineering pipeline using low-cost tooling. It extracts open data from two sources — the Danish Parliament (Folketing) OData entities including members of parliament, meetings, cases, and votes from the official REST API at `oda.ft.dk`, and the Rfam public MySQL database with RNA family data at EBI — and transforms it through a medallion architecture (Bronze → Silver → Gold).
 
-The pipeline has **two independent storage switches**, each a single environment variable:
+The pipeline has **three independent storage switches**, each a single environment variable:
 
-- **Silver storage format** (`SILVER_STORAGE_FORMAT`) — native **DuckDB** tables (default) or **DuckLake** (Parquet data files + a SQL catalog, adding snapshot time-travel). Both keep full SCD Type 2 history; the choice is about *where* Silver lives, not what it contains.
-- **Delta Lake export target** (`STORAGE_TARGET`) — **local** filesystem (free, fully offline) or **Microsoft Fabric OneLake** (cloud, pay-per-use). The export is optional and only matters when sharing data with external tooling.
+- **Bronze + DuckLake storage** (`RAW_STORAGE_TARGET`) — **local** filesystem (default, free) or **S3-compatible storage** (MinIO locally, AWS S3 in production). Controls where dlt writes extracted files and where DuckLake Parquet data lives. Independent of the other two switches.
+- **Silver table storage** (`SILVER_STORAGE_FORMAT`) — native **DuckDB** tables (default) or **DuckLake** (Parquet data files + a SQL catalog, adding snapshot time-travel). Both keep full SCD Type 2 history; the choice is about *where* Silver lives, not what it contains.
+- **Delta Lake export target** (`STORAGE_TARGET`) — **local** filesystem (free, fully offline), **S3-compatible storage** (MinIO locally, AWS S3 in production), or **Microsoft Fabric OneLake** (cloud, pay-per-use). The export is optional and only matters when sharing data with external tooling.
 
-The extraction, transformation, orchestration, BI, and backup layers are all open-source and run for free; Microsoft Fabric is the only commercial component, and only when you opt into the cloud export.
+The extraction, transformation, orchestration, BI, and backup layers are all open-source and run for free. S3-compatible storage (MinIO) is also free and local. Microsoft Fabric is the only commercial component, and only when you opt into the cloud export.
 
 ---
 
@@ -55,35 +56,37 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
                     └──────────────────────────┘
 ```
 
-> **Two orthogonal switches.** The **Silver** layer is stored either as native
-> DuckDB tables (default) or as **DuckLake** (Parquet + catalog) — set by
-> `SILVER_STORAGE_FORMAT`. Independently, the optional **Delta Lake export**
-> writes to local disk or Fabric OneLake — set by `STORAGE_TARGET`. Metabase
-> reads the DuckDB file directly and needs **no export** at all.
+**Three orthogonal switches.**
+
+> - The **Bronze and DuckLake** layers live on the local filesystem (default) or S3 — set by `RAW_STORAGE_TARGET`.
+> - The **Silver** layer is stored either as native DuckDB tables (default) or as **DuckLake** (Parquet + catalog) — set by `SILVER_STORAGE_FORMAT`.
+> - The optional **Delta Lake export** writes to local disk, S3, or Fabric OneLake — set by `STORAGE_TARGET`.
+>
+> Metabase reads the DuckDB file directly and needs **no export** at all.
 
 ### Data Flow Summary
 
 | Step | Tool | What Happens |
 | --- | --- | --- |
-| **Extract** | Python + dlt | Entities fetched from Danish Parliament API (incremental and full-refresh) and tables from Rfam MySQL database (incremental and full-extract). Written as timestamped JSON. |
+| **Extract** | Python + dlt | Entities fetched from Danish Parliament API (incremental and full-refresh) and tables from Rfam MySQL database (incremental and full-extract). Written as timestamped JSON. Lands on local disk or S3 (per `RAW_STORAGE_TARGET`). |
 | **Bronze** | dbt views | Raw JSON exposed as queryable views via DuckDB. |
-| **Silver** | dbt incremental tables | SCD Type 2 history with SHA-256 hash-based change detection. Inserts, updates, and deletes tracked. Stored as native DuckDB tables or DuckLake Parquet (per `SILVER_STORAGE_FORMAT`). |
+| **Silver** | dbt incremental tables | SCD Type 2 history with SHA-256 hash-based change detection. Inserts, updates, and deletes tracked. Stored as native DuckDB tables or DuckLake Parquet (per `SILVER_STORAGE_FORMAT`). DuckLake can live locally or on S3 (per `RAW_STORAGE_TARGET`). |
 | **Gold** | dbt views | Business-friendly English names, surrogate keys (signed BIGINT for Power BI compatibility), XML biography parsing, current-version views. |
-| **Export** (optional) | DuckDB `delta_scan` + deltalake | Silver and Gold written as Delta Lake tables (incremental append for Silver, overwrite for Gold). Dedup read runs inside DuckDB; write uses the `deltalake` library. |
+| **Export** (optional) | DuckDB `delta_scan` + deltalake | Silver and Gold written as Delta Lake tables (incremental append for Silver, overwrite for Gold). Dedup read runs inside DuckDB; write uses the `deltalake` library. Target is local disk, S3, or OneLake (per `STORAGE_TARGET`). |
 
 ---
 
 ## What It Demonstrates
 
 - **Medallion architecture** with SCD Type 2 historical tracking across entities from multiple sources
-- **Runs anywhere**: entirely on a laptop with Docker (free), or connected to Microsoft Fabric — same codebase
-- **Switchable Silver storage**: native DuckDB tables or DuckLake (open table format — Parquet + catalog, with snapshot time-travel), flipped by one environment variable
+- **Runs anywhere**: entirely on a laptop with Docker (free), connected to S3-compatible MinIO (free, local), or connected to Microsoft Fabric — same codebase
+- **Switchable storage at three layers**: Bronze/DuckLake on local disk or S3 (`RAW_STORAGE_TARGET`); Silver as native DuckDB or DuckLake Parquet (`SILVER_STORAGE_FORMAT`); Delta exports to local, S3, or Fabric (`STORAGE_TARGET`)
 - **Daily automation** via Dagster (two schedules, disabled by default) with run-status sensors and per-run log files
 - **Code-generated models**: dbt SQL models generated from macros and a Python generator for consistency
 - **Bundled BI layer**: Metabase connects directly to the DuckDB file for ad-hoc queries and dashboards — no export required
 - **Self-observability**: a dbt layer reads Dagster's own run history so the pipeline can report on its own runs
 - **Backup & restore**: a DuckLake-aware backup system archives each stateful service and ships off-site to a Hetzner StorageBox
-- **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend
+- **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend; MinIO for local S3-like development
 
 ## What It Does Not Do
 

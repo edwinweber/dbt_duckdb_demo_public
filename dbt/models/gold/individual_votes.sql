@@ -35,7 +35,7 @@ SELECT
 ,       COALESCE(meeting.LKHS_meeting_id,0) AS LKHS_meeting_id
 ,       COALESCE(case_gold.LKHS_case_id,0)  AS LKHS_case_id
 --      The key of the date dimension is date_day, not a surrogate key
-,       cast(meeting.meeting_date as date)  AS date_day
+,       COALESCE(cast(meeting.meeting_date as date), DATE '1900-01-01') AS date_day
 --      degenerate dimension
 ,       individual_voting_type.type         AS individual_voting_type
 --      measures

@@ -1,50 +1,19 @@
-# Path variables (DAGSTER_HOME, DLT_PIPELINES_DIR, DUCKDB_DATABASE_LOCATION, etc.)
-# are set in .env with local paths. The environment: overrides below remap them
-# to the container volume mount paths, taking precedence over env_file values.
-#
-# ── Host directory permissions ───────────────────────────────────────────────
-# All pipeline containers (run, dagster, backup) run as app (UID 1000).
-# Metabase runs as UID 2000. Both UIDs access shared bind-mounted directories,
-# so permissions must allow each UID to read/write what it needs.
-#
-# Run ONCE on the host before the first container start:
-#
-#   # Create directories
-#   sudo mkdir -p /data/{dlt_pipelines,duckdb,dbt_logs,dagster,local,metabase/data,metabase/duckdb-extensions}
-#   sudo mkdir -p /data_backup/{dagster,metabase,logs}
-#
-#   # app (UID 1000) owns the pipeline and backup directories
-#   sudo chown -R 1000:1000 /data/dlt_pipelines /data/dbt_logs /data/dagster /data/local
-#   sudo chown -R 1000:1000 /data/duckdb /data_backup
-#
-#   # Metabase (UID 2000) owns its state directories
-#   sudo chown -R 2000:2000 /data/metabase/data /data/metabase/duckdb-extensions
-#
-#   # DuckDB creates WAL/lock files even during read-only queries (Metabase reads
-#   # the .duckdb file). o+rwx lets UID 2000 write into the UID-1000-owned dir.
-#   chmod -R o+rwx /data/duckdb
-#
-#   # DuckLake Parquet data: Metabase (UID 2000) reads Silver via DuckLake views.
-#   sudo mkdir -p /data/ducklake
-#   sudo chown -R 1000:1000 /data/ducklake
-#   chmod -R o+rx /data/ducklake
-#
-#   # backup (UID 1000) reads Metabase data (owned by UID 2000) to create archives
-#   chmod -R o+rX /data/metabase/data
-#
-# ── Docker socket access ──────────────────────────────────────────────────────
-# Services that talk to Docker (dagster, backup) need to be in the socket's
-# group.  DOCKER_GID must match the GID of /var/run/docker.sock on the host.
-# Add it to .env once:
-#
-#   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
-#
-# ─────────────────────────────────────────────────────────────────────────────
+# See docker/DOCKER_USAGE.md "One-Time Host Setup" for the host directory
+# permissions (mkdir/chown/chmod and Docker socket GID setup) this file assumes.
 
 x-path-overrides: &path-overrides
   DANISH_DEMOCRACY_BASE_URL: "https://oda.ft.dk/api"
-  DANISH_DEMOCRACY_DATA_SOURCE: /data/local/Files/Bronze/DDD
-  RFAM_DATA_SOURCE: /data/local/Files/Bronze/RFAM
+  # DANISH_DEMOCRACY_DATA_SOURCE / RFAM_DATA_SOURCE default to the container-side
+  # mount matching the LOCAL_STORAGE_PATH override below (/data/local). This is
+  # what RAW_STORAGE_TARGET=local (the default) needs — .env's own value for
+  # these vars is a *host* absolute path (correct for non-docker runs), which
+  # doesn't exist inside the container, so leaving them unset here made every
+  # docker Bronze read look in the wrong place.
+  # For RAW_STORAGE_TARGET=s3, set DANISH_DEMOCRACY_DATA_SOURCE_DOCKER /
+  # RFAM_DATA_SOURCE_DOCKER in .env to the s3:// URIs instead — S3 URIs are
+  # location-independent, so they don't need a separate host/container form.
+  DANISH_DEMOCRACY_DATA_SOURCE: ${DANISH_DEMOCRACY_DATA_SOURCE_DOCKER:-/data/local/Files/Bronze/DDD}
+  RFAM_DATA_SOURCE: ${RFAM_DATA_SOURCE_DOCKER:-/data/local/Files/Bronze/RFAM}
   DLT_PIPELINES_DIR: /data/dlt_pipelines
   DUCKDB_DATABASE_LOCATION: /data/duckdb/danish_democracy_data.duckdb
   DUCKDB_DATABASE: danish_democracy_data
@@ -63,6 +32,12 @@ x-common: &common
   environment:
     <<: *path-overrides
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # ── Generic runner for one-off Python tasks ─────────────────────────────
   # Usage: docker compose run --rm run <module>
@@ -70,8 +45,8 @@ services:
   #   docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
   #   docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
   #   docker compose run --rm run ddd_python.ddd_dbt.dbt_build_with_unique_logfile
-  #   docker compose run --rm run ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
-  #   docker compose run --rm run ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
+  #   docker compose run --rm run ddd_python.ddd_dlt.export_silver
+  #   docker compose run --rm run ddd_python.ddd_dlt.export_gold
   run:
     <<: *common
     container_name: ddd-run
@@ -158,11 +133,7 @@ services:
       resources:
         limits:
           memory: 6g
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
+    logging: *logging
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
       interval: 30s
@@ -199,11 +170,7 @@ services:
       resources:
         limits:
           memory: 4g
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
+    logging: *logging
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s

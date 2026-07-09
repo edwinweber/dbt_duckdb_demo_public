@@ -122,6 +122,61 @@ jobs:
           DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
           DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
 
+      - name: dbt parse — ducklake+s3 mode (validates local_ducklake_s3 target SQL + YAML)
+        run: dbt parse --project-dir dbt --profiles-dir dbt --target local_ducklake_s3
+        env:
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: ducklake
+          RAW_STORAGE_TARGET: s3
+          DUCKDB_DATABASE_LOCATION: /tmp/ci_ducklake_s3_test.duckdb
+          DUCKDB_DATABASE: ci_ducklake_s3_test
+          DUCKLAKE_CATALOG_LOCATION: /tmp/ci_ducklake_s3.ducklake
+          S3_ACCESS_KEY_ID: ci_fake_key
+          S3_SECRET_ACCESS_KEY: ci_fake_secret
+          S3_BUCKET_DUCKLAKE: ci-ducklake-bucket
+          DANISH_DEMOCRACY_DATA_SOURCE: /tmp/bronze_ddd
+          RFAM_DATA_SOURCE: /tmp/bronze_rfam
+          DBT_PROJECT_DIRECTORY: dbt/
+          LOCAL_STORAGE_PATH: /tmp
+          DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
+          DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
+
+  # ── S3/MinIO integration tests ──────────────────────────────────────────────
+  test-s3:
+    name: pytest (S3/MinIO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          timeout 60 bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
+
+      - name: Run S3 integration tests
+        run: pytest tests/test_integration_s3_pipeline.py -v --tb=short
+        env:
+          S3_TEST_ENDPOINT: http://localhost:9000
+          S3_TEST_ACCESS_KEY_ID: minioadmin
+          S3_TEST_SECRET_ACCESS_KEY: minioadmin
+          # Minimal env required by get_variables_from_env at import time
+          STORAGE_TARGET: local
+          SILVER_STORAGE_FORMAT: duckdb
+          LOCAL_STORAGE_PATH: /tmp/ddd_s3_ci
+
   # ── Linting & type-checking ──────────────────────────────────────────────────
   lint:
     name: ruff + mypy

@@ -48,3 +48,22 @@ CREATE OR REPLACE PERSISTENT SECRET azure_sp (
 
 -- Verify the secret was created
 SELECT name, type, provider, scope FROM duckdb_secrets() WHERE name = 'azure_sp';
+
+-- Create or replace a persistent S3 secret when S3_ENDPOINT is configured.
+-- This enables non-dbt sessions (e.g. ad-hoc DBeaver queries) to read
+-- S3-backed Bronze files or DuckLake Parquet data without extra setup.
+-- Uses getenv() — DuckDB CLI only.  The Python init path (init_duckdb.py)
+-- handles the same credential surfaces for non-CLI invocations.
+-- Run this block only when S3_ENDPOINT is set (comment it out otherwise).
+--
+-- CREATE OR REPLACE PERSISTENT SECRET ddd_s3_secret (
+--     TYPE s3,
+--     KEY_ID getenv('S3_ACCESS_KEY_ID'),
+--     SECRET getenv('S3_SECRET_ACCESS_KEY'),
+--     ENDPOINT getenv('S3_ENDPOINT'),
+--     URL_STYLE getenv('S3_URL_STYLE'),
+--     USE_SSL false,
+--     REGION getenv('S3_REGION')
+-- );
+--
+-- SELECT name, type FROM duckdb_secrets() WHERE name = 'ddd_s3_secret';

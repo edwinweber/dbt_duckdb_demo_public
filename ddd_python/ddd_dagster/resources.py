@@ -1,8 +1,7 @@
 """Dagster resource definitions for Danish Democracy Data (DDD) extraction.
 
-The sole resource, :class:`DltOneLakeResource`, wraps
-``dlt_pipeline_execution_functions.execute_pipeline()`` and
-``write_log_to_onelake()`` as a Dagster ``ConfigurableResource``.
+Wraps ``dlt_pipeline_execution_functions.execute_pipeline()`` and
+``write_log_entry()`` as a Dagster ``ConfigurableResource``.
 
 Injecting the resource rather than importing the functions directly in assets
 enables:
@@ -10,13 +9,6 @@ enables:
 * Dependency injection — assets declare what they need; Dagster wires it up.
 * Testability — a mock resource can be swapped in during unit tests.
 * Auditability — resource configuration is visible in the Dagster UI.
-
-Authentication / credentials are handled transparently by
-``get_fabric_onelake_clients``, which reads the three Azure AD service-principal
-variables from the environment:  ``AZURE_TENANT_ID``,
-``AZURE_CLIENT_ID``, and
-``AZURE_CLIENT_SECRET``.  No secrets are stored in or
-passed through this resource.
 """
 
 from __future__ import annotations
@@ -30,15 +22,15 @@ from dagster import ConfigurableResource
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
 
 
-class DltOneLakeResource(ConfigurableResource):
-    """Dagster resource that dispatches DLT extraction pipelines to OneLake.
+class DltPipelineResource(ConfigurableResource):
+    """Dispatches DLT extraction pipelines and writes run logs to local filesystem.
 
     This resource is declared once in the top-level :class:`dagster.Definitions`
     object and injected into every extraction asset.  All actual extraction and
     upload logic lives in :mod:`dlt_pipeline_execution_functions`.
 
     Attributes:
-        source_system_code: Short identifier appended to every OneLake log path
+        source_system_code: Short identifier appended to the log directory path
             (default ``"DDD"``).
     """
 
@@ -57,8 +49,8 @@ class DltOneLakeResource(ConfigurableResource):
 
         This is a thin pass-through to
         :func:`dlt_pipeline_execution_functions.execute_pipeline`.  Per-pipeline
-        NDJSON run logs are written to the configured log destination (local or
-        OneLake, per ``STORAGE_TARGET``) **inside** that function, so callers do
+        NDJSON run logs are written to the local filesystem under
+        ``DLT_PIPELINE_RUN_LOG_DIR`` **inside** that function, so callers do
         not need to handle logging themselves.
 
         Args:
@@ -83,7 +75,7 @@ class DltOneLakeResource(ConfigurableResource):
         )
 
     # ------------------------------------------------------------------
-    # Job-level run summary logging to OneLake
+    # Job-level run summary logging
     # ------------------------------------------------------------------
 
     def write_job_run_log(
@@ -97,11 +89,10 @@ class DltOneLakeResource(ConfigurableResource):
     ) -> None:
         """Append a job-run summary NDJSON record to the configured log destination.
 
-        One record per Dagster job run. The destination path depends on
-        ``STORAGE_TARGET``::
+        One record per Dagster job run. Logs are always written to the local
+        filesystem::
 
-            <DLT_PIPELINE_RUN_LOG_DIR>/<source_system_code>/<job_name>_run_log.ndjson  (onelake)
-            <DLT_PIPELINES_LOG_DIR>/<source_system_code>/<job_name>_run_log.ndjson     (local)
+            <LOCAL_STORAGE_PATH>/logs/<source_system_code>/<job_name>_run_log.ndjson
 
         Args:
             job_name: Dagster job name (used in the log file name).
@@ -136,4 +127,4 @@ class DltOneLakeResource(ConfigurableResource):
         log_dir = dpef.build_log_dir(self.source_system_code)
         log_file = f"{job_name}_run_log.ndjson"
 
-        dpef.write_log_to_onelake(record, log_dir, log_file)
+        dpef.write_log_entry(record, log_dir, log_file)

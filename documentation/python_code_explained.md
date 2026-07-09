@@ -94,7 +94,7 @@ lower ones, never the reverse:
 | Package | Role | Entry points you run |
 |---------|------|----------------------|
 | `ddd_utils` | Config, env vars, paths, strings, cloud clients, backup helpers | (mostly imported, not run) |
-| `ddd_dlt` | Extract from sources; export to Delta Lake | `dlt_run_extraction_pipelines_*`, `export_main_*` |
+| `ddd_dlt` | Extract from sources; export to Delta Lake | `dlt_run_extraction_pipelines_*`, `export_silver`, `export_gold` |
 | `ddd_dbt` | Generate dbt SQL; run `dbt build`; init DuckDB | `generate_dbt_models`, `dbt_build_with_unique_logfile` |
 | `ddd_dagster` | Orchestrate everything as assets/jobs/schedules | `dagster dev -w workspace.yaml` |
 
@@ -154,12 +154,18 @@ credentials present**. Two mechanisms achieve this:
 * Function-local `import` statements (`from ... import get_fabric_onelake_clients`
   *inside* a function body, not at the top of the file).
 
-### 3.4 The `STORAGE_TARGET` switch (`local` vs `onelake`)
+### 3.4 The `STORAGE_TARGET` switch (Delta Lake export destination)
 
-A single environment variable, `STORAGE_TARGET`, flips the entire pipeline between
-writing to your local disk (`data/...`) and writing to Microsoft Fabric OneLake
-(`abfss://...`). Every place that touches storage checks this flag. This is what
-lets the whole thing run on a laptop with zero cloud setup.
+A single environment variable, `STORAGE_TARGET`, flips the Delta Lake **export**
+between three options:
+
+* `local` — write to your local disk under `LOCAL_STORAGE_PATH` (`data/...` by default). Zero cloud setup.
+* `s3` — write to S3-compatible storage (MinIO locally, AWS S3 in production). Requires `S3_BUCKET_DELTA` and S3 credentials.
+* `onelake` — write to Microsoft Fabric OneLake (`abfss://...`). Requires Azure service principal.
+
+Every place that touches Delta Lake storage checks this flag. Note: this is independent
+of `RAW_STORAGE_TARGET` (which controls Bronze files and DuckLake location) and
+`SILVER_STORAGE_FORMAT` (which controls Silver table storage).
 
 ### 3.5 Structured run logging as NDJSON
 
@@ -288,9 +294,13 @@ The solution: **PEP 562 module-level `__getattr__`**.
 * **Optional** vars are read eagerly with `os.getenv(...)` and stored as module-level
   globals (e.g. `STORAGE_TARGET`, `LOCAL_STORAGE_PATH`, `DUCKDB_DATABASE_LOCATION`).
   These never raise. This includes `SILVER_STORAGE_FORMAT` (default `duckdb`,
-  validated against `{duckdb, ducklake}` — an invalid value raises immediately)
-  plus the two DuckLake paths (`DUCKLAKE_CATALOG_LOCATION`, `DUCKLAKE_DATA_PATH`),
-  which are read eagerly and default to `None` when not in DuckLake mode.
+  validated against `{duckdb, ducklake}` — an invalid value raises immediately),
+  `RAW_STORAGE_TARGET` (default `local`, validated against `{local, s3}`),
+  the DuckLake paths (`DUCKLAKE_CATALOG_LOCATION`, `DUCKLAKE_DATA_PATH`), and the
+  S3 credentials and bucket vars (`S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, etc.). When
+  `RAW_STORAGE_TARGET=s3` and `SILVER_STORAGE_FORMAT=ducklake`, `DUCKLAKE_DATA_PATH`
+  is **automatically derived** from `S3_BUCKET_DUCKLAKE` and `S3_PREFIX_DUCKLAKE`
+  so users don't manually construct S3 URIs.
 * **Required** vars are listed in `_LAZY_REQUIRED` and resolved only on **first
   access**, via module-level `__getattr__`. When you access
   `get_variables_from_env.AZURE_CLIENT_SECRET`, Python automatically calls
@@ -305,27 +315,67 @@ impact. This PEP 562 approach restores IDE autocomplete and static analysis supp
 the function signature is plain Python, and type checkers can see all names without
 the need for special stubs or `# type: ignore` directives.
 
+**S3 credentials are shared between RAW and export S3 storage:** When either
+`RAW_STORAGE_TARGET=s3` or `STORAGE_TARGET=s3`, the shared credentials
+(`S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`,
+`S3_USE_SSL`, `S3_URL_STYLE`) are all loaded and validated. Bucket-specific
+variables are loaded only for the relevant switch (`S3_BUCKET_BRONZE` for raw,
+`S3_BUCKET_DELTA` for export). This allows Bronze and Delta export to live in
+the same S3 account (possibly different buckets) or split across accounts.
+
+**`DUCKLAKE_DATA_PATH` auto-derivation:** When `RAW_STORAGE_TARGET=s3` and
+`SILVER_STORAGE_FORMAT=ducklake`, `DUCKLAKE_DATA_PATH` is automatically
+constructed from `S3_BUCKET_DUCKLAKE` and `S3_PREFIX_DUCKLAKE` — the S3 bucket
+and prefix vars are the source of truth in S3 mode, so users don't manually
+construct S3 URIs.
+
 Helper functions:
 * `_require(name)` — fetch or raise with a clear message.
 * `_int_env(name, default)` — parse an int env var, raising a *useful* error if
   it's set but not a number (rather than a cryptic `ValueError` later).
-* `STORAGE_TARGET` is validated against `{"local", "onelake"}` at import — a typo
+* `STORAGE_TARGET` is validated against `{"local", "s3", "onelake"}` at import — a typo
   fails fast.
+* `RAW_STORAGE_TARGET` is validated against `{"local", "s3"}` at import.
+* `SILVER_STORAGE_FORMAT` is validated against `{"duckdb", "ducklake"}` at import.
 
 ### 4.4 `path_utils.py` — building storage paths
 
 [ddd_python/ddd_utils/path_utils.py](../ddd_python/ddd_utils/path_utils.py)
 
-Centralises the "local vs OneLake" path logic so no call site has to repeat it.
+Centralises the "local vs S3 vs OneLake" path logic so no call site has to repeat it.
 
 * **`build_bronze_destination_path(source_system_code, entity_name)`** returns
-  where dlt should land extracted files. Local → `Files/Bronze/DDD/aktoer`; OneLake
-  → a path rooted at `FABRIC_ONELAKE_FOLDER_BRONZE`.
+  where dlt should land extracted files. Branches on `RAW_STORAGE_TARGET`:
+  * Local → `Files/Bronze/DDD/aktoer` (relative, dlt prepends `LOCAL_STORAGE_PATH`)
+  * S3 → `s3://S3_BUCKET_BRONZE/Files/Bronze/DDD/aktoer/` (full URI with bucket)
+
 * **`build_delta_export_path(layer, table)`** returns a `(path, storage_options)`
-  tuple ready for `deltalake.write_deltalake`. For local it also creates the
-  directory (`os.makedirs(..., exist_ok=True)`) as a convenience so callers don't
-  have to. For OneLake it builds the `abfss://workspace@account.dfs.fabric...` URI
-  and fetches a bearer token.
+  tuple ready for `deltalake.write_deltalake`. Branches on `STORAGE_TARGET`:
+  * Local: returns path under `LOCAL_STORAGE_PATH/Files/{Layer}/{table}/` and
+    creates the directory as a side effect (`os.makedirs(..., exist_ok=True)`).
+    `storage_options` is empty dict.
+  * S3: returns `s3://S3_BUCKET_DELTA/Files/{Layer}/{table}/` URI and
+    `storage_options` dict containing `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+    `AWS_REGION`. If `S3_ENDPOINT` is set (MinIO), also includes
+    `AWS_ENDPOINT_URL` (full URL with protocol), `AWS_S3_ADDRESSING_STYLE`, and
+    `AWS_ALLOW_HTTP` (based on `S3_USE_SSL`).
+  * OneLake: returns `abfss://workspace@account.dfs.fabric.microsoft.com/...` URI,
+    fetches a bearer token via lazy import of `get_fabric_onelake_clients`, and
+    returns `storage_options` with token + `use_fabric_endpoint=true`.
+
+* **`open_export_connection()`** opens a read-only DuckDB connection for Silver/Gold
+  exports. When `SILVER_STORAGE_FORMAT=ducklake` it attaches the DuckLake catalog
+  read-only. If `DUCKLAKE_DATA_PATH` starts with `s3://` OR `STORAGE_TARGET=s3`,
+  it calls `_configure_s3_secret` to create a session-scoped S3 secret on the
+  connection so DuckLake/delta_scan can reach S3.
+
+* **`_configure_s3_secret(conn)`** creates a DuckDB S3 secret using `S3_ENDPOINT`,
+  `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_USE_SSL`, and
+  `S3_URL_STYLE` from the environment. **Important:** `S3_ENDPOINT` is stored as
+  a full URL (e.g. `http://minio:9000`) for dlt/boto3, but DuckDB's `CREATE SECRET`
+  clause takes `host:port` only — the function strips the protocol prefix automatically
+  (e.g. `minio:9000`). Called before any operation that needs to reach S3 (DuckLake
+  ATTACH when data is on S3, or delta_scan when export target is S3).
 
 Notice the **function-local import** of `get_fabric_onelake_clients` inside the
 OneLake branch — the Azure SDK is only imported when you're actually exporting to
@@ -348,7 +398,11 @@ asks it for a client or a token.
 ### 4.6 `backup_common.py`, `backup_platform.py`, `restore_platform.py`, `fabric_capacity_pause_resume.py`
 
 These are **operational** utilities, not part of the data pipeline itself. They're
-covered in [§8](#8-the-platform-operations-scripts).
+covered in [§8](#8-the-platform-operations-scripts). Note: `backup_common.py`
+defines a helper function `_ducklake_data_is_local()` that checks whether DuckLake
+Parquet data lives on the local filesystem or on S3. When `RAW_STORAGE_TARGET=s3`
+and DuckLake is active, the local DuckLake backup target is skipped — S3 bucket
+versioning and lifecycle policies handle durability instead.
 
 ---
 
@@ -401,9 +455,16 @@ the way through. It also truncates over-long fractional seconds in timestamps vi
 the `_TS_MICROSEC` regex (DuckDB/Arrow only want microsecond precision).
 
 **The destination** is built by `_make_destination`, which branches on
-`STORAGE_TARGET`: local uses a `file://` bucket, OneLake uses an `az://` bucket with
-service-principal credentials. A custom `layout` + `_resolve_path` placeholder
-forces dlt to write your exact timestamped filename instead of dlt's default naming.
+`RAW_STORAGE_TARGET` (which controls where Bronze files land):
+- `local` uses a `file://` bucket (local filesystem under `LOCAL_STORAGE_PATH`)
+- `s3` uses an `s3://` bucket with credentials from `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`,
+  `S3_SECRET_ACCESS_KEY`, etc.
+
+Note: the older `STORAGE_TARGET` variable (which controls Delta Lake *export*
+destination to OneLake) is **separate** — it does not affect Bronze file location.
+
+A custom `layout` + `_resolve_path` placeholder forces dlt to write your exact
+timestamped filename instead of dlt's default naming.
 
 **Module-level setup** at the top is important and easy to miss:
 
@@ -418,16 +479,12 @@ Bronze `read_json_auto()` views can glob.
 
 **Logging and secret scrubbing.** `execute_pipeline` wraps every run in
 `try/except/finally`: it measures wall-clock time, and in the `finally` block writes
-an NDJSON log record — *whether or not the run succeeded*. Before logging the call
-parameters it runs them through `_scrub_secrets`, which replaces the value of any
-key containing `connection_string`/`secret`/`password`/`token` with `"***"`. The
-log write itself is wrapped so a logging failure only emits a `warnings.warn`, never
+an NDJSON log record — *whether or not the run succeeded* — always to the local
+filesystem under `LOCAL_STORAGE_PATH/logs/`. Before logging the call parameters
+it runs them through `_scrub_secrets`, which replaces the value of any key
+containing `connection_string`/`secret`/`password`/`token` with `"***"`. The log
+write itself is wrapped so a logging failure only emits a `warnings.warn`, never
 masks the real result.
-
-**`write_log_to_onelake`** is the NDJSON appender. Locally it just opens the file in
-append mode. On OneLake it uses the ADLS append/flush API, and explicitly catches
-`ResourceNotFoundError` to create the file on first write — a deliberately *specific*
-exception rather than a bare `except`.
 
 **`_serialize_trace` / `_json_default`** turn dlt's rich trace object and any exotic
 types (like `pendulum.DateTime`) into plain JSON-serialisable values. These are
@@ -499,9 +556,9 @@ Once all tasks are built, the script calls `run_extraction_pool()` — the same
 shared orchestration helper as DDD — which runs them concurrently, collects
 results, writes a script-level NDJSON summary, and raises on any failure.
 
-### 5.4 `export_main_silver_to_fabric_silver.py` — Silver → Delta Lake
+### 5.4 `export_silver.py` — Silver → Delta Lake
 
-[ddd_python/ddd_dlt/export_main_silver_to_fabric_silver.py](../ddd_python/ddd_dlt/export_main_silver_to_fabric_silver.py)
+[ddd_python/ddd_dlt/export_silver.py](../ddd_python/ddd_dlt/export_silver.py)
 
 Reads each Silver table from DuckDB and writes it to a Delta Lake table. The
 interesting logic is **incremental append**:
@@ -563,9 +620,9 @@ tables are attempted, so one bad table doesn't silently skip the rest. The PK co
 from `SILVER_TABLE_PRIMARY_KEYS` (DDD entities use `id`, Rfam tables vary). DuckDB is
 opened `read_only=True` for safety.
 
-### 5.5 `export_main_gold_to_fabric_gold.py` — Gold → Delta Lake
+### 5.5 `export_gold.py` — Gold → Delta Lake
 
-[ddd_python/ddd_dlt/export_main_gold_to_fabric_gold.py](../ddd_python/ddd_dlt/export_main_gold_to_fabric_gold.py)
+[ddd_python/ddd_dlt/export_gold.py](../ddd_python/ddd_dlt/export_gold.py)
 
 Simpler than Silver: Gold tables are dimensional **views** that are cheap to rebuild,
 so every export is a full `mode="overwrite"`. Same read-only DuckDB connection, same
@@ -628,12 +685,9 @@ prefix, different env var, different incremental set).
 [ddd_python/ddd_dbt/dbt_build_with_unique_logfile.py](../ddd_python/ddd_dbt/dbt_build_with_unique_logfile.py)
 
 A thin wrapper that runs `dbt build --log-format json` as a subprocess, capturing
-stdout to a timestamped local log file, and (in OneLake mode only) uploads that log
-to Fabric. Returns/raises based on dbt's exit code so a failed build fails the
-script. The `--models_to_select` CLI arg passes through to `dbt --select`.
-
-Note the deferred Azure import inside `upload_log_to_azure` — local mode never
-touches Azure.
+stdout to a timestamped file under `DBT_LOGS_DIRECTORY`. The dbt log is written only
+to the local filesystem. Returns/raises based on dbt's exit code so a failed build
+fails the script. The `--models_to_select` CLI arg passes through to `dbt --select`.
 
 ### 6.3 `init_duckdb.py` — bootstrapping the database
 
@@ -641,12 +695,28 @@ touches Azure.
 
 Used in Docker where the `duckdb` CLI isn't installed. It opens the database,
 installs/loads the `httpfs`, `azure`, and `delta` extensions, sets the Azure
-transport option, and creates a persistent Azure service-principal **secret** so
-DuckDB can read OneLake directly.
+transport option, and creates persistent **secrets** for cloud storage.
+
+Two functions:
+
+* **`init_s3_secret(con)`** creates a persistent S3 secret when either
+  `RAW_STORAGE_TARGET=s3` or `STORAGE_TARGET=s3`. The secret includes
+  `KEY_ID`, `SECRET`, and `REGION` (always), plus `ENDPOINT`, `URL_STYLE`,
+  and `USE_SSL` (only when `S3_ENDPOINT` is non-empty, i.e. MinIO). For real
+  AWS S3, omitting these lets DuckDB fall back to AWS defaults. The secret is
+  **persistent** so non-dbt sessions (e.g. ad-hoc DBeaver queries or
+  `delta_scan` in export scripts) can reach S3-backed Bronze, DuckLake,
+  or Delta export targets without extra setup.
+
+* **`init_duckdb()`** is the main entry point. It creates the database file
+  if needed, installs/loads extensions, sets Azure transport to `curl`
+  (required for OneLake/ADLS Gen2), creates an Azure service-principal
+  secret when `STORAGE_TARGET=onelake`, and always calls `init_s3_secret`
+  regardless of storage target (it's a no-op when neither S3 switch is active).
 
 Security detail: DuckDB's `CREATE SECRET` DDL can't take bound parameters, so the
 credentials *are* interpolated into the SQL string — but that statement is
-deliberately **never logged**, and only the secret's metadata (name/type/provider) is
+deliberately **never logged**, and only the secret's metadata (name/type) is
 printed back for verification.
 
 ---

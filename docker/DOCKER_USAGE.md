@@ -30,6 +30,12 @@ sudo chown -R 2000:2000 /data/metabase/data /data/metabase/duckdb-extensions
 # o+rwx lets Metabase (UID 2000) write into the UID-1000-owned /data/duckdb directory.
 chmod -R o+rwx /data/duckdb
 
+# DuckLake Parquet data: Metabase (UID 2000) reads Silver via DuckLake views.
+# Only needed when SILVER_STORAGE_FORMAT=ducklake.
+sudo mkdir -p /data/ducklake
+sudo chown -R 1000:1000 /data/ducklake
+chmod -R o+rx /data/ducklake
+
 # backup (UID 1000) reads Metabase data (owned by UID 2000) to create archives
 chmod -R o+rX /data/metabase/data
 
@@ -82,10 +88,10 @@ docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
 docker compose run --rm run ddd_python.ddd_dbt.dbt_build_with_unique_logfile
 
 # 4. Export Silver tables to Delta Lake
-docker compose run --rm run ddd_python.ddd_dlt.export_main_silver_to_fabric_silver
+docker compose run --rm run ddd_python.ddd_dlt.export_silver
 
 # 5. Export Gold tables to Delta Lake
-docker compose run --rm run ddd_python.ddd_dlt.export_main_gold_to_fabric_gold
+docker compose run --rm run ddd_python.ddd_dlt.export_gold
 ```
 
 ### Initialize DuckDB (Automatic)
@@ -174,6 +180,50 @@ database and Delta Lake tables.
 ```bash
 docker compose build
 ```
+
+## Local Development with MinIO
+
+To test S3-compatible storage locally, use MinIO (a self-hosted S3 clone). The `docker-compose.minio.yml` override file is provided:
+
+```bash
+# Start MinIO in the background (S3-compatible storage on http://localhost:9000, UI on :9001)
+docker compose -f docker-compose.yml -f docker-compose.minio.yml up -d minio
+
+# Create the required buckets using the MinIO web UI:
+# 1. Open http://localhost:9001
+# 2. Log in with S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (default: minioadmin / minioadmin)
+# 3. Click "Object Browser" → "+" and create buckets (e.g., `ddd-bronze`, `ddd-ducklake`, `ddd-delta`)
+
+# Or create buckets via the mc (minio-client) CLI:
+mc alias set ddd http://localhost:9000 minioadmin minioadmin
+mc mb ddd/ddd-bronze
+mc mb ddd/ddd-ducklake
+mc mb ddd/ddd-delta
+
+# Update .env with S3 settings (see .env.example for full template):
+# RAW_STORAGE_TARGET=s3
+# S3_ENDPOINT=http://minio:9000
+# S3_ACCESS_KEY_ID=minioadmin
+# S3_SECRET_ACCESS_KEY=minioadmin
+# S3_REGION=us-east-1
+# S3_USE_SSL=false
+# S3_URL_STYLE=path      # CRITICAL: MinIO requires path-style, not vhost-style
+# S3_BUCKET_BRONZE=ddd-bronze
+# S3_BUCKET_DUCKLAKE=ddd-ducklake
+# S3_BUCKET_DELTA=ddd-delta
+# DANISH_DEMOCRACY_DATA_SOURCE=s3://ddd-bronze/Files/Bronze/DDD
+# RFAM_DATA_SOURCE=s3://ddd-bronze/Files/Bronze/RFAM
+
+# Now run the pipeline with S3 storage:
+docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
+docker compose run --rm run python -m ddd_python.ddd_dbt.generate_dbt_models
+docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
+
+# Stop MinIO when done:
+docker compose -f docker-compose.yml -f docker-compose.minio.yml down
+```
+
+See [CLAUDE.md → S3-compatible Raw Storage](../CLAUDE.md#s3-compatible-raw-storage) for full configuration details and AWS S3 production settings.
 
 ## Backup and Restore
 

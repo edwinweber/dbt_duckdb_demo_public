@@ -7,11 +7,14 @@ Runs three cleanup steps against the DuckLake catalog:
    eligible for deletion.  Recent snapshots are retained for time-travel.
 2. ``ducklake_delete_orphaned_files`` — removes Parquet files that are no
    longer referenced by any live snapshot.
-3. Filesystem sweep — deletes any residual ``*_current_temp`` and
-   ``*__dbt_tmp`` directories created by dbt's incremental-append strategy
-   or the Silver pre/post-hooks.  These are invisible to DuckLake's vacuum
-   because dbt creates and drops them via plain DuckDB DDL, not through the
-   DuckLake catalog.
+3. Filesystem sweep — deletes any residual ``*_current_temp`` directories
+   created by the Silver pre/post-hooks.  These are invisible to DuckLake's
+   vacuum because dbt creates and drops them via plain DuckDB DDL, not through
+   the DuckLake catalog.  ``*__dbt_tmp`` directories are intentionally
+   preserved: DuckLake stores live table data there (dbt's incremental-append
+   strategy writes staging files into ``__dbt_tmp/`` and the main table's
+   catalog snapshot references them directly).  Deleting ``__dbt_tmp``
+   directories would corrupt the Silver tables.
 
 The asset is a no-op (skips with a log message) when
 ``SILVER_STORAGE_FORMAT`` is not set to ``ducklake``.
@@ -39,8 +42,9 @@ SNAPSHOT_RETENTION_DAYS = 31
     group_name="maintenance",
     description=(
         "Vacuums the DuckLake catalog: expires old snapshots, deletes "
-        "orphaned Parquet files, and removes residual _current_temp / "
-        "__dbt_tmp directories left by dbt's incremental strategy."
+        "orphaned Parquet files, and removes residual _current_temp directories "
+        "left by the Silver pre/post-hooks. __dbt_tmp directories are intentionally "
+        "preserved because DuckLake stores live table data there."
     ),
     deps=[_STOP_METABASE_KEY],
 )
@@ -52,11 +56,10 @@ def ducklake_cleanup_asset(context: AssetExecutionContext) -> MaterializeResult:
 
     catalog_location = get_variables_from_env.DUCKLAKE_CATALOG_LOCATION
     data_path = get_variables_from_env.DUCKLAKE_DATA_PATH
-    db_location = get_variables_from_env.DUCKDB_DATABASE_LOCATION
     assert catalog_location is not None, "DUCKLAKE_CATALOG_LOCATION must be set"
     assert data_path is not None, "DUCKLAKE_DATA_PATH must be set"
-    assert db_location is not None, "DUCKDB_DATABASE_LOCATION must be set"
 
+    db_location = get_variables_from_env.DUCKDB_DATABASE_LOCATION
     context.log.info("Connecting to DuckDB at %s", db_location)
     con = duckdb.connect(db_location)
     con.execute("INSTALL ducklake; LOAD ducklake;")

@@ -31,7 +31,9 @@ The dbt assets defined here are used by several jobs (see ``jobs.py``):
 * ``dbt_seeds_job``                — runs all dbt seeds.
 * ``dbt_bronze_job``               — selects all Bronze models.
 * ``dbt_silver_job``               — selects all Silver models + ``_cv`` views.
-* ``dbt_gold_job``                 — selects all Gold models + ``_cv`` views.
+* ``dbt_gold_job``                 — recompiles ``bronze_dates`` (the date-spine
+                                     source of the Gold ``date`` dimension), then
+                                     selects all Gold models + ``_cv`` views.
 * ``dbt_data_engineering_job``     — selects all Data Engineering models.
 * ``full_pipeline_job``            — end-to-end: extraction → all dbt layers → export.
 
@@ -317,9 +319,20 @@ def dbt_gold_assets(
     ``dbt build`` command also executes the Gold data quality tests (surrogate
     key uniqueness / not-null checks).
 
+    Before the Gold build, the ``bronze_dates`` view is recompiled.  The Gold
+    ``date`` dimension is built from that view, and ``bronze_dates`` bakes the
+    ``date_spine_start_date`` var into its compiled SQL at build time.  Running
+    Gold in isolation would otherwise read a *stale* spine (e.g. after the var
+    is widened), leaving ``individual_votes`` rows with no matching ``date`` row
+    and failing the FK relationships test.  The recompile is a separate,
+    context-less invocation so it is **not** mapped to a Gold asset output —
+    ``bronze_dates`` belongs to ``dbt_bronze_assets``; here it is only refreshed
+    as an upstream dependency of the Gold ``date`` dimension.
+
     This asset set must run **after** ``dbt_silver_assets`` — the job
     sequencing in ``jobs.py`` enforces this order.
     """
+    dbt.cli(["run", "--select", "bronze_dates", "--log-path", _DBT_LOG_PATH]).wait()
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 

@@ -11,6 +11,12 @@ version: 2
 models:
   - name: silver_rfam_family
     description: SCD Type 2 history for Rfam family (RNA families).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - rfam_acc
+              - LKHS_date_valid_from
     columns:
       - name: rfam_acc
         data_tests:

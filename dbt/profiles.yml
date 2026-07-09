@@ -1,15 +1,37 @@
 danish_democracy_data:
   # STORAGE_TARGET controls the Delta Lake export destination (silver/gold):
-  #   local   — exports written to local filesystem, no Azure credentials needed
+  #   local   — exports written to local filesystem, no credentials needed
+  #   s3      — exports written to S3-compatible storage; requires S3_BUCKET_DELTA
   #   onelake — exports written to Fabric OneLake via abfss://, requires Azure SP
+  # Note: STORAGE_TARGET=s3 maps to the "local" dbt target — dbt itself always
+  # writes to the local DuckDB file; only the Delta Lake export path changes.
+  #
+  # RAW_STORAGE_TARGET controls where internal data lives (Bronze raw files and
+  # DuckLake Silver Parquet).  Independent of STORAGE_TARGET; these files are
+  # never on OneLake.
+  #   local — local disk (default)
+  #   s3    — S3-compatible storage (MinIO locally, AWS S3 in production)
   #
   # SILVER_STORAGE_FORMAT controls how silver tables are stored inside DuckDB.
-  # DuckLake is always local (/data/ducklake); this setting is independent of
-  # STORAGE_TARGET (the Delta Lake export destination is unaffected).
   #   duckdb   — native DuckDB tables (default); uses the STORAGE_TARGET target
-  #   ducklake — DuckLake-managed Parquet files; always selects "local_ducklake".
+  #   ducklake — DuckLake-managed Parquet; always selects "local_ducklake"
+  #              (or "local_ducklake_s3" when RAW_STORAGE_TARGET=s3).
   #              Also set DUCKLAKE_CATALOG_LOCATION to the catalog .db path.
-  target: "{{ 'local_ducklake' if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake' else env_var('STORAGE_TARGET', 'local') }}"
+  #
+  # Target selection:
+  #   SILVER_STORAGE_FORMAT=ducklake + RAW_STORAGE_TARGET=s3 → local_ducklake_s3
+  #   SILVER_STORAGE_FORMAT=ducklake                         → local_ducklake
+  #   STORAGE_TARGET=onelake                                 → onelake
+  #   STORAGE_TARGET=s3 or (default)                         → local
+  target: >-
+    {{ 'local_ducklake_s3'
+       if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake'
+          and env_var('RAW_STORAGE_TARGET', 'local') == 's3'
+       else ('local_ducklake'
+             if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake'
+             else ('onelake'
+                   if env_var('STORAGE_TARGET', 'local') == 'onelake'
+                   else 'local')) }}
   outputs:
     local:
       type: duckdb
@@ -36,6 +58,39 @@ danish_democracy_data:
           is_ducklake: true
           options:
             data_path: "{{ env_var('DUCKLAKE_DATA_PATH') }}"
+      external_root: 'data/curated'
+
+    local_ducklake_s3:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
+      extensions:
+        - httpfs
+        - parquet
+        - delta
+        - sqlite
+        - ducklake
+      secrets:
+        # Inline S3 secret — makes this target self-contained on a fresh database.
+        # Mirrors the persistent secret that init_duckdb.py also creates so that
+        # dbt build works even when init_duckdb.py has not been run yet.
+        # endpoint strips the protocol prefix (DuckDB ENDPOINT takes host:port only).
+        # For AWS S3, S3_ENDPOINT is empty so endpoint renders to "" which DuckDB
+        # treats as the default AWS endpoint.
+        - type: s3
+          name: ddd_s3_secret
+          persistent: true
+          key_id: "{{ env_var('S3_ACCESS_KEY_ID') }}"
+          secret: "{{ env_var('S3_SECRET_ACCESS_KEY') }}"
+          region: "{{ env_var('S3_REGION', 'us-east-1') }}"
+          endpoint: "{{ env_var('S3_ENDPOINT', '').split('://')[-1] }}"
+          url_style: "{{ env_var('S3_URL_STYLE', 'path') }}"
+          use_ssl: "{{ env_var('S3_USE_SSL', 'false') }}"
+      attach:
+        - path: "ducklake:{{ env_var('DUCKLAKE_CATALOG_LOCATION') }}"
+          alias: ducklake_catalog
+          is_ducklake: true
+          options:
+            data_path: "s3://{{ env_var('S3_BUCKET_DUCKLAKE') }}/{% if env_var('S3_PREFIX_DUCKLAKE', '') %}{{ env_var('S3_PREFIX_DUCKLAKE').strip('/') }}/{% endif %}"
       external_root: 'data/curated'
 
     onelake:

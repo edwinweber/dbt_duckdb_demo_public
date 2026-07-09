@@ -31,6 +31,20 @@ INSTALL sqlite; LOAD sqlite;
 INSTALL ducklake; LOAD ducklake;
 DETACH DATABASE IF EXISTS ducklake_catalog;
 ATTACH 'ducklake:/data/duckdb/ducklake_catalog.ducklake' AS ducklake_catalog (DATA_PATH '/data/ducklake', READ_ONLY);
+-- S3 secret — uncomment and fill in when DUCKLAKE_DATA_PATH=s3://... or
+-- DANISH_DEMOCRACY_DATA_SOURCE=s3://...  The Metabase container does not have
+-- access to the host .env at connection time, so credentials must be substituted
+-- here directly (or injected via an environment-variable-aware init mechanism).
+--
+-- CREATE OR REPLACE SECRET ddd_s3_secret (
+--     TYPE s3,
+--     KEY_ID '<S3_ACCESS_KEY_ID>',
+--     SECRET '<S3_SECRET_ACCESS_KEY>',
+--     ENDPOINT '<S3_ENDPOINT>',
+--     URL_STYLE '<S3_URL_STYLE>',
+--     USE_SSL false,
+--     REGION '<S3_REGION>'
+-- );
 -- Cap threads per connection so concurrent Metabase queries share the CPU pool
 -- rather than all contending for all cores simultaneously.
 SET threads = 4;

@@ -1,7 +1,7 @@
 with date_spine as (
 
   {{ dbt_utils.date_spine(
-      start_date = "cast('2014-01-01' as date)",
+      start_date = "cast('" ~ var('date_spine_start_date') ~ "' as date)",
       datepart = "day",
       end_date = "cast(date_trunc('year', current_date + interval 1 year) as date)"
      )

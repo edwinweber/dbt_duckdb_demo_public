@@ -86,10 +86,38 @@ models:
           - unique
 
   # ---------------------------------------------------------------------------
+  # Dimension — Time
+  # ---------------------------------------------------------------------------
+  - name: time
+    description: >
+      Minute-grain time dimension covering all 1 440 minutes of the day.
+      Used as a foreign-key target by the data_engineering observability models
+      (dagster_run, dagster_asset_materialization, dagster_step_failure) where
+      time_key = 100 * hour + minute matches the FK formula in those models.
+    columns:
+      - name: time_key
+        description: >
+          Primary key — integer encoding of HH:MM as (hour * 100 + minute).
+          Ranges from 0 (00:00) to 2359 (23:59).
+        data_tests:
+          - not_null
+          - unique
+      - name: time_hhmm
+        description: Human-readable HH:MM string (e.g. "09:05").
+        data_tests:
+          - not_null
+
+  # ---------------------------------------------------------------------------
   # Dimension — Meeting
   # ---------------------------------------------------------------------------
   - name: meeting
-    description: Parliament meetings — current version only (filtered to LKHS_date_valid_to = 9999-12-31).
+    description: >
+      Parliament meetings — current version only (filtered to LKHS_date_valid_to = '9999-12-31').
+      Unlike other dimensions, `meeting` applies the current-version filter inline (WHERE
+      LKHS_date_valid_to = '9999-12-31') rather than following the SCD2 + UNION ALL pattern
+      used by actor, case, vote, etc. This is intentional: `individual_votes` joins directly
+      to `meeting` and expects single-row-per-meeting output. The companion `meeting_cv` view
+      is kept for API consistency with the other dimension pairs.
     columns:
       - name: LKHS_meeting_id
         data_tests:
@@ -191,3 +219,55 @@ models:
     description: >
       One row per individual member vote (stemme). Links actors, votes, and
       voting position (for / against / neither). Only non-deleted rows are included.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "individual_vote_count > 0"
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - LKHS_vote_id
+              - LKHS_actor_id
+    columns:
+      - name: LKHS_actor_id
+        description: FK to actor dimension.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('actor')
+                field: LKHS_actor_id
+      - name: LKHS_vote_id
+        description: FK to vote dimension.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('vote')
+                field: LKHS_vote_id
+      - name: LKHS_meeting_id
+        description: FK to meeting dimension.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('meeting')
+                field: LKHS_meeting_id
+      - name: LKHS_case_id
+        description: FK to case dimension.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('case')
+                field: LKHS_case_id
+      - name: date_day
+        description: FK to date dimension — DATE '1900-01-01' when meeting_date is NULL.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+      - name: individual_vote_count
+        description: Always 1 — additive measure for counting individual votes.
+        data_tests:
+          - not_null

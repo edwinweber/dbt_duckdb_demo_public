@@ -2,7 +2,7 @@
 
 ![Architecture overview: Danish Parliament OData API and Rfam MySQL are extracted by dlt into Bronze (DuckDB views), transformed through Silver (DuckDB or DuckLake) and Gold (star-schema views) by dbt, then exported as Delta Lake to local filesystem or Microsoft Fabric OneLake. Orchestrated by Dagster on Docker/Python. Consumed via Metabase dashboards and Power BI reports.](documentation/assets/architecture-overview.svg)
 
-**Danish Democracy Data** is a production-shaped data pipeline that runs on a €35/month virtual server (including storage and backups). It ingests open data from two sources (the Danish Parliament OData API and the Rfam public MySQL database), transforms it through a medallion architecture in DuckDB, and optionally exports Delta Lake tables to Microsoft Fabric OneLake. It's built with modern open-source tools — Dagster, dlt, dbt — and is intended as a reference implementation for data engineers who want to understand how these pieces fit together without cloud lock-in or hidden costs. The Danish Parliament data is the demo; the patterns apply to any stack of heterogeneous sources feeding a single-server analytics layer.
+**Danish Democracy Data** is a working data pipeline that runs on a €35/month virtual server (including storage and backups). It ingests open data from two sources (the Danish Parliament OData API and the Rfam public MySQL database), transforms it through a medallion architecture in DuckDB, and optionally exports Delta Lake tables to Microsoft Fabric OneLake. Built with open-source tools — Dagster, dlt, dbt — it's intended as a reference implementation for data engineers who want to understand how these pieces fit together on a single server without cloud lock-in or hidden costs. The Danish Parliament data is the demo; the patterns apply to any stack of heterogeneous sources.
 
 This is not a tutorial. It's a working pipeline that handles real data, respects the single-writer constraint of DuckDB, manages incremental and full-extract strategies, tracks data lineage, and observes itself. It is deliberately single-node — no Kubernetes, no high availability, no distributed consensus. The trade-off is simplicity and cost. If you scale past one server, the architecture still applies; you'll just add infrastructure.
 
@@ -22,6 +22,19 @@ docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_l
 docker compose up dagster    # UI at http://localhost:3000
 ```
 
+**With MinIO (local S3 development):**
+
+To test S3-compatible storage locally using MinIO, use the Docker Compose override file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.minio.yml up minio    # S3-compatible storage on http://localhost:9000
+# Create buckets in the MinIO web UI (http://localhost:9001) or via the mc CLI
+# Update .env with RAW_STORAGE_TARGET=s3 and S3 variables (see .env.example)
+docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
+```
+
+See [docker/DOCKER_USAGE.md](docker/DOCKER_USAGE.md#local-development-with-minio) for details.
+
 For local (no Docker) setup, see [CLAUDE.md → Running the Project](CLAUDE.md#running-the-project).
 
 ## Documentation
@@ -38,6 +51,7 @@ Before diving into the code, read these in order:
 | **Why each dependency was chosen** | [documentation/python_libraries.md](documentation/python_libraries.md) |
 | **Testing strategy** | [documentation/testing.md](documentation/testing.md) |
 | **Common problems and fixes** | [documentation/troubleshooting.md](documentation/troubleshooting.md) |
+| **Operator runbook: failure scenarios and recovery commands** | [documentation/runbook.md](documentation/runbook.md) |
 | **Server setup, volumes, SSH, firewall** | [documentation/hetzner_infrastructure.md](documentation/hetzner_infrastructure.md) |
 | **Executive summary** | [documentation/management-summary.md](documentation/management-summary.md) |
 
@@ -99,20 +113,28 @@ Before diving into the code, read these in order:
 
 ## Why Single-Server?
 
-- **No cloud bill.** The entire pipeline runs on a €35/month Hetzner Cloud server (including volumes and backup storage). Annual cost is less than a week's worth of traditional warehouse licensing. There is no lock-in and no surprises.
+- **No cloud bill.** The entire pipeline runs on a €35/month Hetzner Cloud server (including volumes and backup storage). Annual cost is less than a week's worth of traditional warehouse licensing. No lock-in, no surprises.
 - **Offline development.** Clone the repo, fill in `.env` with local paths, and run without cloud credentials or API tokens (unless exporting to OneLake, which is optional). Works on a plane, in a hotel, in your local venv.
-- **DuckDB's speed.** At ~1–2GB of data, DuckDB on local SSD is faster than most warehouses. No network round-trips, no query queue, no cold starts. You'll notice the difference immediately.
-- **Observability without additional cost.** The pipeline writes its own Dagster events to SQLite, then reads them back as queryable dbt models. Dashboard on top. No separate log aggregation service, no extra bill.
-- **Git-friendly.** dbt models, Dagster definitions, and config are all code. Code review, version history, rollback via `git reset`. This is how data infrastructure should work.
-- **Educational value.** If you're learning how these tools work, a simple single-server pipeline is easier to reason about than a distributed system. You can trace every query, understand every decision, debug with print statements.
+- **DuckDB's speed.** At ~1–2GB of data, DuckDB on local SSD is faster than most warehouses. No network round-trips, no query queue, no cold starts.
+- **Observability without additional cost.** The pipeline writes its own Dagster events to SQLite, then reads them back as queryable dbt models. No separate log aggregation service, no extra bill.
+- **Git-friendly.** dbt models, Dagster definitions, and config are all code. Code review, version history, rollback via `git reset`.
+- **Easier to reason about.** If you're learning how these tools work, a single-server pipeline is easier to trace than a distributed system. You can inspect every query, understand every decision, debug with print statements.
 
 ## Who Is This For?
 
-- **You have a small number of heterogeneous data sources** (a REST API, a MySQL database, a SaaS CSV export) and you need a clean Bronze→Silver→Gold pipeline without Snowflake or Redshift pricing. One Python script and you're done.
-- **Your data fits on one server** (under 500GB active, under 2TB total) and you'd rather own €420/year of Hetzner infrastructure than spend €30,000/year on a managed warehouse. No vendor calls, no seat licensing, no surprise bills.
-- **You're feeding Microsoft Fabric or Azure Data Lake** but you want a clean Delta Lake feed without a proprietary ETL tool or cloud-native tie-in. dbt + DuckDB → Delta. No Synapse. No ADF lock-in.
-- **You need proper change detection (CDC)** without Kafka, Debezium, or replication slots on your source databases. Hash the row, compare it, done. Works with read-only database connections and SaaS APIs.
-- **You're already using Dagster** (or want to learn it) and you need a concrete example of asset factories, sensors, multi-executor orchestration, and observability without a separate stack. This is it.
+- **You have a small number of heterogeneous data sources** (a REST API, a MySQL database, a SaaS CSV export) and you need a Bronze→Silver→Gold pipeline without Snowflake or Redshift pricing.
+- **Your data fits on one server** (under 500GB active, under 2TB total) and you'd rather own €420/year of Hetzner infrastructure than spend €30,000/year on a managed warehouse.
+- **You're feeding Microsoft Fabric or Azure Data Lake** but you want Delta Lake tables without a proprietary ETL tool or cloud-native tie-in. dbt + DuckDB → Delta Lake. No Synapse. No ADF.
+- **You need CDC** without Kafka, Debezium, or replication slots on your source databases. Hash the row, compare it, detect changes. Works with read-only connections and SaaS APIs.
+- **You're using Dagster** (or learning it) and you need a concrete example of asset factories, sensors, multi-executor orchestration, and observability. This is one.
+
+### This pattern is NOT for you if
+
+- You need sub-second ad-hoc queries on multi-terabyte datasets — use Snowflake or BigQuery
+- You need real-time or near-real-time ingestion — this is daily batch only
+- You need incremental hard-delete detection between batch runs — the OData API has no tombstones; deletes are captured only at `--full-refresh`
+- Your team needs multi-writer concurrency on the transformation layer
+- You need compliance row-level security at the data layer — this is file-system access control only
 
 ## What Makes This Non-Trivial
 
@@ -146,14 +168,14 @@ Despite the simplicity, the pipeline demonstrates several patterns that scale:
 
 What I'd tell someone starting a similar project:
 
-- **DuckDB single-writer is real.** Not obvious at first. You'll discover it at 2am when dbt hangs mysteriously and Metabase is still running. Don't try to work around it; serialize writes and move on.
-- **DuckLake inline tables surprised us.** Small tables are stored inside the catalog `.ducklake` file, not as Parquet on disk. The `CALL ducklake_flush_inlined_data(...)` API exists, but in practice it's fine to leave them inline. The catalog doesn't care, and neither will you after the second time you check.
-- **Incremental extraction: when to use OData filters vs. date windows.** OData `$filter=opdateringsdato ge` is the right choice for clean date columns. SQL date windows via `WHERE updated > ?` work too. Full extraction is the fallback for small tables.
-- **Delta export split reads and writes for good reason.** DuckDB's delta extension is read-only (as of v1.5.x). The write uses `deltalake` + PyArrow. This split will resolve when newer DuckDB versions land and the Azure regression is fixed.
-- **Hash-based CDC doesn't catch deletes in incremental mode.** On each run, only new Bronze files are processed. Deletes only surface during a `--full-refresh`, which replays all Bronze files and diffs against the Silver current-version view. Document this; it's not obvious.
-- **INSTALL ducklake has a race condition under multiprocess subprocesses.** Each subprocess tries to install the extension simultaneously. Solved by wrapping in `contextlib.suppress(Exception)` — duplicate installs are harmless.
-- **Primary-key dict in config_variables.py: keep it explicit.** 18 entries of `"name": "id"` is more maintainable than a comprehension, even though it violates DRY. The config is the contract; readability wins.
-- **Lazy environment loading via `__getattr__` is worth it.** Lets you run code generation and tests offline without Azure credentials. Just needs care around which vars are required vs. optional.
+- **DuckDB single-writer is a real constraint.** You'll discover it at 2am when dbt hangs mysteriously and Metabase is still running. Don't try to work around it; respect it and serialize writes.
+- **DuckLake inline tables.** Small tables are stored inside the catalog `.ducklake` file, not as Parquet on disk. The `CALL ducklake_flush_inlined_data(...)` API exists, but in practice you can leave them inline. It doesn't matter after a few runs.
+- **Incremental extraction: when to use OData filters vs. date windows.** OData `$filter=opdateringsdato ge` works for date columns with high-water-mark semantics. SQL `WHERE updated > ?` is equivalent. Full extraction is the fallback for small tables.
+- **Delta export split reads and writes because of DuckDB limits.** The delta extension is read-only (v1.5.x). Writes use `deltalake` + PyArrow. This changes when newer DuckDB versions land and the Azure regression is fixed.
+- **Hash-based CDC doesn't catch deletes in incremental mode.** On each run, only new Bronze files are scanned. Deletes surface during a `--full-refresh`, which replays all Bronze and diffs against Silver. Document this — it's not obvious.
+- **INSTALL ducklake has a race condition under multiprocess subprocesses.** Each worker tries to install simultaneously. Wrap in `contextlib.suppress(Exception)` — duplicate installs are harmless.
+- **Primary-key dict in config_variables.py: keep it explicit.** 18 entries of `"name": "id"` is more readable than a comprehension. The config is the contract; readability wins.
+- **Lazy environment loading via `__getattr__` unlocks offline development.** You can run code generation and tests without Azure credentials. Just be clear about which vars are required vs. optional.
 
 ## Project Structure
 

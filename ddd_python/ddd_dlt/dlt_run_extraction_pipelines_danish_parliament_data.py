@@ -28,9 +28,9 @@ def run_extraction_pipelines_danish_parliament_data(
     concurrent threads. Supports both incremental and full data loads based
     on the provided file names.
 
-    A script-level run summary is always written to OneLake as an NDJSON record
-    (one record per invocation) under
-    ``DLT_PIPELINE_RUN_LOG_DIR/<SOURCE_SYSTEM_CODE>/``.
+    A script-level run summary is always written as an NDJSON record
+    (one record per invocation) to the local filesystem under
+    ``LOCAL_STORAGE_PATH/logs/<SOURCE_SYSTEM_CODE>/``.
     The record includes script name, start/end time, duration, date loaded from,
     and one result row per pipeline resource.
 

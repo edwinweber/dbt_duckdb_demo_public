@@ -1,4 +1,10 @@
-"""Run ``dbt build`` with a timestamped JSON log file uploaded to Fabric OneLake.
+"""Run ``dbt build`` with a timestamped JSON log file saved locally.
+
+dbt test failures and errors found in the JSON log are re-raised as
+``RuntimeError`` even when ``dbt build`` exits with code 0 (e.g. when
+``--no-fail-fast`` allows all models to run despite test failures).  This
+ensures the Dagster asset always fails on bad data quality, which triggers
+the existing failure sensor.
 
 Usage::
 
@@ -7,6 +13,7 @@ Usage::
 """
 
 import argparse
+import json
 import logging
 import subprocess
 import sys
@@ -27,11 +34,66 @@ def _generate_log_filename() -> str:
     return f"dbt_build_log_{timestamp}.json"
 
 
+def _check_for_test_failures(log_path: str) -> None:
+    """Raise if the dbt JSON log contains any test failures or errors.
+
+    dbt exits 0 in some configurations even when tests fail (e.g. when
+    ``--no-fail-fast`` is set and all models have run).  Parsing the NDJSON
+    log lets us catch those cases and surface them as a ``RuntimeError`` so
+    the calling Dagster asset fails and the failure sensor fires.
+
+    Looks for ``NodeFinished`` events where the node result status is
+    ``"fail"`` or ``"error"``.
+
+    Raises:
+        RuntimeError: If any test nodes finished with status ``"fail"`` or
+            ``"error"``.  The message lists the failing node names.
+    """
+    failed_nodes: list[str] = []
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # dbt JSON log structure: {"info": {"name": "NodeFinished", ...}, "data": {...}}
+                info = record.get("info", {})
+                if info.get("name") != "NodeFinished":
+                    continue
+                data = record.get("data", {})
+                node_info = data.get("node_info", {})
+                node_status = node_info.get("node_status", "")
+                if node_status in ("fail", "error"):
+                    unique_id = node_info.get("unique_id", "<unknown>")
+                    failed_nodes.append(unique_id)
+    except OSError:
+        # If the log file is missing (e.g. dbt never started), skip the check —
+        # the subprocess call will already have raised RuntimeError.
+        return
+
+    if failed_nodes:
+        raise RuntimeError(
+            f"dbt build completed but {len(failed_nodes)} node(s) failed: "
+            + ", ".join(failed_nodes)
+        )
+
+
 def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> None:
     """Run ``dbt build`` and capture output to *log_file_local*.
 
+    After the subprocess completes (including exit code 0), the JSON log is
+    parsed for ``NodeFinished`` events with status ``"fail"`` or ``"error"``.
+    Any such findings are re-raised as ``RuntimeError`` so that dbt test
+    failures always surface as Dagster run failures, which in turn triggers
+    the failure sensor.
+
     Raises:
-        RuntimeError: If dbt exits with a non-zero return code or times out.
+        RuntimeError: If dbt exits with a non-zero return code, times out, or
+            the log contains test failures / errors after a nominally-successful run.
     """
     dbt_command = ["dbt", "build", "--log-format", "json", "--no-use-colors"]
 
@@ -53,21 +115,7 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> N
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(f"dbt build failed with return code {exc.returncode}") from exc
 
-
-def upload_log_to_azure(log_file_local: str, log_file_name: str) -> None:
-    # Deferred import: only called in onelake mode; keeps local-mode imports Azure-free.
-    from ddd_python.ddd_utils import get_fabric_onelake_clients
-
-    log_dir_fabric = get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC
-    if log_dir_fabric is None:
-        raise OSError("DBT_LOGS_DIRECTORY_FABRIC must be set")
-    file_client = get_fabric_onelake_clients.get_fabric_file_client_default_workspace(
-        log_dir_fabric,
-        log_file_name,
-    )
-    file_client.create_file()
-    with open(log_file_local, "rb") as local_log:
-        file_client.upload_data(local_log, overwrite=True)
+    _check_for_test_failures(log_file_local)
 
 
 def main(models_to_select: str | None = None) -> None:
@@ -82,20 +130,12 @@ def main(models_to_select: str | None = None) -> None:
     run_dbt_build(log_file_local, models_to_select)
     logger.info("dbt build logs saved locally at: %s", log_file_local)
 
-    if get_variables_from_env.STORAGE_TARGET != "local":
-        upload_log_to_azure(log_file_local, log_file_name)
-        logger.info(
-            "dbt build logs uploaded to Azure at %s/%s",
-            get_variables_from_env.DBT_LOGS_DIRECTORY_FABRIC,
-            log_file_name,
-        )
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser(
-        description="Run dbt build with timestamped log upload to OneLake."
+        description="Run dbt build, saving a timestamped JSON log to the local filesystem."
     )
     parser.add_argument(
         "--models_to_select", required=False, help="The dbt-models to build, separated by spaces"

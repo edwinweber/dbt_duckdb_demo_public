@@ -15,6 +15,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from ddd_python.ddd_utils import get_variables_from_env
 from ddd_python.ddd_utils.path_utils import silver_storage_is_ducklake
 
 load_dotenv()
@@ -159,7 +160,29 @@ def _build_backup_targets(include_ducklake: bool) -> tuple[BackupTarget, ...]:
     return tuple(targets)
 
 
-BACKUP_TARGETS: tuple[BackupTarget, ...] = _build_backup_targets(silver_storage_is_ducklake())
+def _ducklake_data_is_local() -> bool:
+    """True when DuckLake Parquet data lives on local disk (not S3).
+
+    When ``DUCKLAKE_DATA_PATH`` starts with ``s3://`` the data files are managed
+    by S3 and must not be archived by the local backup system.  The DuckLake
+    catalog (.ducklake file) still lives in the DuckDB directory and is captured
+    by the ``duckdb`` target regardless of where the data files are stored.
+    """
+    # When RAW_STORAGE_TARGET=s3, get_variables_from_env auto-derives
+    # DUCKLAKE_DATA_PATH from S3 bucket vars (overriding any raw env value).
+    # In that case the module attribute is the authoritative derived value.
+    # Otherwise fall back to the live env var so that monkeypatched tests and
+    # direct env-var overrides are respected without requiring a module reload.
+    if os.environ.get("RAW_STORAGE_TARGET") == "s3":
+        data_path = getattr(get_variables_from_env, "DUCKLAKE_DATA_PATH", None) or ""
+    else:
+        data_path = os.environ.get("DUCKLAKE_DATA_PATH", "")
+    return not data_path.startswith("s3://")
+
+
+BACKUP_TARGETS: tuple[BackupTarget, ...] = _build_backup_targets(
+    silver_storage_is_ducklake() and _ducklake_data_is_local()
+)
 
 TARGET_NAMES: tuple[str, ...] = tuple(t.name for t in BACKUP_TARGETS)
 

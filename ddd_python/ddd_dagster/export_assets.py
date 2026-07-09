@@ -1,7 +1,7 @@
-"""Dagster assets for exporting Silver and Gold tables to Fabric OneLake as Delta Lake.
+"""Dagster assets for exporting Silver and Gold tables as Delta Lake tables (local, S3, or OneLake).
 
 Each Silver and Gold table in DuckDB is represented as a single
-Dagster ``@asset`` that writes the corresponding Delta Lake table to OneLake.
+Dagster ``@asset`` that writes the corresponding Delta Lake table to the configured destination (local, S3, or OneLake).
 
 Execution order enforced by two ordering barriers:
 
@@ -13,18 +13,18 @@ Execution order enforced by two ordering barriers:
         ↓
     barrier_all_silver_exported ← no-op; gates Gold exports
         ↓
-    export Gold (all 9 tables)
+    export Gold (all 10 tables)
 
-* **export/silver** — incremental append to OneLake Silver Delta tables.
+* **export/silver** — incremental append to Silver Delta tables.
   Each asset depends on its corresponding dbt Silver model and on
   ``barrier_dbt_gold_complete``.
 
-* **export/gold** — full overwrite of OneLake Gold Delta tables.
+* **export/gold** — full overwrite of Gold Delta tables.
   Each asset depends on its corresponding dbt Gold model and on
   ``barrier_all_silver_exported``.
 
 The factory pattern mirrors ``assets.py`` (extraction assets) to keep the
-definitions DRY across 25 Silver tables (18 DDD + 7 Rfam) and 9 Gold tables.
+definitions DRY across 25 Silver tables (18 DDD + 7 Rfam) and 10 Gold tables.
 """
 
 from datetime import UTC, datetime
@@ -39,8 +39,8 @@ from dagster import (
 )
 
 from ddd_python.ddd_dagster._constants import _RETRY_POLICY
-from ddd_python.ddd_dlt.export_main_gold_to_fabric_gold import export_single_gold_table
-from ddd_python.ddd_dlt.export_main_silver_to_fabric_silver import export_single_silver_table
+from ddd_python.ddd_dlt.export_gold import export_single_gold_table
+from ddd_python.ddd_dlt.export_silver import export_single_silver_table
 from ddd_python.ddd_utils import configuration_variables
 from ddd_python.ddd_utils.path_utils import open_export_connection
 
@@ -80,7 +80,7 @@ def barrier_dbt_gold_complete() -> None:
 
 
 def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
-    """Return a Dagster asset that exports one Silver table to OneLake as Delta Lake."""
+    """Return a Dagster asset that exports one Silver table as a Delta Lake table."""
 
     @asset(
         name=f"export_{table_name}",
@@ -93,7 +93,7 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
         ],
         retry_policy=_RETRY_POLICY,
         description=(
-            f"Export **{table_name}** from DuckDB Silver to OneLake as a "
+            f"Export **{table_name}** from DuckDB Silver as a "
             "Delta Lake table (incremental append)."
         ),
         metadata={
@@ -161,7 +161,7 @@ def barrier_all_silver_exported() -> None:
 
 
 def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
-    """Return a Dagster asset that exports one Gold table to OneLake as Delta Lake."""
+    """Return a Dagster asset that exports one Gold table as a Delta Lake table."""
 
     @asset(
         name=f"export_{table_name}",
@@ -174,8 +174,7 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
         ],
         retry_policy=_RETRY_POLICY,
         description=(
-            f"Export **{table_name}** from DuckDB Gold to OneLake as a "
-            "Delta Lake table (full overwrite)."
+            f"Export **{table_name}** from DuckDB Gold as a Delta Lake table (full overwrite)."
         ),
         metadata={
             "table": MetadataValue.text(table_name),
