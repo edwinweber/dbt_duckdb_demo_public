@@ -37,7 +37,6 @@ _LAZY_REQUIRED: dict[str, str] = {
     # Fabric / OneLake
     "FABRIC_ONELAKE_STORAGE_ACCOUNT": "FABRIC_ONELAKE_STORAGE_ACCOUNT",
     "FABRIC_WORKSPACE": "FABRIC_WORKSPACE",
-    "FABRIC_ONELAKE_FOLDER_BRONZE": "FABRIC_ONELAKE_FOLDER_BRONZE",
     "FABRIC_ONELAKE_FOLDER_SILVER": "FABRIC_ONELAKE_FOLDER_SILVER",
     "FABRIC_ONELAKE_FOLDER_GOLD": "FABRIC_ONELAKE_FOLDER_GOLD",
     # Azure AD service principal
@@ -75,7 +74,6 @@ DBT_LOGS_DIRECTORY = os.getenv("DBT_LOGS_DIRECTORY")
 
 # ── dlt (optional — eager) ───────────────────────────────────────────────
 DLT_PIPELINES_DIR = os.getenv("DLT_PIPELINES_DIR", "dlt/pipelines_dir")
-DLT_PIPELINE_RUN_LOG_FILE = os.getenv("DLT_PIPELINE_RUN_LOG_FILE")
 
 # ── Azure AD (optional — eager) ─────────────────────────────────────────
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
@@ -177,8 +175,6 @@ if STORAGE_TARGET == "s3":
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
 DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")
 DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD = _int_env("DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD", 31)
-DANISH_DEMOCRACY_TABLES_SILVER = os.getenv("DANISH_DEMOCRACY_TABLES_SILVER")
-DANISH_DEMOCRACY_TABLES_GOLD = os.getenv("DANISH_DEMOCRACY_TABLES_GOLD")
 
 # ── Danish Democracy data source (optional — eager) ──────────────────────
 DANISH_DEMOCRACY_DATA_SOURCE = os.getenv("DANISH_DEMOCRACY_DATA_SOURCE")

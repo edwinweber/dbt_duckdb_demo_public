@@ -141,7 +141,7 @@
   <circle cx="582" cy="363" r="12" fill="#306998"/>
   <circle cx="582" cy="375" r="10" fill="#FFD43B"/>
   <text x="602" y="363" font-size="12" font-weight="600" fill="#e2e8f0">Python</text>
-  <text x="602" y="379" font-size="10"             fill="#94a3b8">3.12</text>
+  <text x="602" y="379" font-size="10"             fill="#94a3b8">3.13</text>
 
   <!-- ════════════════════════════════════════════════════
        SILVER → GOLD CONNECTOR  (y 478 – 516)
@@ -170,14 +170,14 @@
        EXPORT ROW  (y 648 – 724)
        ════════════════════════════════════════════════════ -->
 
-  <!-- Delta Lake → local filesystem -->
+  <!-- Delta Lake → local filesystem or S3 -->
   <rect x="30" y="648" width="240" height="76" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
   <!-- Delta Lake triangle logo -->
   <polygon points="60,708  80,678  100,708" fill="#00add4" opacity="0.9"/>
   <line x1="70" y1="708" x2="90" y2="708" stroke="#00add4" stroke-width="2"/>
   <text x="114" y="670" font-size="12" font-weight="600" fill="#e2e8f0">Delta Lake</text>
-  <text x="114" y="687" font-size="10"             fill="#94a3b8">→ local filesystem</text>
-  <text x="114" y="703" font-size="10"             fill="#64748b">DuckDB write via PyArrow</text>
+  <text x="114" y="687" font-size="10"             fill="#94a3b8">→ local filesystem or S3</text>
+  <text x="114" y="703" font-size="10"             fill="#64748b">written with deltalake</text>
 
   <!-- Microsoft Fabric / OneLake → cloud -->
   <rect x="294" y="648" width="240" height="76" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>

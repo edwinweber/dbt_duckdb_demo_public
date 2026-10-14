@@ -5,7 +5,7 @@ Incremental append: reads the target Delta table via DuckDB's ``delta_scan``
 in DuckDB; PyArrow write via ``deltalake`` (DuckDB's delta extension is
 read-only). First load overwrites; subsequent runs append.
 
-See CLAUDE.md Silver Storage Format for context on storage mode switching.
+See documentation/project_reference.md (Silver Storage Format) for context on storage mode switching.
 """
 
 import argparse

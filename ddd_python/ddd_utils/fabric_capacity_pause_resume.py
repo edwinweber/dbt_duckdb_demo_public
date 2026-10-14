@@ -2,9 +2,14 @@
 
 Usage::
 
-    python -m ddd_python.ddd_utils.fabric_capacity_pause_resume
+    python -m ddd_python.ddd_utils.fabric_capacity_pause_resume pause
+    python -m ddd_python.ddd_utils.fabric_capacity_pause_resume resume
+
+Without an argument the script asks for the action interactively. Passing it
+on the command line makes the script usable from cron or a deploy script.
 """
 
+import argparse
 import logging
 import time
 
@@ -16,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 AZURE_API_VERSION = "2022-07-01-preview"
 AZURE_RESOURCE = "https://management.azure.com"
+_HTTP_TIMEOUT_SECONDS = 30
 
 
 def _capacity_url(suffix: str = "") -> str:
@@ -41,7 +47,7 @@ def get_capacity_status(access_token: str) -> str | None:
         Current capacity status string, or ``None`` on failure.
     """
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    response = requests.get(_capacity_url(), headers=headers)
+    response = requests.get(_capacity_url(), headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
 
     if response.status_code == 200:
         return response.json().get("properties", {}).get("state")
@@ -91,7 +97,7 @@ def change_capacity_state(action: str) -> None:
         return
 
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    response = requests.post(url, headers=headers)
+    response = requests.post(url, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
 
     if response.status_code == 202:
         logger.info("Starting to %s capacity...", action)
@@ -105,7 +111,11 @@ def change_capacity_state(action: str) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(description="Pause or resume the Fabric capacity.")
+    parser.add_argument("action", nargs="?", choices=["pause", "resume"])
+    args = parser.parse_args()
     action = (
-        input("Enter 'pause' to pause capacity or 'resume' to resume capacity: ").strip().lower()
+        args.action
+        or input("Enter 'pause' to pause capacity or 'resume' to resume capacity: ").strip().lower()
     )
     change_capacity_state(action)

@@ -10,8 +10,12 @@ using temporary fixture JSON files, to verify:
 * Correct LKHS_date_valid_from derived from filename timestamps
 * NOT EXISTS dedup guard against re-inserting existing rows
 * Current-version (_cv) view returns only the latest row per PK
-* Incremental delete path (--full-refresh): _current_temp anti-join
-  against bronze_latest produces 'D' rows for absent PKs
+* Incremental delete path (--full-refresh): _current_temp holds the newest version
+  and every D row per key; keys whose newest version is missing from bronze_latest
+  get a 'D' row named after the latest file; existing D rows are carried forward
+* A key that Silver deleted and that reappears in Bronze is an insert ('I')
+
+``test_dbt_silver.py`` runs the real macros with dbt.
 """
 
 import json
@@ -81,11 +85,11 @@ def _build_full_extract_cdc_sql(data_dir: str, file_name: str = "thing") -> str:
     )
     ,CTE_FILES AS (
         SELECT LKHS_filename
-        ,      strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15), '%Y%m%d_%H%M%S') AS LKHS_date_valid_from
+        ,      strptime(regexp_extract(LKHS_filename, '([0-9]{{8}}_[0-9]{{6}})', 1), '%Y%m%d_%H%M%S') AS LKHS_date_valid_from
         ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
         ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
-        ,      LAG(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15), '%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-        ,      LEAD(strptime(SUBSTRING(LKHS_filename, LENGTH(LKHS_filename) - POSITION('.' IN REVERSE(LKHS_filename)) - 14, 15), '%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
+        ,      LAG(strptime(regexp_extract(LKHS_filename, '([0-9]{{8}}_[0-9]{{6}})', 1), '%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
+        ,      LEAD(strptime(regexp_extract(LKHS_filename, '([0-9]{{8}}_[0-9]{{6}})', 1), '%Y%m%d_%H%M%S')) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
         FROM   (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
                 FROM read_text('{glob_text}')
                ) files
@@ -416,24 +420,47 @@ def _parse_filename_ts(col: str) -> str:
     """DuckDB expression that extracts the timestamp embedded in a filename.
 
     Matches the ``parse_filename_ts`` Jinja macro used by the dbt model:
-    strips the extension then reads the trailing 15-char ``YYYYMMDD_HHMMSS``
-    substring.
+    picks the ``YYYYMMDD_HHMMSS`` part with a regex, so it works for ``.json``,
+    ``.jsonl`` and the ``.json.jsonl`` names dlt >= 1.30 writes.
     """
-    return (
-        f"strptime(SUBSTRING({col},"
-        f" LENGTH({col}) - POSITION('.' IN REVERSE({col})) - 14, 15),"
-        f" '%Y%m%d_%H%M%S')"
-    )
+    return f"strptime(regexp_extract({col}, '([0-9]{{8}}_[0-9]{{6}})', 1), '%Y%m%d_%H%M%S')"
 
 
-def _build_silver_initial_state_sql(data_dir: str, entity: str = "thing") -> str:
-    """Return SQL that produces the Silver table rows from a two-file Bronze history.
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "thing_20240101_120000.json",
+        "thing_20240101_120000.jsonl",
+        "thing_20240101_120000.json.jsonl",
+    ],
+)
+def test_parse_filename_ts_handles_all_dlt_extensions(file_name):
+    """The timestamp must parse for every extension dlt has produced."""
+    conn = duckdb.connect(":memory:")
+    ts = conn.execute(f"SELECT {_parse_filename_ts('?')}", [file_name]).fetchone()[0]
+    assert str(ts) == "2024-01-01 12:00:00"
 
-    Mirrors the incremental Silver macro's I/U logic (without the delete branch)
-    so we can materialise a realistic Silver starting state.
+
+def _build_silver_initial_state_sql(
+    data_dir: str, entity: str = "thing", silver_deletes: str | None = None
+) -> str:
+    """Return SQL that produces the Silver I/U rows from a Bronze history.
+
+    Mirrors the incremental Silver macro's I/U logic (``CTE_CHANGES``, without the
+    delete branches).  ``silver_deletes`` names a table with the D rows already in
+    Silver (``id``, ``LKHS_date_valid_from``): a Bronze version is an 'I' when one of
+    them lies between the key's previous Bronze version and this one.
     """
     glob_json = os.path.join(data_dir, entity, f"{entity}_*.json*")
     ts_expr = _parse_filename_ts("LKHS_filename")
+    if silver_deletes:
+        deleted_since_previous = f"""EXISTS (
+                    SELECT 1 FROM {silver_deletes} del
+                    WHERE  del.id = lagged.id
+                    AND    del.LKHS_date_valid_from > lagged.LKHS_date_valid_from_previous
+                    AND    del.LKHS_date_valid_from < lagged.LKHS_date_valid_from)"""
+    else:
+        deleted_since_previous = "FALSE"
     return f"""
     WITH CTE_BRONZE AS (
         SELECT  src.*
@@ -473,31 +500,39 @@ def _build_silver_initial_state_sql(data_dir: str, entity: str = "thing") -> str
         ,       LAG(CTE_BRONZE.LKHS_hash_value)
                     OVER (PARTITION BY CTE_BRONZE.id ORDER BY CTE_BRONZE.LKHS_filename)
                     AS LKHS_hash_value_previous
+        ,       LAG(CTE_FILES.LKHS_date_valid_from)
+                    OVER (PARTITION BY CTE_BRONZE.id ORDER BY CTE_BRONZE.LKHS_filename)
+                    AS LKHS_date_valid_from_previous
         FROM        CTE_BRONZE
         INNER JOIN  CTE_FILES
         ON          CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
     )
-    SELECT  id, name, value, opdateringsdato
-    ,       LKHS_filename, LKHS_source_system_code, LKHS_hash_value, LKHS_date_inserted_src
-    ,       LKHS_date_valid_from
-    ,       CAST('2024-02-01 12:00:00' AS DATETIME) AS LKHS_date_inserted
-    ,       CASE
-                WHEN LKHS_hash_value_previous IS NULL THEN 'I'
-                WHEN LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
-            END AS LKHS_cdc_operation
-    FROM    CTE_BRONZE_INCL_LAG
-    WHERE   CASE
-                WHEN LKHS_hash_value_previous IS NULL THEN 'I'
-                WHEN LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
-            END IN ('I', 'U')
+    ,CTE_BRONZE_INCL_DELETES AS (
+        SELECT  lagged.*
+        ,       {deleted_since_previous} AS LKHS_deleted_since_previous
+        FROM    CTE_BRONZE_INCL_LAG lagged
+    )
+    SELECT * FROM (
+        SELECT  id, name, value, opdateringsdato
+        ,       LKHS_filename, LKHS_source_system_code, LKHS_hash_value, LKHS_date_inserted_src
+        ,       LKHS_date_valid_from
+        ,       CAST('2024-02-01 12:00:00' AS DATETIME) AS LKHS_date_inserted
+        ,       CASE
+                    WHEN LKHS_hash_value_previous IS NULL THEN 'I'
+                    WHEN LKHS_deleted_since_previous THEN 'I'
+                    WHEN LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
+                END AS LKHS_cdc_operation
+        FROM    CTE_BRONZE_INCL_DELETES
+    )
+    WHERE   LKHS_cdc_operation IN ('I', 'U')
     """
 
 
 def _build_current_temp_sql(silver_table: str) -> str:
     """Return the SQL the pre-hook uses to build _current_temp.
 
-    Mirrors ``generate_pre_hook_silver_full_refresh``:
-    latest row per (LKHS_source_system_code, id).
+    Mirrors ``generate_pre_hook_silver_full_refresh``: the newest row per
+    (LKHS_source_system_code, id) plus every 'D' row.
     """
     return f"""
     SELECT src.*
@@ -506,49 +541,72 @@ def _build_current_temp_sql(silver_table: str) -> str:
         PARTITION BY src.LKHS_source_system_code, src.id
         ORDER BY src.LKHS_date_valid_from DESC
     ) = 1
+    OR src.LKHS_cdc_operation = 'D'
     """
+
+
+_NO_FILES = (
+    "(SELECT NULL::TIMESTAMP AS LKHS_date_valid_from, NULL::VARCHAR AS LKHS_filename WHERE FALSE)"
+)
 
 
 def _build_delete_branch_sql(
     current_temp_table: str,
     bronze_latest_table: str,
     latest_ts_expr: str,
+    *,
+    changes_table: str,
+    latest_filename: str = "thing_20240301_120000.json",
+    files_table: str = _NO_FILES,
 ) -> str:
-    """Return the two UNION ALL arms from the macro's delete branch.
+    """Return the two delete branches the macro adds on a --full-refresh.
 
-    Arm 1: re-emit existing 'D' rows from _current_temp (preserves prior deletes).
-    Arm 2: anti-join _current_temp (non-D) against bronze_latest;
-           absent PKs get a new 'D' row timestamped from the latest file.
+    Carried deletes: every 'D' row in _current_temp, with LKHS_filename set to the
+    Bronze file of its timestamp (``files_table``: LKHS_date_valid_from,
+    LKHS_filename) when that file exists.
+    New deletes: per key, the newest version from the rebuilt I/U rows
+    (``changes_table``) or _current_temp; when it is not a 'D' and the key is
+    absent from bronze_latest, a 'D' row named after the latest file.
 
-    ``latest_ts_expr`` should be a scalar SQL expression that resolves to the
-    LKHS_date_valid_from of the latest Bronze file — in tests we pass a literal
-    TIMESTAMP.
+    ``latest_ts_expr`` is a scalar SQL expression for the LKHS_date_valid_from of
+    the latest Bronze file; in tests a literal TIMESTAMP.
     """
     return f"""
-    -- Arm 1: carry forward any rows that were already 'D' in _current_temp
-    SELECT  cv.id, cv.name, cv.value, cv.opdateringsdato
-    ,       cv.LKHS_filename, cv.LKHS_source_system_code
-    ,       cv.LKHS_hash_value, cv.LKHS_date_inserted_src
-    ,       cv.LKHS_date_valid_from
-    ,       cv.LKHS_date_inserted
-    ,       cv.LKHS_cdc_operation
-    FROM    {current_temp_table} cv
-    WHERE   cv.LKHS_cdc_operation = 'D'
-
-    UNION ALL
-
-    -- Arm 2: new deletes — PK present in _current_temp (non-D) but absent from _latest
-    SELECT  cv.id, cv.name, cv.value, cv.opdateringsdato
-    ,       cv.LKHS_filename, cv.LKHS_source_system_code
-    ,       cv.LKHS_hash_value, cv.LKHS_date_inserted_src
-    ,       {latest_ts_expr} AS LKHS_date_valid_from
-    ,       CAST('2024-03-01 12:00:00' AS DATETIME) AS LKHS_date_inserted
-    ,       'D' AS LKHS_cdc_operation
-    FROM    {current_temp_table} cv
-    LEFT JOIN {bronze_latest_table} bronze_latest
-    ON        cv.id = bronze_latest.id
-    WHERE     cv.LKHS_cdc_operation != 'D'
-    AND       bronze_latest.id IS NULL
+    WITH carried AS (
+        SELECT    cv.* EXCLUDE (LKHS_filename)
+        ,         COALESCE(files.LKHS_filename, cv.LKHS_filename) AS LKHS_filename
+        FROM      {current_temp_table} cv
+        LEFT JOIN {files_table} files
+        ON        files.LKHS_date_valid_from = cv.LKHS_date_valid_from
+        WHERE     cv.LKHS_cdc_operation = 'D'
+    )
+    ,newest AS (
+        SELECT versions.*
+        FROM  (SELECT chg.*, 1 AS LKHS_version_rank FROM {changes_table} chg
+               UNION ALL BY NAME
+               SELECT cv.*, 2 AS LKHS_version_rank FROM {current_temp_table} cv
+              ) versions
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY versions.id
+            ORDER BY versions.LKHS_date_valid_from DESC, versions.LKHS_version_rank
+        ) = 1
+    )
+    ,new_deletes AS (
+        SELECT    nv.* EXCLUDE (LKHS_filename, LKHS_date_valid_from, LKHS_date_inserted,
+                                LKHS_cdc_operation, LKHS_version_rank)
+        ,         '{latest_filename}' AS LKHS_filename
+        ,         {latest_ts_expr} AS LKHS_date_valid_from
+        ,         CAST('2024-03-01 12:00:00' AS DATETIME) AS LKHS_date_inserted
+        ,         'D' AS LKHS_cdc_operation
+        FROM      newest nv
+        LEFT JOIN {bronze_latest_table} bronze_latest
+        ON        nv.id = bronze_latest.id
+        WHERE     nv.LKHS_cdc_operation != 'D'
+        AND       bronze_latest.id IS NULL
+    )
+    SELECT * FROM carried
+    UNION ALL BY NAME
+    SELECT * FROM new_deletes
     """
 
 
@@ -556,9 +614,10 @@ class TestIncrementalSilverCDCDelete:
     """Tests for the incremental Silver delete path (--full-refresh branch).
 
     The macro only emits delete rows during a ``--full-refresh`` run
-    (``is_incremental() == False``).  The pre-hook snapshots the current _cv
-    state into ``_current_temp``; the main model anti-joins that snapshot
-    against ``bronze_<entity>_latest`` and emits 'D' rows for absent PKs.
+    (``is_incremental() == False``).  The pre-hook copies the newest version and
+    every 'D' row per key into ``_current_temp``; the main model carries those 'D'
+    rows forward and emits a new 'D' for every key whose newest version is not a
+    'D' and that is absent from ``bronze_<entity>_latest``.
 
     These tests reproduce that SQL directly in DuckDB — no dbt, no Dagster.
     """
@@ -566,7 +625,8 @@ class TestIncrementalSilverCDCDelete:
     def _setup_conn(self, incr_delete_fixture) -> tuple[duckdb.DuckDBPyConnection, str, str]:
         """Build a DuckDB connection with:
         - ``main_silver.silver_thing``: initial Silver state (I + U rows)
-        - ``silver_thing_current_temp``: pre-hook snapshot (_cv of silver_thing)
+        - ``thing_rebuilt``: the I/U rows a full refresh rebuilds from Bronze
+        - ``silver_thing_current_temp``: pre-hook snapshot of silver_thing
         - ``bronze_latest``: the latest Bronze view (rows 2 and 3 only)
 
         Returns ``(conn, current_temp_table_name, bronze_latest_table_name)``.
@@ -577,8 +637,9 @@ class TestIncrementalSilverCDCDelete:
         # Materialise the initial Silver state from two Bronze files
         initial_sql = _build_silver_initial_state_sql(incr_delete_fixture["data_dir"])
         conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({initial_sql})")
+        conn.execute(f"CREATE TABLE thing_rebuilt AS ({initial_sql})")
 
-        # Build _current_temp as the pre-hook would: latest row per PK
+        # Build _current_temp as the pre-hook would: newest row per PK plus all D rows
         current_temp_sql = _build_current_temp_sql("main_silver.silver_thing")
         conn.execute(f"CREATE TABLE silver_thing_current_temp AS ({current_temp_sql})")
 
@@ -605,7 +666,9 @@ class TestIncrementalSilverCDCDelete:
         conn, current_temp, bronze_latest = self._setup_conn(incr_delete_fixture)
 
         latest_ts = "CAST('2024-03-01 12:00:00' AS TIMESTAMP)"
-        delete_sql = _build_delete_branch_sql(current_temp, bronze_latest, latest_ts)
+        delete_sql = _build_delete_branch_sql(
+            current_temp, bronze_latest, latest_ts, changes_table="thing_rebuilt"
+        )
         df = conn.execute(delete_sql).fetchdf()
 
         deletes = df[df["LKHS_cdc_operation"] == "D"]
@@ -617,7 +680,9 @@ class TestIncrementalSilverCDCDelete:
         conn, current_temp, bronze_latest = self._setup_conn(incr_delete_fixture)
 
         latest_ts = "CAST('2024-03-01 12:00:00' AS TIMESTAMP)"
-        delete_sql = _build_delete_branch_sql(current_temp, bronze_latest, latest_ts)
+        delete_sql = _build_delete_branch_sql(
+            current_temp, bronze_latest, latest_ts, changes_table="thing_rebuilt"
+        )
         df = conn.execute(delete_sql).fetchdf()
 
         assert 2 not in df[df["LKHS_cdc_operation"] == "D"]["id"].tolist()
@@ -628,7 +693,9 @@ class TestIncrementalSilverCDCDelete:
         conn, current_temp, bronze_latest = self._setup_conn(incr_delete_fixture)
 
         latest_ts = "CAST('2024-03-01 12:00:00' AS TIMESTAMP)"
-        delete_sql = _build_delete_branch_sql(current_temp, bronze_latest, latest_ts)
+        delete_sql = _build_delete_branch_sql(
+            current_temp, bronze_latest, latest_ts, changes_table="thing_rebuilt"
+        )
         df = conn.execute(delete_sql).fetchdf()
 
         d_row = df[df["LKHS_cdc_operation"] == "D"].iloc[0]
@@ -685,6 +752,7 @@ class TestIncrementalSilverCDCDelete:
 
         initial_sql = _build_silver_initial_state_sql(str(tmp_path / "bronze"))
         conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({initial_sql})")
+        conn.execute(f"CREATE TABLE thing_rebuilt AS ({initial_sql})")
 
         current_temp_sql = _build_current_temp_sql("main_silver.silver_thing")
         conn.execute(f"CREATE TABLE silver_thing_current_temp AS ({current_temp_sql})")
@@ -703,7 +771,11 @@ class TestIncrementalSilverCDCDelete:
 
         latest_ts = "CAST('2024-02-01 12:00:00' AS TIMESTAMP)"
         delete_sql = _build_delete_branch_sql(
-            "silver_thing_current_temp", "bronze_thing_latest", latest_ts
+            "silver_thing_current_temp",
+            "bronze_thing_latest",
+            latest_ts,
+            changes_table="thing_rebuilt",
+            latest_filename="thing_20240201_120000.json",
         )
         df = conn.execute(delete_sql).fetchdf()
 
@@ -734,7 +806,9 @@ class TestIncrementalSilverCDCDelete:
         """)
 
         latest_ts = "CAST('2024-03-01 12:00:00' AS TIMESTAMP)"
-        delete_sql = _build_delete_branch_sql("silver_thing_current_temp", bronze_latest, latest_ts)
+        delete_sql = _build_delete_branch_sql(
+            "silver_thing_current_temp", bronze_latest, latest_ts, changes_table="thing_rebuilt"
+        )
         df = conn.execute(delete_sql).fetchdf()
 
         # id=99 should appear exactly once (Arm 1), not twice
@@ -759,10 +833,12 @@ class TestIncrementalSilverCDCDelete:
         conn, current_temp, bronze_latest = self._setup_conn(incr_delete_fixture)
 
         latest_ts = "CAST('2024-03-01 12:00:00' AS TIMESTAMP)"
-        delete_sql = _build_delete_branch_sql(current_temp, bronze_latest, latest_ts)
+        delete_sql = _build_delete_branch_sql(
+            current_temp, bronze_latest, latest_ts, changes_table="thing_rebuilt"
+        )
 
-        # First run: append delete rows to Silver
-        conn.execute(f"INSERT INTO main_silver.silver_thing ({delete_sql})")
+        # First run: append delete rows to Silver (by column name, as dbt does)
+        conn.execute(f"INSERT INTO main_silver.silver_thing BY NAME ({delete_sql})")
         count_after_first = conn.execute(
             "SELECT COUNT(*) FROM main_silver.silver_thing WHERE LKHS_cdc_operation = 'D' AND id = 1"
         ).fetchone()[0]
@@ -782,7 +858,7 @@ class TestIncrementalSilverCDCDelete:
         assert len(d_rows_id1) == 1
 
     def test_current_temp_reflects_latest_cv_state(self, incr_delete_fixture):
-        """_current_temp should contain at most one row per PK (the latest version).
+        """Without 'D' rows, _current_temp holds one row per PK: the newest version.
 
         The fixture's Silver state has rows: 1I, 2I, 3I, 1U.
         _current_temp (the _cv snapshot) must therefore hold:
@@ -857,6 +933,7 @@ class TestIncrementalSilverCDCDelete:
 
         initial_sql = _build_silver_initial_state_sql(str(tmp_path / "bronze"))
         conn.execute(f"CREATE TABLE main_silver.silver_thing AS ({initial_sql})")
+        conn.execute(f"CREATE TABLE thing_rebuilt AS ({initial_sql})")
 
         current_temp_sql = _build_current_temp_sql("main_silver.silver_thing")
         conn.execute(f"CREATE TABLE silver_thing_current_temp AS ({current_temp_sql})")
@@ -875,8 +952,225 @@ class TestIncrementalSilverCDCDelete:
 
         latest_ts = "CAST('2024-02-01 12:00:00' AS TIMESTAMP)"
         delete_sql = _build_delete_branch_sql(
-            "silver_thing_current_temp", "bronze_thing_latest", latest_ts
+            "silver_thing_current_temp",
+            "bronze_thing_latest",
+            latest_ts,
+            changes_table="thing_rebuilt",
+            latest_filename="thing_20240201_120000.json",
         )
         df = conn.execute(delete_sql).fetchdf()
 
         assert len(df[df["LKHS_cdc_operation"] == "D"]) == 0
+
+
+# ── Keys that come back after a delete, and multiple deletes per key ──────────
+
+
+def _write_bronze(entity_dir, files: dict[str, list[dict]]) -> None:
+    entity_dir.mkdir(parents=True, exist_ok=True)
+    for name, rows in files.items():
+        (entity_dir / name).write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _row(id_: int, name: str, value: int, day: str) -> dict:
+    return {"id": id_, "name": name, "value": value, "opdateringsdato": f"{day}T00:00:00"}
+
+
+class TestIncrementalSilverDeletedKeys:
+    """Mirrors of the parts of the incremental macro that use Silver's 'D' rows.
+
+    The real macros are exercised by ``test_dbt_silver.py``.
+    """
+
+    @staticmethod
+    def _changes(tmp_path, deletes: list[tuple[int, str]] | None) -> list[tuple]:
+        """I/U rows for a Bronze history in which key 1 is missing from no file
+        but was deleted by an earlier full refresh (the given D rows)."""
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE TABLE silver_deletes (id INTEGER, LKHS_date_valid_from TIMESTAMP)")
+        for id_, ts in deletes or []:
+            conn.execute("INSERT INTO silver_deletes VALUES (?, ?)", [id_, ts])
+        sql = _build_silver_initial_state_sql(
+            str(tmp_path / "bronze"), silver_deletes="silver_deletes" if deletes else None
+        )
+        return conn.execute(
+            f"SELECT id, LKHS_cdc_operation, LKHS_date_valid_from::DATE::VARCHAR FROM ({sql}) "
+            "ORDER BY id, LKHS_date_valid_from"
+        ).fetchall()
+
+    @pytest.fixture()
+    def returning_key(self, tmp_path):
+        """Key 1 in files 1, 3 and 4 (unchanged); key 2 in files 1, 3 and 4.
+        File 2 is not part of the history: key 1 was deleted as of 2024-02-01."""
+        _write_bronze(
+            tmp_path / "bronze" / "thing",
+            {
+                "thing_20240101_120000.json": [
+                    _row(1, "Alpha", 10, "2024-01-01"),
+                    _row(2, "Beta", 20, "2024-01-01"),
+                ],
+                "thing_20240301_120000.json": [
+                    _row(1, "Alpha", 10, "2024-01-01"),
+                    _row(2, "Beta", 20, "2024-01-01"),
+                ],
+                "thing_20240401_120000.json": [
+                    _row(1, "Alpha", 10, "2024-01-01"),
+                    _row(2, "Beta", 20, "2024-01-01"),
+                ],
+            },
+        )
+        return tmp_path
+
+    def test_unchanged_key_after_delete_is_insert(self, returning_key):
+        rows = self._changes(returning_key, [(1, "2024-02-01 12:00:00")])
+        assert rows == [
+            (1, "I", "2024-01-01"),
+            (1, "I", "2024-03-01"),  # back after the D; file 4 is unchanged again
+            (2, "I", "2024-01-01"),
+        ]
+
+    def test_without_delete_unchanged_key_gives_no_row(self, returning_key):
+        rows = self._changes(returning_key, None)
+        assert rows == [(1, "I", "2024-01-01"), (2, "I", "2024-01-01")]
+
+    def test_delete_before_previous_version_is_ignored(self, returning_key):
+        """A D older than the key's previous Bronze version does not mark a return."""
+        rows = self._changes(returning_key, [(1, "2023-12-01 12:00:00")])
+        assert rows == [(1, "I", "2024-01-01"), (2, "I", "2024-01-01")]
+
+    def test_changed_key_after_delete_is_insert_not_update(self, tmp_path):
+        _write_bronze(
+            tmp_path / "bronze" / "thing",
+            {
+                "thing_20240101_120000.json": [_row(1, "Alpha", 10, "2024-01-01")],
+                "thing_20240301_120000.json": [_row(1, "Alpha-v2", 11, "2024-03-01")],
+            },
+        )
+        rows = self._changes(tmp_path, [(1, "2024-02-01 12:00:00")])
+        assert rows == [(1, "I", "2024-01-01"), (1, "I", "2024-03-01")]
+
+    def test_current_temp_keeps_every_delete(self):
+        """A key deleted and inserted twice keeps both D rows in _current_temp."""
+        conn = duckdb.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE silver AS SELECT * FROM (VALUES
+                (7, 'DDD', TIMESTAMP '2024-01-01', 'I'), (7, 'DDD', TIMESTAMP '2024-02-01', 'D'),
+                (7, 'DDD', TIMESTAMP '2024-03-01', 'I'), (7, 'DDD', TIMESTAMP '2024-04-01', 'D'),
+                (7, 'DDD', TIMESTAMP '2024-05-01', 'I'), (8, 'DDD', TIMESTAMP '2024-01-01', 'I'),
+                (8, 'DDD', TIMESTAMP '2024-02-01', 'U'))
+            t(id, LKHS_source_system_code, LKHS_date_valid_from, LKHS_cdc_operation)
+        """)
+        rows = conn.execute(
+            f"SELECT id, LKHS_cdc_operation, month(LKHS_date_valid_from) FROM ({_build_current_temp_sql('silver')}) "
+            "ORDER BY id, LKHS_date_valid_from"
+        ).fetchall()
+        assert rows == [(7, "D", 2), (7, "D", 4), (7, "I", 5), (8, "U", 2)]
+
+
+class TestIncrementalSilverDeleteBranchDetails:
+    """File names and column alignment of the full-refresh delete branches."""
+
+    @staticmethod
+    def _conn() -> duckdb.DuckDBPyConnection:
+        conn = duckdb.connect(":memory:")
+        columns = """id INTEGER, name VARCHAR, value INTEGER, opdateringsdato TIMESTAMP,
+            LKHS_filename VARCHAR, LKHS_source_system_code VARCHAR, LKHS_hash_value VARCHAR,
+            LKHS_date_inserted_src TIMESTAMP, LKHS_date_valid_from TIMESTAMP,
+            LKHS_date_inserted TIMESTAMP, LKHS_cdc_operation VARCHAR"""
+        for table in ("current_temp", "rebuilt"):
+            conn.execute(f"CREATE TABLE {table} ({columns})")
+        conn.execute("CREATE TABLE bronze_latest (id INTEGER)")
+        conn.execute("""CREATE TABLE files AS SELECT * FROM (VALUES
+            (TIMESTAMP '2024-01-01 12:00:00', 'thing_20240101_120000.json'),
+            (TIMESTAMP '2024-02-01 12:00:00', 'thing_20240201_120000.json'),
+            (TIMESTAMP '2024-03-01 12:00:00', 'thing_20240301_120000.json'))
+            t(LKHS_date_valid_from, LKHS_filename)""")
+        return conn
+
+    @staticmethod
+    def _insert(conn, table: str, id_: int, filename: str, valid_from: str, op: str) -> None:
+        conn.execute(
+            f"INSERT INTO {table} VALUES (?, 'n', 1, NULL, ?, 'DDD', 'h', NULL, ?, NULL, ?)",
+            [id_, filename, valid_from, op],
+        )
+
+    def _deletes(self, conn) -> list[tuple]:
+        sql = _build_delete_branch_sql(
+            "current_temp",
+            "bronze_latest",
+            "TIMESTAMP '2024-03-01 12:00:00'",
+            changes_table="rebuilt",
+            files_table="files",
+        )
+        return conn.execute(
+            f"SELECT id, LKHS_date_valid_from::DATE::VARCHAR, LKHS_filename, LKHS_source_system_code "
+            f"FROM ({sql}) ORDER BY id, LKHS_date_valid_from"
+        ).fetchall()
+
+    def test_new_delete_takes_the_latest_file_name(self):
+        conn = self._conn()
+        self._insert(conn, "rebuilt", 1, "thing_20240101_120000.json", "2024-01-01 12:00:00", "I")
+        self._insert(
+            conn, "current_temp", 1, "thing_20240101_120000.json", "2024-01-01 12:00:00", "I"
+        )
+        assert self._deletes(conn) == [(1, "2024-03-01", "thing_20240301_120000.json", "DDD")]
+
+    def test_carried_delete_gets_the_file_name_of_its_timestamp(self):
+        """Older macro versions stored the previous version's file name on D rows."""
+        conn = self._conn()
+        self._insert(conn, "rebuilt", 1, "thing_20240101_120000.json", "2024-01-01 12:00:00", "I")
+        self._insert(
+            conn, "current_temp", 1, "thing_20240101_120000.json", "2024-02-01 12:00:00", "D"
+        )
+        conn.execute("INSERT INTO bronze_latest VALUES (2)")
+        assert self._deletes(conn) == [(1, "2024-02-01", "thing_20240201_120000.json", "DDD")]
+
+    def test_carried_delete_keeps_its_name_when_the_file_is_gone(self):
+        conn = self._conn()
+        self._insert(
+            conn, "current_temp", 1, "thing_20231101_120000.json", "2023-12-01 12:00:00", "D"
+        )
+        assert self._deletes(conn) == [(1, "2023-12-01", "thing_20231101_120000.json", "DDD")]
+
+    def test_key_revived_by_the_rebuild_is_deleted_again_when_missing(self):
+        """_current_temp's newest row is an old D, but the rebuild has a later I
+        (a key the previous macro left deleted); missing from the latest file, it
+        gets a new D on top of the carried one."""
+        conn = self._conn()
+        self._insert(conn, "rebuilt", 1, "thing_20240101_120000.json", "2024-01-01 12:00:00", "I")
+        self._insert(conn, "rebuilt", 1, "thing_20240201_120000.json", "2024-02-01 12:00:00", "I")
+        self._insert(
+            conn, "current_temp", 1, "thing_20240101_120000.json", "2024-01-15 12:00:00", "D"
+        )
+        assert [r[:2] for r in self._deletes(conn)] == [(1, "2024-01-15"), (1, "2024-03-01")]
+
+    def test_branches_are_combined_by_column_name(self):
+        """After a new source column, Silver has it at the end, the rebuild in its
+        Bronze position; D rows must still be aligned."""
+        conn = self._conn()
+        conn.execute("ALTER TABLE current_temp ADD COLUMN new_col VARCHAR")
+        conn.execute("DROP TABLE rebuilt")
+        conn.execute("""CREATE TABLE rebuilt (id INTEGER, name VARCHAR, new_col VARCHAR, value INTEGER,
+            opdateringsdato TIMESTAMP, LKHS_filename VARCHAR, LKHS_source_system_code VARCHAR,
+            LKHS_hash_value VARCHAR, LKHS_date_inserted_src TIMESTAMP, LKHS_date_valid_from TIMESTAMP,
+            LKHS_date_inserted TIMESTAMP, LKHS_cdc_operation VARCHAR)""")
+        conn.execute("""INSERT INTO current_temp BY NAME SELECT 1 AS id, 'n' AS name, 'x' AS new_col,
+            'thing_20240101_120000.json' AS LKHS_filename, 'DDD' AS LKHS_source_system_code,
+            TIMESTAMP '2024-02-01 12:00:00' AS LKHS_date_valid_from, 'D' AS LKHS_cdc_operation""")
+        conn.execute("""INSERT INTO rebuilt BY NAME SELECT 2 AS id, 'n' AS name, 'y' AS new_col,
+            'thing_20240101_120000.json' AS LKHS_filename, 'DDD' AS LKHS_source_system_code,
+            TIMESTAMP '2024-01-01 12:00:00' AS LKHS_date_valid_from, 'I' AS LKHS_cdc_operation""")
+        sql = _build_delete_branch_sql(
+            "current_temp",
+            "bronze_latest",
+            "TIMESTAMP '2024-03-01 12:00:00'",
+            changes_table="rebuilt",
+            files_table="files",
+        )
+        rows = conn.execute(
+            f"SELECT id, new_col, LKHS_source_system_code, LKHS_filename FROM ({sql}) ORDER BY id"
+        ).fetchall()
+        assert rows == [
+            (1, "x", "DDD", "thing_20240201_120000.json"),  # carried
+            (2, "y", "DDD", "thing_20240301_120000.json"),  # new
+        ]

@@ -1,0 +1,20 @@
+{"rfam_acc":"RF00098","rfam_id":"unknown","comment":"suspected 5S rRNA pseudogene ","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"H82ZH1OC+o1J2A"}
+{"rfam_acc":"RF00120","rfam_id":"unknown","comment":"There is strong evidence this family is actually protein coding. See Washietl et al. (2011) RNAcode. ","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"BA7DFf+XkDLugg"}
+{"rfam_acc":"RF00197","rfam_id":"unknown","comment":"The family was composed entirely of low complexity sequence. ","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"IdqOmTGgu4ufGA"}
+{"rfam_acc":"RF00219","rfam_id":"unknown","comment":"Merged with RF00133 during rfam 9.0 sequence update. ","forward_to":"RF00133","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"7y0enSVraovsag"}
+{"rfam_acc":"RF00347","rfam_id":"unknown","comment":"Merged with RF00188 during overlap checks for rfam9.0 sequence update. ","forward_to":"RF00188","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"tMadc+16ds8QoA"}
+{"rfam_acc":"RF00450","rfam_id":"unknown","comment":"Merged with RF00304 during overlap checks for rfam9.0 sequence update. ","forward_to":"RF00304","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"/hP//ylETNgoXQ"}
+{"rfam_acc":"RF00465","rfam_id":"JEV_hairpin","comment":"Old family representing a hairpin loop with no covariation support. Restored by family RF03547","forward_to":"RF03547","title":"Flavivirus","user":"rfamprod","_dlt_load_id":"1791646872.4018977","_dlt_id":"H/73je7ieOVt8Q"}
+{"rfam_acc":"RF00469","rfam_id":"HCV_SLIV","comment":"Family RF00260 includes it, reviewed bi Marz group","forward_to":"RF00260","title":"Hepatitis_C_stem-loop_IV","user":"rfamprod","_dlt_load_id":"1791646872.4018977","_dlt_id":"W9VaPA8nLB25Og"}
+{"rfam_acc":"RF00491","rfam_id":"unknown","comment":"Low complexity rubbish, model is non-specific ","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"/hsrGjxibUI33A"}
+{"rfam_acc":"RF00496","rfam_id":"Corona_SL-III","comment":"Replaced by a set of coronavirus-specific UTR models","forward_to":"","title":"Coronavirus_SL-III_cis-acting_replication_element","user":"rfamprod","_dlt_load_id":"1791646872.4018977","_dlt_id":"jmDstiuc8d1moQ"}
+{"rfam_acc":"RF00605","rfam_id":"unknown","comment":"merged with RF00325-need to update the wikipage for 325 ","forward_to":"RF00325","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"WrJm001uZ8d1JA"}
+{"rfam_acc":"RF00633","rfam_id":"unknown","comment":"Test ","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"p+hQpEUb9DlIhg"}
+{"rfam_acc":"RF00738","rfam_id":"unknown","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"KMKVd+FFJrN2WA"}
+{"rfam_acc":"RF00759","rfam_id":"unknown","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"mrrg846itWKjcw"}
+{"rfam_acc":"RF00800","rfam_id":"mir-353","comment":"Dead entry in miRBase","forward_to":"","title":"MicroRNA","user":"rfamprod","_dlt_load_id":"1791646872.4018977","_dlt_id":"nBrnonACOq83Mg"}
+{"rfam_acc":"RF00860","rfam_id":"unknown","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"mbz6WTG8YsjU+Q"}
+{"rfam_acc":"RF00871","rfam_id":"mir-689","comment":"Dead miRNA entry: the sequence is a fragment of rRNA (Chiang et al, PMID:20413612)","forward_to":"","title":"MicroRNA","user":"apetrov","_dlt_load_id":"1791646872.4018977","_dlt_id":"y8YwB6uz8z+XFA"}
+{"rfam_acc":"RF00880","rfam_id":"unknown","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"+ZtwuZR5TBd9ig"}
+{"rfam_acc":"RF00881","rfam_id":"unknown","user":"jgt","_dlt_load_id":"1791646872.4018977","_dlt_id":"ta3wWUxRE4cUgw"}
+{"rfam_acc":"RF00882","rfam_id":"MIR811","comment":"MIR811 is a dead entrance in miRBase, a new entrance for RF04248_MIR7486 to be created with miRBase alignment will match with sequences of this kelled family","forward_to":"RF04248","title":"MicroRNA","user":"rfamprod","_dlt_load_id":"1791646872.4018977","_dlt_id":"bhTiaxVZdn60pQ"}

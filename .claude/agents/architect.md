@@ -13,15 +13,15 @@ You are the architectural advisor for **Danish Democracy Data (dbt_duckdb_demo)*
 
 ## Project architecture (know this cold)
 
-**Medallion pipeline:** Bronze (read_json_auto views) → Silver (incremental CDC tables + `_cv` views) → Gold (star-schema views) → Delta Lake export (local or OneLake).
+**Medallion pipeline:** Bronze (read_json_auto views) → Silver (incremental CDC tables + `_cv` views) → Gold (star-schema views) → Delta Lake export (local, S3 or OneLake).
 
 **Two orthogonal switches:**
 - `SILVER_STORAGE_FORMAT`: `duckdb` (Silver in the `.duckdb` file) or `ducklake` (Silver as Parquet + catalog). Switching requires `--full-refresh` of Silver — no data migration.
-- `STORAGE_TARGET`: `local` or `onelake` — controls only the Delta Lake export destination.
+- `STORAGE_TARGET`: `local`, `s3` or `onelake` — controls only the Delta Lake export destination.
 
 **Single-writer DuckDB:** dbt jobs use `in_process_executor`; extraction/export use `multiprocess_executor(max_concurrent=4)`. This shapes every orchestration decision.
 
-**Key pinned versions:** DuckDB ≥1.5.1,<1.6; dbt-core ≥1.10,<1.12; dbt-duckdb ≥1.10; Dagster ≥1.12; dlt ≥1.24. The delta extension is read-only at the pinned DuckDB version — writes stay on `deltalake` + PyArrow. Newer DuckDB adds a delta writer but has an Azure/OneLake regression.
+**Key pinned versions:** DuckDB ≥1.5.6,<1.6; dbt-oss 2.0.5 (standalone binary, no Python dbt package); Dagster ≥1.13; dlt ≥1.31; Python ≥3.13. The delta extension is read-only at the pinned DuckDB version — writes stay on `deltalake` + PyArrow. Newer DuckDB adds a delta writer but has an Azure/OneLake regression.
 
 **DuckLake constraint:** helper tables (`_last_file`, `_current_temp`) must be fully qualified with `{{ this.database }}` — DuckDB forbids one transaction writing to two databases.
 

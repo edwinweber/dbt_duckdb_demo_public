@@ -1,73 +1,69 @@
 ---
 marp: true
 title: A serious LakeHouse on a seriously tight budget
-description: Building a real data platform out of open data and free tools
+description: Building a data platform out of open data and free tools
 paginate: true
 theme: default
 ---
 
 <!--
-Speaker notes appear in HTML comments like this one throughout the deck.
-~20 content slides, budget ~2 min each = ~40 min + 5 min Q&A.
-Tone: light and honest. The audience knows this stuff — don't explain what a
-view is, do tell them the parts that bit you.
+Speaker notes are in HTML comments like this one.
+About 20 content slides at roughly 2 minutes each, plus 5 minutes for questions.
+The audience knows the basics (views, SCD2, orchestration); focus on how this
+project applies them and why.
 -->
 
 # A serious LakeHouse on a seriously tight budget
 
 ### Bronze → Silver → Gold with open data and free tools
 
-*Danish democracy, RNA families, and one analytical database doing all the work*
+*Danish Parliament data, RNA families, and DuckDB as the one query engine*
 
 <!--
-Opener (~90s). Set expectations: this is a reference project, not a product.
-The point of the talk is the *decisions* — the boring-but-correct ones and the
-couple that are genuinely fun (the self-watching pipeline, the DuckLake backup
-ordering puzzle). Lead with the budget angle: serious lakehouse patterns, near-
-zero spend.
+Opening. This is a reference project, not a product. The talk walks through the
+design decisions: extraction, change capture, storage, orchestration, backups,
+and what it costs to run.
 -->
 
 ---
 
-## Why this talk exists
+## Why this project
 
-- I wanted a data platform I could run **on a laptop, for €0** — but that still does the grown-up things: CDC, history, orchestration, backups.
-- Constraint forces good decisions. No Spark cluster to hide behind.
-- Everything here is open source. The *only* optional paid piece is the cloud export target.
-- It's a **learning project** — so I get to show you the scars, not just the architecture diagram.
+- A data platform that runs **on a laptop at no cost**, and still covers CDC, history, orchestration and backups.
+- One machine, no Spark cluster.
+- Everything is open source. The only optional paid component is the Microsoft Fabric OneLake export target.
+- It is a learning project: the talk covers the decisions and the problems that came up along the way.
 
 <!--
-The €0 framing is the hook for a technical crowd: they've all priced a "small"
-cloud data stack and winced. Emphasize: the interesting engineering is in the
-constraints, not in throwing managed services at it.
+The constraint (one machine, no budget) determines most of the choices that
+follow.
 -->
 
 ---
 
-## The odd-couple dataset
+## Two data sources
 
-Two public sources, deliberately mismatched:
+Two public sources with different shapes:
 
 | | Danish Parliament (Folketing) | Rfam (EBI) |
-|---|---|---|
+| --- | --- | --- |
 | What | MPs, meetings, cases, votes | RNA families, genomes, clans |
-| Where | `oda.ft.dk` OData REST API | public MySQL at EBI |
-| Entities | Multiple entities | Multiple tables |
-| Why | rich relational graph, real history | a *completely* different shape |
+| Where | `oda.ft.dk` OData REST API | public MySQL database at EBI |
+| Size | 18 entities | 7 tables |
+| Why | relational data with change history | a SQL source with different keys and columns |
 
-- Multiple entities across both sources. No API key. No rate limit drama. No NDA.
-- The mismatch is the point: if the pipeline only works for one source's shape, it's not a pipeline, it's a script.
+- Both are public: no API key or data agreement needed.
+- Two sources with different keys, date columns and extraction modes show that the pipeline is not tied to one source.
 
 <!--
-Get a small laugh on "a completely different shape" — RNA families next to
-parliamentary votes is absurd, and that's deliberate. The serious point: two
-sources with different keys, date columns, and extraction modes prove the
-generalization holds.
+Rfam has nothing to do with parliament data; it was chosen because it is a
+different kind of source (SQL instead of REST, different primary keys and date
+columns).
 -->
 
 ---
 
-## The stack, on one slide
+## The stack
 
 ```mermaid
 flowchart LR
@@ -78,13 +74,13 @@ flowchart LR
     DDD["Danish Parliament<br/>OData API"] -->|dlt| B
     RFAM["Rfam<br/>MySQL DB"] -->|dlt| B
     S -.->|SILVER_STORAGE_FORMAT| ST{{"DuckDB tables<br/>· or ·<br/>DuckLake Parquet"}}
-    G --> MB["Metabase<br/>(direct read — no export)"]
-    G -->|Delta export · optional| DL[("Delta Lake<br/>local / OneLake → Power BI")]
+    G --> MB["Metabase<br/>(direct read, no export)"]
+    G -->|Delta export · optional| DL[("Delta Lake<br/>local / S3 / OneLake → Power BI")]
     DAG["Dagster orchestrates every step"] -.-> DUCK
 ```
 
 - **Extract:** dlt · **Transform:** dbt + DuckDB · **Orchestrate:** Dagster · **Export:** deltalake · **BI:** Metabase (direct read).
-- New to some here: **dlt** = lightweight Python extract-load; **Dagster** = the orchestrator — think SQL Agent / ADF, but code-first.
+- **dlt** is a Python extract-load library; **Dagster** is the orchestrator, comparable to SQL Agent or ADF but defined in code.
 
 <p align="center">
   <img src="assets/logos/python.svg"   height="46" alt="Python">&nbsp;&nbsp;&nbsp;
@@ -97,304 +93,273 @@ flowchart LR
 </p>
 
 <!--
-Don't narrate every box — let the diagram do the work. Land two things: (1) DuckDB
-is the engine the whole way through, and (2) Silver has a swappable storage format
-(the dotted SILVER_STORAGE_FORMAT branch) we'll come back to. Note the two dotted
-edges are *choices/optional*: storage format, and the export. Everything solid is
-the always-on path. The logo strip is just "here's the toolbox" — don't read it out.
+Two points: DuckDB is the engine for every layer, and Silver has a switchable
+storage format (covered later). The dotted edges are optional: the storage
+format choice and the export. Solid edges run on every pipeline run.
 -->
 
 ---
 
-## Medallion, the honest version
+## The medallion layers
 
-- **Bronze** — raw, untouched, queryable. JSON exactly as it landed.
-- **Silver** — **fully historised** (SCD Type 2). Barely cleaned, *not* enriched — and that's deliberate.
-- **Gold** — business-friendly. English names, surrogate keys, star schema.
+- **Bronze**: raw data, unchanged and queryable. JSON as it was extracted.
+- **Silver**: **full history** (SCD Type 2). Hardly cleaned and not enriched, by design.
+- **Gold**: for consumers. English names, surrogate keys, star schema.
 
-Let me be honest about Silver: it doesn't scrub your data and it doesn't enrich it. Its **one job** is to capture **what changed and when**, losslessly. That's still where the engineering lives — hash-based CDC, SCD Type 2, and a load you can safely re-run — just don't mistake it for a cleaning step.
+Silver does not clean or enrich the data. Its job is to record **what changed and when**, without losing anything: hash-based CDC, SCD Type 2, and a load that can be re-run safely.
 
 <!--
-Honesty beat — correct the usual "Silver = cleaned/conformed" assumption. Here
-Silver is purely historisation: every version of every row, kept forever. Cleaning
-and enrichment are intentionally minimal. Bronze and Gold get one slide each;
-Silver gets three — not because it transforms a lot, but because *capturing change
-correctly and idempotently* is the hard part. Say that out loud so the 3-slice
-ratio reads as intentional.
+In many projects Silver means "cleaned and conformed". Here Silver only
+historises: every version of every row is kept. Silver gets three slides because
+capturing change correctly and repeatably is where most of the logic is.
 -->
 
 ---
 
 ## Extraction with dlt
 
-- Two orchestrators, one engine: `api_to_file()` for OData, `sql_to_file()` for MySQL.
-- Each source declares **incremental** vs **full-extract** per entity:
-  - DDD: 6 incremental (filtered on `opdateringsdato`), 12 full lookups.
-  - Rfam: 2 incremental (`updated`), 5 full.
-- Incremental state lives in dlt; output is **timestamped JSON** (`{entity}_{YYYYMMDD_HHMMSS}.json`).
-- `ThreadPoolExecutor(max_workers=4)` — extraction is I/O-bound, so threads are free lunch.
+- One engine, two pipeline types: `api_to_file` for OData, `sql_to_file` for MySQL.
+- Each entity is declared **incremental** or **full extract**:
+  - DDD: 6 incremental (filtered on `opdateringsdato`), 12 full extracts.
+  - Rfam: 2 incremental (`updated`), 5 full extracts.
+- No stored cursor: incremental entities reload a **lookback window** (31 days for DDD, 365 for Rfam). The overlap is harmless because Silver's hash comparison skips unchanged rows. Output is **timestamped NDJSON** (`{entity}_{YYYYMMDD_HHMMSS}.json`).
+- `ThreadPoolExecutor(max_workers=4)`: extraction is I/O-bound, so threads are sufficient.
 
 <!--
-The takeaway for this crowd: incremental-vs-full is *data*, declared once per
-entity, not branching logic sprinkled around the code. The date filter is the
-only stateful bit and dlt owns it. Mention the SQL-injection guard here in one
-breath: dates are regex-validated before they go anywhere near a query.
+Incremental versus full extract is configuration, declared once per entity in
+configuration_variables.py. There is no stored state: the date filter is
+"today minus N days", so a failed run needs no repair and a backfill is a run
+with an earlier date. Dates are validated as YYYY-MM-DD before they reach the
+OData filter, and the MySQL filter is a bound parameter.
 -->
 
 ---
 
-## Bronze: the easy layer
+## Bronze: views over files
 
-- Multiple views, all generated. Most are literally `read_json_auto()` over a folder.
-- A `_latest` view per entity (newest snapshot) and utility views.
-- Zero copies. Bronze is a **lens on files**, not a table.
+- 53 views, all generated. Most are `read_json_auto()` over a folder.
+- A `_latest` view per entity (newest file) and three utility views.
+- No data is copied: Bronze views read the files directly.
 
 ```sql
--- essentially this, 25 times
+-- simplified; one view per entity
 SELECT *, '<filename>' AS LKHS_filename
-FROM read_json_auto('.../Bronze/ddd/aktoer/*.json')
+FROM read_json_auto('.../Bronze/DDD/aktoer/*.json')
 ```
 
 <!--
-Keep this short — it's the breather slide. The one honest point: Bronze costs
-almost nothing because DuckDB reads JSON natively. No staging tables, no copy
-step. If someone asks "why not Parquet in Bronze" — you could, JSON is just what
-the API gives and read_json_auto makes it painless.
+Bronze costs very little because DuckDB reads JSON natively: no staging tables
+and no copy step. Parquet would also work; NDJSON is used because it is close to
+what the API returns.
 -->
 
 ---
 
 ## Silver, part 1: detecting change with a hash
 
-One idea: **hash each row, compare it to the same key's previous snapshot.** No `updated_at` to trust, no column-by-column diff.
+**Hash each row and compare it with the same key's previous version.** This does not depend on the source's update timestamp and avoids a column-by-column comparison.
 
-- SHA-256 over the *business* columns only — exclude bookkeeping (insert time, filename, run id) or every row looks changed every run.
+- SHA-256 over the *business* columns only. Tracking columns (insert time, file name) are excluded; otherwise every row would look changed on every run.
 
 ```sql
+-- simplified; the real hash uses a configurable delimiter and NULL token
 with hashed as (                        -- 1) hash the business columns
     select id, LKHS_filename,
            sha256(concat_ws('|', navn, parti, rolle)) as hash
     from   bronze_ddd_aktoer
 ),
-lagged as (                             -- 2) each key's previous snapshot
+lagged as (                             -- 2) each key's previous version
     select *, lag(hash) over (partition by id order by LKHS_filename) as prev
     from   hashed
 )
 select *,
        case when prev is null  then 'I'     -- new key      -> insert
             when hash <> prev   then 'U'     -- hash changed -> update
-       end as LKHS_cdc_operation            -- (deletes: a separate pass)
+       end as LKHS_cdc_operation            -- (deletes: a separate step)
 from   lagged;
 ```
 
-- **Order- and batch-independent:** the `LAG()` runs over the *whole* file history, so processing five new extractions at once yields **exactly** the same rows as one-by-one. Idempotent and safe to re-run.
+- **Independent of batch size:** `LAG()` runs over the whole file history, so loading five new files in one run gives the same rows as loading them one at a time. The load can be re-run safely.
 
 <!--
-The conceptual core, plus the property I'm most proud of. "Don't hash the
-bookkeeping columns" is the obvious-in-hindsight bit that ruins your week if you
-miss it — every row looks changed every run. The second bullet is the real
-engineering claim: because change is derived by a window function over all files
-(not a stateful row-by-row merge), batch == sequential. Catch up on 20 missed
-extractions in one run and the history is bit-identical to having run each nightly.
-Configurable delimiter + null-token keep the hash deterministic across NULLs.
+Excluding the tracking columns from the hash is required; without it every row
+changes on every run. Because change is derived with a window function over all
+files, not with a row-by-row merge, a run that processes 20 missed extractions
+produces the same history as 20 separate daily runs. The configurable delimiter
+and NULL replacement keep the hash deterministic when values are NULL.
 -->
 
 ---
 
-## Silver, part 2: SCD Type 2 + current-version views
+## Silver, part 2: SCD Type 2 and current-version views
 
-- Every change is **appended**, never overwritten. Full history stays in Silver.
+- Every change is **appended**; nothing is overwritten. Silver keeps the full history.
 - Tracking columns, all prefixed `LKHS_`:
   - `LKHS_date_valid_from` · `LKHS_cdc_operation` (I/U/D) · `LKHS_hash_value`
-- A `_cv` ("current version") view per table exposes just the latest row — so downstream consumers don't have to think about history unless they want to.
+- A `_cv` ("current version") view per table returns only the latest version of each row, so consumers that do not need history can ignore it.
 
-History for the auditors, `_cv` for everyone else. Same table.
-
-> The hash-based CDC + SCD Type 2 pattern here is inspired by **Roelant Vos**'s work on data-warehouse automation and historisation.
+> The hash-based CDC and SCD Type 2 approach is based on **Roelant Vos**'s work on data-warehouse automation and historisation.
 
 <!--
-The LKHS_ prefix is a vanity namespace (the project's initials) but the point is
-real: every system column is visually distinct from business columns. The _cv
-view is the ergonomic payoff of SCD2 — you keep all history but nobody pays the
-"filter to current" tax by hand. 50 Silver models = 25 history tables + 25 _cv
-views. Credit where due: the historisation approach (content hash, load metadata,
-SCD2) is straight out of Roelant Vos's data-warehouse-automation writing — worth a
-name-check, and a good pointer for anyone who wants the deeper Data Vault lineage.
+The LKHS_ prefix separates system columns from business columns. The _cv views
+mean nobody has to write the "filter to current version" logic by hand. 50
+Silver models = 25 history tables + 25 _cv views. Roelant Vos's writing on
+data-warehouse automation (content hash, load metadata, SCD2) is the source of
+the approach and a good reference for the Data Vault background.
 -->
 
 ---
 
-## Silver, part 3: I don't write Silver SQL
+## Silver, part 3: generated models
 
 - Bronze and Silver models are **generated** from one Python file (`configuration_variables.py`).
 - That file is the single source of truth: entity lists, primary keys, date columns, SQL templates.
-- Add an entity → edit *one* list → regenerate. The macros do the CDC.
-- Tests assert the lists stay consistent (counts, subsets, no dupes), so a typo fails CI, not production.
+- Adding an entity means editing the lists and regenerating. The macros contain the CDC logic.
+- Import-time checks and tests keep the lists consistent (counts, subsets, no duplicates), so a missing entry fails at import or in CI.
 
 ```python
-# add a Rfam table = append to four lists, then:
+# add an Rfam table: update four lists/dicts, then
 python -m ddd_python.ddd_dbt.generate_dbt_models
 ```
 
 <!--
-This is the "scales without growing" slide. 50+ Silver models, hand-maintaining
-them would be insane and inconsistent. The generator + 9 dbt macros mean the CDC
-logic exists *once*. The config-consistency tests are the safety net — they've
-caught me adding a key to one list and forgetting another.
+With 50+ Silver models, writing them by hand would be error-prone and
+inconsistent. The generator and 10 dbt macros keep the CDC logic in one place.
+The configuration tests catch a key added to one list but not to another.
 -->
 
 ---
 
-## Gold: making it presentable
+## Gold: the star schema
 
-- Multiple views: star-schema facts and dimensions, `_cv` current-version passthroughs, and a date dimension.
-- English names (`bronze_ddd_aktoer` → `gold_actor`), surrogate keys.
-- Surrogate keys cast **UBIGINT → signed BIGINT** — because Power BI can't digest unsigned 64-bit ints. (You learn this the annoying way.)
-- Mostly generated; a couple handcrafted where the star schema needed a human (`individual_votes`).
+- 19 views: star-schema facts and dimensions, `_cv` current-version views, and a date dimension.
+- English names (`silver_ddd_aktoer` → `actor`), a surrogate key per version (SCD2 dimensions).
+- Surrogate keys are cast from **UBIGINT to signed BIGINT**, because Power BI does not accept unsigned 64-bit integers.
+- Written by hand: the star schema needs modelling decisions. Only the `_cv` views are generated.
 
 <!--
-The Power BI / BIGINT detail always gets a knowing nod from anyone who's shipped
-to Power BI. It's a one-macro fix but a genuinely surprising failure the first
-time. Honesty beat: not everything is generated — the interesting joins are
-handwritten, and that's fine.
+The BIGINT cast is one macro (cast_hash_to_bigint). Bronze and Silver are
+generated; Gold is not, because the joins and naming are modelling decisions.
 -->
 
 ---
 
 ## Orchestration with Dagster
 
-- Software-defined **assets**, created by factory functions (extraction assets generated from a small set of factories).
-- Jobs: incremental, full-extract, full-pipeline, export, DuckLake cleanup.
-- Two daily schedules (06:00 + 08:00, Europe/Copenhagen) — **shipped disabled**, because a demo that hammers a public API on a cron is rude.
-- Run-status sensors fire on every job SUCCESS and FAILURE: write a summary to the log destination and push a **ntfy.sh** notification. Opt-in via `NTFY_TOPIC` in `.env`.
+- Software-defined **assets**, created by factory functions (one factory call per entity).
+- Jobs: incremental, full extract, full pipeline, export, DuckLake cleanup.
+- Two daily schedules (06:00 and 08:00, Europe/Copenhagen), **disabled by default**, so a new install does not call the public APIs until someone enables them.
+- Run-status sensors fire on every job's success and failure: they write a summary record and send an **ntfy.sh** notification. Notifications are opt-in via `NTFY_TOPIC` in `.env`.
 
 <!--
-Asset factories pair with the config-driven generation theme: define the shape
-once, stamp out 25. The "disabled by default" line is a small ethics/politeness
-point about public data sources — worth saying out loud. The ntfy.sh sensors are
-new: both cover all jobs, fire on success and failure, and are silent when
-NTFY_TOPIC is not set — so the default deploy doesn't spam anyone.
+The asset factories follow the same idea as the generated dbt models: define the
+shape once, create one per entity. Both sensors cover all jobs and send nothing
+when NTFY_TOPIC is not set.
 -->
 
 ---
 
-## One constraint to account for: single writer
+## DuckDB's single writer
 
-DuckDB is **single-writer** — one process holds the write lock on the file. It didn't reshape the architecture; it's just a fact you have to *realise and account for*. Once you do, it's a few small choices:
+DuckDB allows **one writing process** per database file. The orchestration accounts for that:
 
-- **dbt jobs → `in_process_executor`.** Everything that writes the DB runs in one process, serialized. No two models race for the lock.
-- **Extraction & export → `multiprocess_executor` (max 4).** These write *files*, not the DB, so they're free to run in parallel.
-- **Metabase holds a read lock → Dagster stops it before a run, starts it after.** The pipeline owns the file for the duration of a build.
-- **Human connections (DBeaver, etc.) release during a run** — same rule, applied to people.
-
-Recognise it, arrange *who* runs *where*, move on. Boring, and it never deadlocks.
+- **dbt jobs use `in_process_executor`.** Everything that writes the database runs in one process, one step at a time.
+- **Extraction and export use `multiprocess_executor` (max 4).** They write files, not the database, so they can run in parallel.
+- **Metabase keeps a connection open, so Dagster stops it before a dbt run and starts it afterwards**, also when the run fails.
+- **Other connections (DBeaver, etc.) must be closed during a run.**
 
 <!--
-Reframed from "war story" to "here's the solution" — and don't oversell it as the
-thing that drove the whole design. It didn't. It's a property of the engine you
-notice and handle: writers (dbt) serialized in-process; non-writers (extraction/
-export) parallelize; readers (Metabase, humans) evicted for the window. The honest
-framing is "realise it, account for it." The only generalizable bit: an embedded
-single-file DB makes *you* the concurrency manager — lead with the mechanism, not
-the drama.
+This is a property of the engine, not something that shaped the whole design.
+Writers (dbt) run serially in one process; extraction and export run in
+parallel; readers (Metabase, people) are disconnected during the run.
 -->
 
 ---
 
-## Silver storage, switchable: DuckDB vs DuckLake
+## Switchable Silver storage: DuckDB or DuckLake
 
-One env var — `SILVER_STORAGE_FORMAT` — flips Silver between two backends:
+One environment variable, `SILVER_STORAGE_FORMAT`, selects where Silver is stored:
 
 | | `duckdb` (default) | `ducklake` |
-|---|---|---|
+| --- | --- | --- |
 | Silver lives in | the `.duckdb` file | DuckLake catalog (Parquet + metadata) |
-| Files on disk | inside the binary | Parquet under `DUCKLAKE_DATA_PATH` |
+| Files on disk | inside the database file | Parquet under `DUCKLAKE_DATA_PATH` |
 | Time travel | no | yes (catalog snapshots) |
 
-- Bronze and Gold don't care — Gold's `ref()` to Silver just resolves to the catalog.
-- Catching detail: DuckLake stores *tiny* tables inline in the catalog, so not every table shows up as a `.parquet` file. First time, you'll think it's broken. It isn't.
+- Bronze and Gold are unaffected: Gold's `ref()` to Silver resolves to the catalog.
+- DuckLake stores very small tables inline in the catalog, so not every table appears as a `.parquet` file. This is expected.
 
 <!--
-This is recent work and a nice "open table format without the Iceberg ceremony"
-angle. DuckLake = Parquet data + a SQL catalog. The seam is clean because dbt's
-ref() indirection means Gold never hard-codes where Silver lives. The inline-tiny-
-tables footgun is a real "wait, where are my files" moment — flag it so they don't
-hit it cold.
+DuckLake is Parquet data plus a SQL catalog. Switching works without model
+changes because dbt's ref() means Gold never hard-codes where Silver lives.
+Mention the inline small tables, because it is the first thing people notice
+when they look at the data directory.
 -->
 
 ---
 
-## The Delta export — and who it's actually for
+## The Delta export and who uses it
 
-**Not Metabase.** Metabase reads the DuckDB file directly — dashboards work with **zero** export. The Delta export is an **optional outbound adapter** for *other* tooling:
+**Not Metabase.** Metabase reads the DuckDB file directly and needs no export. The Delta export is an **optional** output for other tools:
 
 ```text
-DuckDB  ──►  Metabase            (BI, built in, no export)
+DuckDB  ──►  Metabase            (BI, reads the file directly)
    │
-   └──►  Delta Lake export  ──►  anything that speaks Delta
-                                 └─► Fabric OneLake ─► Power BI  (the "enterprisey" path)
+   └──►  Delta Lake export  ──►  tools that read Delta
+                                 └─► Fabric OneLake ─► Power BI
 ```
 
-- Silver → Delta (incremental append), Gold → Delta (full overwrite); target flips **local ↔ OneLake** with one env var.
-- Dedup read runs *inside* DuckDB via `delta_scan()`; the **write** still uses the `deltalake` lib. Folding the write into DuckDB is blocked by an **Azure OneLake bug** — upstream, not DuckDB's fault — so for now we wait it out.
-- Local-only? You may never run it. Want Power BI / Spark / Databricks? Now Delta on OneLake earns its keep.
+- Silver → Delta (incremental append), Gold → Delta (full overwrite); the target is **local, S3 or OneLake**, set by one environment variable.
+- The dedup read runs inside DuckDB with `delta_scan()`; the **write** uses the `deltalake` library. The pinned DuckDB version can only read Delta; newer versions can write it but have an Azure/OneLake regression, so the write stays on `deltalake` for now.
+- A local-only setup does not need the export. It is for Power BI, Spark, Databricks or other Delta readers.
 
 <!--
-Merged slide. Lead with the framing correction — don't let a technical crowd
-assume the export is load-bearing. The medallion is "done" at Gold-in-DuckDB;
-Metabase already serves reports off that. Export is a fan-out for interop, Delta
-being the lingua franca. On the writer split: DuckDB can write Delta; what blocks
-us moving the write off `deltalake` is a bug on the **Azure OneLake** side, not
-DuckDB. So this is "waiting on an upstream fix," not "DuckDB can't do it" — be
-precise if asked. Land it as: BI is built in, export is for other people's tools.
+The medallion is complete at Gold in DuckDB; Metabase reports from there. The
+export is for interoperability, with Delta as the common format. Moving the
+write into DuckDB waits for a DuckDB version that writes Delta and works with
+OneLake.
 -->
 
 ---
 
-## My favourite trick: the pipeline watches itself
+## Observability: the pipeline reports on itself
 
-- Dagster stores its run history in a SQLite database.
-- So… point dbt at that SQLite file too.
-- A small **data-engineering** model layer turns Dagster's own runs into queryable tables — surfaced in Metabase like any other data.
+- Dagster stores its run history in SQLite.
+- dbt reads that SQLite database with DuckDB's `sqlite_scan`, together with the step failures exported by the failure sensor.
+- A small **data_engineering** layer models Dagster's runs as tables, shown in Metabase like any other data.
 
-The pipeline reports on the pipeline. No extra observability stack, just one more dbt source.
+No separate observability stack: the run history is one more dbt source.
 
 <!--
-This usually gets the best reaction — it's a cheap, almost cheeky idea with real
-payoff. Observability as "just another data source." It only works because dbt-
-duckdb can attach SQLite and DuckDB reads across databases. Keep it short and let
-the cleverness land on its own.
+This works because DuckDB can read SQLite files directly. The 08:00 schedule
+refreshes this layer after the 06:00 pipeline run.
 -->
 
 ---
 
-## Backups, and a genuinely fun ordering puzzle
+## Backups and their ordering
 
 Four targets: `dagster`, `metabase`, `duckdb`, and (in DuckLake mode) `ducklake`.
 
-- Retention: 62 days for Dagster/Metabase, **7 days for duckdb/ducklake**.
-- The puzzle: the DuckLake **catalog** lives with the `.duckdb` file; the **data files** live elsewhere. The catalog *references* the files.
-- So you must archive **data files first, catalog second** — otherwise the catalog snapshot can point at a Parquet file the backup never captured.
-
-Files-before-catalog. Correct by construction.
+- Retention: 62 days for Dagster and Metabase, **7 days for duckdb and ducklake**.
+- The DuckLake **catalog** is stored next to the `.duckdb` file; the **data files** are stored elsewhere. The catalog references the files.
+- The backup therefore archives **the data files first and the catalog second**. In the other order, the catalog could reference a Parquet file that the backup does not contain.
 
 <!--
-This is the "small detail, real consequence" closer for the technical content.
-Anyone who's restored a backup and found a dangling reference will feel this.
-The ordering isn't a nice-to-have; it's the difference between a restore that
-works and a catalog pointing into the void. Containers are stopped during backup
-too, so it's belt-and-suspenders — but get the order right anyway.
+With the data files archived first, every file the catalog references is in the
+backup. The duckdb and ducklake backups also stop the Dagster and Metabase
+containers while they run.
 -->
 
 ---
 
-## How it's wired in production
+## Production setup
 
 ```mermaid
 flowchart TB
     NET((Internet)) --> FW
     OP["Operator laptop"] -->|SSH key-only| FW
-    FW{{"Hetzner Firewall<br/>allowlist: 2 IPs<br/>:22 · :3000 · :3001<br/>no TLS — no public surface"}}
+    FW{{"Hetzner Firewall<br/>allowlist: 2 IPs<br/>:22 · :3000 · :3001<br/>no TLS, no public endpoint"}}
     subgraph BOX["Hetzner CPX42 · 8 vCPU / 16 GB · Nuremberg"]
         direction TB
         FW --> DAGSTER["ddd-dagster :3000"]
@@ -402,8 +367,8 @@ flowchart TB
         RUN["run<br/>one-off jobs"]
         BACKUP["backup service"]
         subgraph VOL["Block volumes (ext4)"]
-            DATA["/data — live<br/>DuckDB · DuckLake · Dagster home"]
-            BK["/data_backup — archives"]
+            DATA["/data (live)<br/>DuckDB · DuckLake · Dagster home"]
+            BK["/data_backup (archives)"]
         end
         DAGSTER --- DATA
         METABASE --- DATA
@@ -417,76 +382,59 @@ flowchart TB
 Non-root containers (UID 1000 / 2000) · `restart: unless-stopped` · one node, no HA.
 
 <!--
-This is the visual companion to the next slide — show it, then talk the details
-on "Runs on a laptop." Two things to point at: the firewall is the entire
-perimeter (allowlist + key-only SSH, no TLS because nothing is public), and the
-backup service is the only thing that reaches off-box (nightly to StorageBox).
-Everything else lives on two ext4 volumes on one machine.
+The firewall allowlist and key-only SSH are the whole perimeter; there is no TLS
+because nothing is public. The backup service is the only component that sends
+data off the server (nightly to the StorageBox). Everything else is on two ext4
+volumes on one machine.
 -->
 
 ---
 
-## Runs on a laptop — deployed on one small box
+## Development on a laptop, production on one server
 
-Dev on a laptop. Production is **one Hetzner box**, run like a grown-up:
+Development runs on a laptop. Production is **one Hetzner server**:
 
-- **Host:** CPX42 (8 vCPU / 16 GB), Docker CE, Nuremberg — **~€30/mo**. Two `fstab` volumes: `/data` (live) + `/data_backup`.
-- **Security is a whitelist, not a fortress:** firewall allows inbound from exactly **two IPs** (home + VPN exit); ports 22/3000/3001, everything else dropped. **No TLS — on purpose:** no public surface, the allowlist *is* the perimeter. Key-only root SSH.
-- **Off-site backups** nightly via cron → Hetzner StorageBox. **Non-root containers** (UID 1000 / 2000), memory limits, `restart: unless-stopped`.
+- **Host:** CPX42 (8 vCPU / 16 GB), Docker CE, Nuremberg, **about €35/month** including volumes and backup storage. Two volumes in `fstab`: `/data` (live) and `/data_backup`.
+- **Security:** the firewall accepts inbound traffic from **two IP addresses** (home and VPN exit) on ports 22, 3000 and 3001 and drops everything else. **No TLS**, because there is no public endpoint. SSH is key-only.
+- **Off-site backups** nightly via cron to a Hetzner StorageBox. **Non-root containers** (UID 1000 / 2000), memory limits, `restart: unless-stopped`.
 
-**All-in cost:** local-only = **€0** (+ ~€30/mo if you host it on Hetzner). Fabric OneLake adds ~€65/mo paused-overnight, ~€190 always-on — *only* if you want the cloud export.
+**Cost:** local only = **€0**; hosted on Hetzner = about €35/month. Fabric OneLake adds about €65/month when paused overnight, or about €190/month always on, and only if you use the cloud export.
 
-**Deliberately *not* built:** real-time (batch/daily), alerting (just logged summaries), HA/failover (one node, on purpose), dev/staging/prod split. A reference project, not a platform.
+**Not built:** real-time ingestion (it is daily batch), enterprise alerting (NDJSON summaries and ntfy.sh only), high availability (one node), a dev/staging/prod split.
 
 <!--
-Merged "deployed + cost + limits" into one "running it for real" slide. Be honest
-about the security model — deliberately simple: no reverse proxy, no TLS, no
-fail2ban, because there's no public endpoint. The whole attack surface is two
-whitelisted IPs and key-only SSH; for a single-operator reference project that's
-proportionate, and "no TLS on purpose" lands better with a security-literate crowd
-than pretending there's a CA in here. The cost spread €0 → €30 → €190 is the
-memorable number; saying what you DIDN'T build earns more credibility than a
-feature list. This is the last "real-world" beat before the recap.
+The security model is kept simple: no reverse proxy, no TLS, no fail2ban,
+because there is no public endpoint. For a project with one operator, an IP
+allowlist and key-only SSH are proportionate to the risk.
 -->
 
 ---
 
-## What I'd tell past me
+## Summary
 
-- **Generate** repetitive models; hand-write the interesting 10%.
-- A **content hash** beats trusting someone else's `updated_at`.
-- Keep **history cheap to ignore** (`_cv` views) and cheap to keep (append-only).
-- Know your engine's quirks (e.g. single-writer) and account for them — they're constraints, not catastrophes.
-- Keep what *works* in place, note *why* — sometimes the blocker is upstream, and the fix is patience.
+- **Generate** the repetitive models; write the star schema by hand.
+- A **content hash** detects changes without relying on the source's update timestamp.
+- Keep history **append-only**, and provide `_cv` views for the current state.
+- Account for engine limits such as DuckDB's single writer in the orchestration.
+- Where an upstream issue blocks a change (the Delta write), keep the working solution and document why.
 
 <!--
-The recap slide. Each line maps to a moment earlier in the talk, so it lands as
-"oh right, that" rather than new info. The single-writer line is deliberately
-low-key — a quirk to handle, not a design driver. The last line is the deltalake/
-OneLake situation generalized: we keep deltalake not because anything of ours is
-broken but because an upstream Azure OneLake bug blocks the cleaner path — so the
-honest "lesson" is that some blockers aren't yours to fix, you just wait.
+Each point refers back to an earlier slide.
 -->
 
 ---
 
-## Thanks — questions?
+## Questions
 
-- It's a learning project: open source, runs on a laptop, scars included.
-- Two odd datasets, one medallion, single-writer kept honest by the orchestration, and a backup that knows about ordering.
-- Repo + docs: `dbt_duckdb_demo` (`README.md`, `documentation/`).
+- Open source, runs on a laptop or on one small server.
+- Two data sources, one medallion in DuckDB, a single-writer constraint handled by the orchestration, and backups that archive in the right order.
+- Repository and documentation: `dbt_duckdb_demo` (`README.md`, `documentation/`).
 
-> **Am I doing anything unique here? Not at all.** But it's genuinely fun to build — and I honestly believe plenty of clients would be more than well served by *this*, instead of a far costlier alternative.
-
-**Ask me the hard ones.**
+None of the components are new. The combination is low-cost and is enough for many small and medium-sized data platforms.
 
 <!--
-Leave ~5 min. The blockquote is the real closing note — say it plainly and
-unironically. None of these pieces are novel; the point is that the *combination*
-is cheap, honest, and genuinely enough for a lot of real workloads. That humility
-lands better than overclaiming, and it's a good segue into "where would this NOT
-be enough?" if someone asks. Likely questions to pre-load: "why not Iceberg/Delta
-for Silver instead of DuckLake?", "why dlt over Airbyte/Meltano?", "how big does
-this get before DuckDB hurts?", "why keep deltalake if DuckDB can read Delta?".
-You have honest answers for all of these earlier in the deck — point back to the slide.
+Leave about 5 minutes. Likely questions: why DuckLake instead of Iceberg or
+Delta for Silver; why dlt instead of Airbyte or Meltano; how large the data can
+get before DuckDB becomes a limit; why keep deltalake when DuckDB can read
+Delta. Each is covered on an earlier slide.
 -->

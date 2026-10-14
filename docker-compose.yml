@@ -40,13 +40,13 @@ x-logging: &logging
 
 services:
   # ── Generic runner for one-off Python tasks ─────────────────────────────
-  # Usage: docker compose run --rm run <module>
+  # Usage: docker compose run --rm run python -m <module>
   # Examples:
-  #   docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
-  #   docker compose run --rm run ddd_python.ddd_dbt.generate_dbt_models
-  #   docker compose run --rm run ddd_python.ddd_dbt.dbt_build_with_unique_logfile
-  #   docker compose run --rm run ddd_python.ddd_dlt.export_silver
-  #   docker compose run --rm run ddd_python.ddd_dlt.export_gold
+  #   docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
+  #   docker compose run --rm run python -m ddd_python.ddd_dbt.generate_dbt_models
+  #   docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
+  #   docker compose run --rm run python -m ddd_python.ddd_dlt.export_silver
+  #   docker compose run --rm run python -m ddd_python.ddd_dlt.export_gold
   run:
     <<: *common
     container_name: ddd-run
@@ -103,7 +103,7 @@ services:
 
   # ── Dagster: webserver + daemon or one-off job execution ────────────────
   # UI:       docker compose up dagster
-  # Full job: docker compose run --rm dagster job execute -j full_pipeline_job -w workspace.yaml
+  # Full job: docker compose run --rm dagster dagster job execute -m ddd_python.ddd_dagster.definitions -j full_pipeline_job
   # Run individual DDD-extraction in Dagster Launchpad:
   # ops: {"ingestion__DDD__stemme": {"config": {"date_to_load_from": "2025-01-01"}}}
   # resources:

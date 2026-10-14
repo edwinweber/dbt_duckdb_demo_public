@@ -35,6 +35,7 @@ danish_democracy_data:
   outputs:
     local:
       type: duckdb
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -45,6 +46,7 @@ danish_democracy_data:
 
     local_ducklake:
       type: duckdb
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -55,13 +57,13 @@ danish_democracy_data:
       attach:
         - path: "ducklake:{{ env_var('DUCKLAKE_CATALOG_LOCATION') }}"
           alias: ducklake_catalog
-          is_ducklake: true
           options:
             data_path: "{{ env_var('DUCKLAKE_DATA_PATH') }}"
       external_root: 'data/curated'
 
     local_ducklake_s3:
       type: duckdb
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -82,19 +84,19 @@ danish_democracy_data:
           key_id: "{{ env_var('S3_ACCESS_KEY_ID') }}"
           secret: "{{ env_var('S3_SECRET_ACCESS_KEY') }}"
           region: "{{ env_var('S3_REGION', 'us-east-1') }}"
-          endpoint: "{{ env_var('S3_ENDPOINT', '').split('://')[-1] }}"
+          endpoint: "{{ env_var('S3_ENDPOINT', '') | replace('http://', '') | replace('https://', '') }}"
           url_style: "{{ env_var('S3_URL_STYLE', 'path') }}"
           use_ssl: "{{ env_var('S3_USE_SSL', 'false') }}"
       attach:
         - path: "ducklake:{{ env_var('DUCKLAKE_CATALOG_LOCATION') }}"
           alias: ducklake_catalog
-          is_ducklake: true
           options:
             data_path: "s3://{{ env_var('S3_BUCKET_DUCKLAKE') }}/{% if env_var('S3_PREFIX_DUCKLAKE', '') %}{{ env_var('S3_PREFIX_DUCKLAKE').strip('/') }}/{% endif %}"
       external_root: 'data/curated'
 
     onelake:
       type: duckdb
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs

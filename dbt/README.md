@@ -1,20 +1,20 @@
 # Danish Democracy Data — dbt Project
 
-Last updated: April 2026
-
 dbt transformation layer for the Danish Parliament (Folketing) open data and
 Rfam RNA family database pipeline.
 
-> For full project documentation — including extraction, orchestration, Docker usage,
-> and environment setup — see the [project README](../README.md).
+> How the models and macros work, including the Silver CDC logic, is explained in
+> [documentation/dbt_transformations.md](../documentation/dbt_transformations.md).
+> Extraction, orchestration and setup are in the [project README](../README.md).
 
 ## Architecture
 
-Medallion architecture with three layers:
+Medallion architecture with three layers, plus an observability layer:
 
-- **Bronze** (`+schema: bronze`, views) — Raw JSON ingested from the Danish Parliament OData API and the Rfam public MySQL database, read via DuckDB's `read_json_auto()` from local storage or OneLake (controlled by `STORAGE_TARGET`).
-- **Silver** (`+schema: silver`, incremental append) — SCD Type 2 history with hash-based Change Data Capture (CDC). Each entity tracks inserts, updates, and deletes.
-- **Gold** (`+schema: gold`, views) — Business-friendly English names, surrogate keys, and star-schema dimensions/facts.
+- **Bronze** (`+schema: bronze`, views) — Raw NDJSON extracted from the Danish Parliament OData API and the Rfam public MySQL database, read via DuckDB's `read_json_auto()` from wherever `DANISH_DEMOCRACY_DATA_SOURCE` / `RFAM_DATA_SOURCE` point: the local filesystem or S3 (`RAW_STORAGE_TARGET=s3`). Bronze never lives on OneLake; only the Silver/Gold Delta exports can go there.
+- **Silver** (`+schema: silver`, incremental) — SCD Type 2 history with hash-based Change Data Capture (CDC). Each entity tracks inserts, updates, and deletes. Stored in the main DuckDB file or, with `SILVER_STORAGE_FORMAT=ducklake`, in the attached `ducklake_catalog`.
+- **Gold** (`+schema: gold`, views) — Business-friendly English names, surrogate keys, and handcrafted star-schema dimensions/facts with generated `_cv` views.
+- **data_engineering** (`+schema: data_engineering`) — Dagster run history (SQLite via `sqlite_scan`, step failures via NDJSON) modelled as a small star schema.
 
 ## Key Conventions
 
@@ -22,7 +22,7 @@ Medallion architecture with three layers:
 | --- | --- |
 | `LKHS_` prefix | Lakehouse metadata columns added by the pipeline (not from source) |
 | `_cv` suffix | Current-version view (latest row per entity) |
-| `*.json*` globs | Matches both `.json` (legacy) and `.jsonl` (dlt filesystem destination) |
+| `*.json*` globs | Matches the `<entity>_<timestamp>.json` files dlt writes, and the `….json.jsonl` names some dlt versions produced |
 
 ## Prerequisites
 
@@ -46,17 +46,21 @@ Medallion architecture with three layers:
 
 ## Running
 
-All dbt commands must be run from the `dbt/` directory with `--profiles-dir .`:
+Run dbt from the `dbt/` directory with `--profiles-dir .`, with the variables
+from `.env` exported (`set -a && source ../.env && set +a`); `profiles.yml` reads
+them with `env_var()`.
 
 ```bash
 cd dbt
 
-dbt run --profiles-dir .                        # Full run (all layers)
+dbt build --profiles-dir .                      # Models + tests, all layers
+dbt run --profiles-dir .                        # Models only, all layers
 dbt run --select bronze --profiles-dir .        # Bronze only
 dbt run --select silver --profiles-dir .        # Silver only
 dbt run --select gold   --profiles-dir .        # Gold only
 
-# Rebuild Silver from scratch (clears all CDC history)
+# Rebuild Silver from all Bronze files. Run a full extraction first
+# (--date_to_load_from 1900-01-01), or incremental entities get false deletes.
 dbt run --select silver --full-refresh --profiles-dir .
 
 dbt test --profiles-dir .                       # All data quality tests
@@ -67,4 +71,7 @@ dbt docs generate --profiles-dir . && dbt docs serve   # Lineage browser on :808
 
 ## Connection
 
-Uses DuckDB via `dbt-duckdb`. See `profiles.yml` for configuration (requires `DUCKDB_DATABASE_LOCATION` environment variable).
+Uses DuckDB through the adapter built into the dbt-oss binary (installed with
+`scripts/install_dbt_oss.sh`). `profiles.yml` has four targets (`local`,
+`local_ducklake`, `local_ducklake_s3`, `onelake`) and picks one from the storage
+switches; every target uses `threads: 1`.

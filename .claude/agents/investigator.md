@@ -27,8 +27,8 @@ You are a diagnostic agent for **Danish Democracy Data (dbt_duckdb_demo)**. When
 1. **Read the error exactly** — don't paraphrase stack traces. The specific exception type and line number matter.
 2. **Check environment first** — most failures in this project are env var or file path issues. Verify `DUCKDB_DATABASE_LOCATION`, `DUCKLAKE_CATALOG_LOCATION`, `SILVER_STORAGE_FORMAT`, `STORAGE_TARGET`.
 3. **Check what holds the DuckDB lock** — `lsof <path>.duckdb` or `fuser <path>.duckdb`. A second read-write connection is the most common cause of mysterious dbt failures.
-4. **Inspect dlt state** for extraction anomalies — `dlt/pipelines_dir/` holds incremental watermarks. A corrupted or stale state file causes silent partial loads.
-5. **Read logs in order** — Dagster run logs, then dbt JSON logs (`dbt/logs/`), then dlt output, then DuckDB error messages.
+4. **Inspect the extraction logs** for extraction anomalies — one NDJSON record per pipeline run under `DLT_PIPELINE_RUN_LOG_DIR/<DDD|RFAM>/<pipeline>/`. There are no incremental watermarks: incremental entities reload a fixed lookback window, so a partial load means a failed or filtered run, not stale state.
+5. **Read logs in order** — Dagster run logs, then dbt JSON logs (`DBT_LOGS_DIRECTORY`), then dlt output, then DuckDB error messages.
 6. **For DuckLake issues** — check whether `{{ this.database }}` qualification is consistent across all Silver macro-generated helper tables. Cross-database writes in one transaction are forbidden.
 
 ## Output format

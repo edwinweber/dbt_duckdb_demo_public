@@ -35,17 +35,18 @@ dbt transformation jobs
 ``dbt_gold_job``
 
 ``dbt_data_engineering_job``
-    Refreshes the Dagster observability layer (reads from Dagster SQLite).
+    Refreshes the Dagster observability layer (reads Dagster's SQLite run
+    storage plus the step-failure NDJSON exported by the failure sensor).
 
 Export jobs
 ~~~~~~~~~~
 ``export_silver_job``
-    Exports all Silver tables from DuckDB to OneLake as Delta Lake tables
-    (incremental append).
+    Exports all Silver tables from DuckDB as Delta Lake tables to the ``STORAGE_TARGET``
+    destination (local, S3 or OneLake), incremental append.
 
 ``export_gold_job``
-    Exports all Gold tables from DuckDB to OneLake as Delta Lake tables
-    (full overwrite).
+    Exports all Gold tables from DuckDB as Delta Lake tables to the ``STORAGE_TARGET``
+    destination (local, S3 or OneLake), full overwrite.
 
 End-to-end pipeline
 ~~~~~~~~~~~~~~~~~~~
@@ -71,7 +72,6 @@ from dagster_dbt import build_dbt_asset_selection
 
 from ddd_python.ddd_dagster._constants import (
     DUCKLAKE_CLEANUP_ASSET_KEY,
-    MAX_CONCURRENT_WORKERS,
     START_METABASE_ASSET_KEY,
     STOP_METABASE_ASSET_KEY,
 )
@@ -112,12 +112,14 @@ def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
 # Shared executor: concurrency mirrors ThreadPoolExecutor in dlt_pipeline_execution_functions.
 # ---------------------------------------------------------------------------
 
-_concurrent_executor = multiprocess_executor.configured({"max_concurrent": MAX_CONCURRENT_WORKERS})
+_concurrent_executor = multiprocess_executor.configured(
+    {"max_concurrent": configuration_variables.MAX_CONCURRENT_WORKERS}
+)
 
 
 danish_parliament_incremental_job = define_asset_job(
     name="danish_parliament_incremental_job",
-    selection=_with_metabase_control(AssetSelection.groups("ingestion_DDD_incremental")),
+    selection=AssetSelection.groups("ingestion_DDD_incremental"),
     executor_def=_concurrent_executor,
     config=_DDD_INCREMENTAL_CONFIG,
     description=(
@@ -134,7 +136,7 @@ danish_parliament_incremental_job = define_asset_job(
 
 danish_parliament_full_extract_job = define_asset_job(
     name="danish_parliament_full_extract_job",
-    selection=_with_metabase_control(AssetSelection.groups("ingestion_DDD_full_extract")),
+    selection=AssetSelection.groups("ingestion_DDD_full_extract"),
     executor_def=_concurrent_executor,
     description=(
         "Full extraction of the 12 Danish Parliament resources that are always "
@@ -151,9 +153,7 @@ danish_parliament_full_extract_job = define_asset_job(
 
 danish_parliament_all_job = define_asset_job(
     name="danish_parliament_all_job",
-    selection=_with_metabase_control(
-        AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract")
-    ),
+    selection=AssetSelection.groups("ingestion_DDD_incremental", "ingestion_DDD_full_extract"),
     executor_def=_concurrent_executor,
     config=_DDD_INCREMENTAL_CONFIG,
     description=(
@@ -174,7 +174,7 @@ danish_parliament_all_job = define_asset_job(
 
 rfam_incremental_job = define_asset_job(
     name="rfam_incremental_job",
-    selection=_with_metabase_control(AssetSelection.groups("ingestion_RFAM_incremental")),
+    selection=AssetSelection.groups("ingestion_RFAM_incremental"),
     executor_def=_concurrent_executor,
     config=_RFAM_INCREMENTAL_CONFIG,
     description=(
@@ -190,7 +190,7 @@ rfam_incremental_job = define_asset_job(
 
 rfam_full_extract_job = define_asset_job(
     name="rfam_full_extract_job",
-    selection=_with_metabase_control(AssetSelection.groups("ingestion_RFAM_full_extract")),
+    selection=AssetSelection.groups("ingestion_RFAM_full_extract"),
     executor_def=_concurrent_executor,
     description=(
         "Full extraction of the 5 small Rfam lookup tables that are always "
@@ -205,9 +205,7 @@ rfam_full_extract_job = define_asset_job(
 
 rfam_all_job = define_asset_job(
     name="rfam_all_job",
-    selection=_with_metabase_control(
-        AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract")
-    ),
+    selection=AssetSelection.groups("ingestion_RFAM_incremental", "ingestion_RFAM_full_extract"),
     executor_def=_concurrent_executor,
     config=_RFAM_INCREMENTAL_CONFIG,
     description=(
@@ -450,7 +448,7 @@ dbt_data_engineering_job = define_asset_job(
 
 
 # ---------------------------------------------------------------------------
-# Export jobs — DuckDB → OneLake Delta Lake
+# Export jobs — DuckDB → Delta Lake (local, S3 or OneLake)
 # ---------------------------------------------------------------------------
 
 export_silver_job = define_asset_job(
@@ -458,8 +456,9 @@ export_silver_job = define_asset_job(
     selection=_with_metabase_control(AssetSelection.groups("export_silver")),
     executor_def=_concurrent_executor,
     description=(
-        "Exports all Silver tables from DuckDB to OneLake as Delta "
-        "Lake tables (incremental append).  Each table is exported as its own "
+        "Exports all Silver tables from DuckDB as Delta Lake tables to "
+        "the STORAGE_TARGET destination (local, S3 or OneLake), incremental append.  "
+        "Each table is exported as its own "
         "asset, running concurrently (max 4).  Must run after dbt_silver_job."
     ),
     tags={
@@ -474,8 +473,9 @@ export_gold_job = define_asset_job(
     selection=_with_metabase_control(AssetSelection.groups("export_gold")),
     executor_def=_concurrent_executor,
     description=(
-        "Exports all Gold tables from DuckDB to OneLake as Delta "
-        "Lake tables (full overwrite).  Each table is exported as its own "
+        "Exports all Gold tables from DuckDB as Delta Lake tables to "
+        "the STORAGE_TARGET destination (local, S3 or OneLake), full overwrite.  "
+        "Each table is exported as its own "
         "asset, running concurrently (max 4).  Must run after dbt_gold_job."
     ),
     tags={
@@ -539,7 +539,7 @@ full_pipeline_job = define_asset_job(
     description=(
         "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
         "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, exports "
-        "Silver and Gold to OneLake as Delta Lake, then refreshes the Data "
+        "Silver and Gold as Delta Lake (local, S3 or OneLake), then refreshes the Data "
         "Engineering observability layer.  All steps run sequentially "
         "(in_process_executor) to respect DuckDB's single-writer constraint: "
         "ingestion → Bronze → Silver → Gold → export Silver → export Gold → "

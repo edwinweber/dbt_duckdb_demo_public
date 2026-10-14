@@ -2,34 +2,34 @@
 name = "danish-democracy-data"
 version = "1.0.0"
 description = "Data engineering pipeline for Danish Parliament open data — extraction, medallion-architecture transformation, and Delta Lake export."
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = {file = "LICENSE"}
 readme = "README.md"
 authors = [{name = "Edwin Weber"}]
 dependencies = [
     # Extraction & loading
-    "dlt>=1.28.1,<2",
+    "dlt>=1.31.0,<2",
     "requests>=2.34.2",
-    "python-dotenv>=1.0",
+    "python-dotenv>=1.2.4",
 
     # Azure / Fabric OneLake
-    "adlfs>=2026.5.0",
-    "azure-identity>=1.25.3",
-    "azure-storage-file-datalake>=12.25.0",
+    "azure-identity>=1.26.0",
+    "azure-storage-file-datalake>=12.26.0",
 
     # Transformation
-    # dbt-core is capped at <1.12 — dagster-dbt 0.29.x hard limit
-    "dbt-core>=1.11,<1.12",
-    "dbt-duckdb>=1.10,<2",
-    "duckdb>=1.5.4,<1.6",
+    # dbt-core Python package removed — project now uses the dbt-oss 2.0.5 standalone
+    # binary (see scripts/install_dbt_oss.sh). dagster-dbt uses CLI mode (DbtCliResource)
+    # automatically when no dbt Python package is importable; installing any dbt Python
+    # package alongside dagster-dbt 0.29.26 triggers issue #34215 (NoneType/enabled crash).
+    "duckdb>=1.5.6,<1.6",
 
     # Export to Delta Lake
-    "deltalake>=1.6.1",
-    "pyarrow>=24.0.0",
+    "deltalake>=1.6.6",
+    "pyarrow>=25.0.0",
 
     # SQL source pipeline (used by dlt_pipeline_execution_functions.py)
     "sqlalchemy>=2.0.51",
-    "pymysql>=1.2.0",
+    "pymysql>=1.2.3",
 ]
 
 [project.urls]
@@ -42,22 +42,22 @@ dagster = [
     # dagster-dbt's minor version tracks dagster's (0.29.x ↔ 1.13.x); keep the
     # ranges wide enough that pip can resolve a matching dagster-dbt for whatever
     # dagster<2 it selects.
-    "dagster>=1.13.11,<2",
-    "dagster-webserver>=1.13.11,<2",
-    "dagster-dbt>=0.29.11,<1",
+    "dagster>=1.13.26,<2",
+    "dagster-webserver>=1.13.26,<2",
+    "dagster-dbt>=0.29.26,<1",
     # dagster's grpc client pulls in grpcio-health-checking transitively.
     # grpcio-health-checking>=1.82 ships pb2 gencode requiring protobuf>=7.35,
-    # but dbt-core/dbt-common/dbt-adapters/dagster all cap protobuf<7 — cap
-    # this transitive dep too until protobuf 7.x is supported upstream.
+    # but dagster caps protobuf<7 — cap this transitive dep too until
+    # protobuf 7.x is supported upstream.
     "grpcio-health-checking<1.82",
 ]
 dev = [
     "pytest>=9.1.1",
-    "pytest-cov>=5.0",
-    "ruff>=0.15.20",
-    "mypy>=1.10",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.0",
+    "mypy>=2.4.0",
     "types-requests",  # mypy stubs for requests; without this, newer mypy raises import-untyped
-    "pandas>=3.0.3",  # needed by duckdb.fetchdf() in integration tests
+    "pandas>=3.0.6",  # needed by duckdb.fetchdf() in integration tests
     "boto3>=1.34",    # S3 integration tests: bucket setup/teardown against MinIO
 ]
 
@@ -69,14 +69,13 @@ testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
     "s3_integration: tests that require a live S3-compatible endpoint (MinIO); skipped when S3_TEST_ENDPOINT is unset",
+    "dbt_integration: tests that run the dbt-oss binary against the sample data; skipped unless DBT_INTEGRATION_TESTS=1",
 ]
 
 [tool.coverage.report]
 omit = [
     # Operational CLI scripts — require live databases, Azure, or Dagster state;
     # untestable in CI without those dependencies.
-    "ddd_python/ddd_dbt/dbt_build_with_unique_logfile.py",
-    "ddd_python/ddd_dbt/init_duckdb.py",
     "ddd_python/ddd_dlt/dlt_run_extraction_pipelines_danish_parliament_data.py",
     "ddd_python/ddd_dlt/dlt_run_extraction_pipelines_rfam.py",
     "ddd_python/ddd_utils/backup_platform.py",
@@ -87,7 +86,7 @@ omit = [
 
 # ── Ruff ─────────────────────────────────────────────────────────────────────
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
@@ -119,7 +118,7 @@ ignore = [
 known-first-party = ["ddd_python"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = false
 warn_return_any = true
 warn_unused_ignores = true

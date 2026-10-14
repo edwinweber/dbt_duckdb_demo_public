@@ -9,12 +9,15 @@ failures are caught, logged as warnings, and never block the next run.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 import requests
 from dagster import (
+    DagsterEventType,
     DagsterRunStatus,
     DefaultSensorStatus,
     RunStatusSensorContext,
@@ -22,7 +25,10 @@ from dagster import (
 )
 from dotenv import find_dotenv, load_dotenv
 
+from ddd_python.ddd_dagster._constants import STOP_METABASE_ASSET_KEY
+from ddd_python.ddd_dagster.metabase_control_assets import restart_metabase_after_failure
 from ddd_python.ddd_dagster.resources import DltPipelineResource
+from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
 
 load_dotenv(find_dotenv())
 
@@ -177,6 +183,51 @@ def _build_and_write_run_summary(
 
 
 # ---------------------------------------------------------------------------
+# Step-failure export (read by the dbt model dagster_step_failures_raw)
+# ---------------------------------------------------------------------------
+
+STEP_FAILURES_SOURCE_SYSTEM = "dagster"
+STEP_FAILURES_SUBDIR = "step_failures"
+
+
+def _write_step_failures(context: RunStatusSensorContext) -> None:
+    """Write the run's STEP_FAILURE events to ``<log_dir>/dagster/step_failures/<run_id>.ndjson``.
+
+    Dagster keeps STEP_FAILURE events in one SQLite file per run; exporting them
+    here lets dbt read them with a plain ``read_json_auto`` glob. One file per
+    run, overwritten on re-evaluation, so the write is idempotent. Errors are
+    logged as warnings and never block the sensor tick.
+    """
+    run_id = context.dagster_run.run_id
+    try:
+        records = context.instance.all_logs(run_id, of_type=DagsterEventType.STEP_FAILURE)
+        lines = []
+        for record in records:
+            event = record.dagster_event
+            error = getattr(event.event_specific_data, "error", None) if event else None
+            lines.append(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "step_key": event.step_key if event else None,
+                        "failed_at": datetime.fromtimestamp(record.timestamp, tz=UTC).isoformat(),
+                        "error_class": error.cls_name if error else None,
+                        "error_message": error.message if error else None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if not lines:
+            return
+        out_dir = Path(dpef.build_log_dir(STEP_FAILURES_SOURCE_SYSTEM, STEP_FAILURES_SUBDIR))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{run_id}.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Broad catch intentional — export failure must never block the sensor tick.
+        context.log.warning("Failed to write step failures — run_id=%s: %s", run_id, exc)
+
+
+# ---------------------------------------------------------------------------
 # Sensor: SUCCESS
 # ---------------------------------------------------------------------------
 
@@ -224,9 +275,14 @@ def danish_parliament_run_failure_sensor(
     context: RunStatusSensorContext,
     dlt_onelake: DltPipelineResource,
 ) -> None:
-    """Write a failure summary to the configured log destination and send a ntfy.sh push alert."""
-    _build_and_write_run_summary(context, status="failure", dlt_onelake=dlt_onelake)
+    """Restore Metabase if needed, write a failure summary and send a ntfy.sh push alert."""
     run = context.dagster_run
+    # start_metabase_asset only runs after every upstream step succeeded, so a
+    # failed run that stopped Metabase would otherwise leave BI down.
+    if run.asset_selection and STOP_METABASE_ASSET_KEY in run.asset_selection:
+        restart_metabase_after_failure(context.log)
+    _build_and_write_run_summary(context, status="failure", dlt_onelake=dlt_onelake)
+    _write_step_failures(context)
     _send_ntfy_alert(
         job_name=run.job_name,
         run_id=run.run_id,

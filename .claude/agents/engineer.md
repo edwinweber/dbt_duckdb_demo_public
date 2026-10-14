@@ -50,7 +50,7 @@ tests/                           ← 132 pytest tests across 15 modules
 - All Silver helper tables (`_last_file`, `_current_temp`) must be qualified with `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` — one transaction, one database.
 - DuckLake is independent of `STORAGE_TARGET` (which only controls Delta Lake export destination).
 
-**DuckDB version pinned ≥1.5.1, <1.6:**
+**DuckDB version pinned ≥1.5.6, <1.6:**
 - The delta extension is read-only at this version. Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path off `deltalake` — there's an Azure/OneLake regression in newer DuckDB delta writers.
 
 **Security:**

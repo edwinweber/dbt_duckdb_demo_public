@@ -1,7 +1,9 @@
-FROM python:3.12
+FROM python:3.13
 
 ARG DOCKER_COMPOSE_VERSION=v2.39.4
-ARG DUCKDB_VERSION=1.5.3
+ARG DUCKDB_VERSION=1.5.6
+ARG DBT_OSS_VERSION=2.0.5
+ARG DBT_OSS_SHA256=da45bb51a200617b6390ae6804158b1de4a64070d1bd8caeb4f71a282bea899a
 
 LABEL maintainer="Edwin" \
       version="1.0.0" \
@@ -22,6 +24,18 @@ RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERS
     unzip /tmp/duckdb.zip -d /usr/local/bin && \
     chmod +x /usr/local/bin/duckdb && \
     rm /tmp/duckdb.zip
+
+# Install dbt-oss standalone binary (replaces dbt-core Python package).
+# The binary is a self-contained executable — no Python dbt package is installed.
+# dagster-dbt uses CLI mode (DbtCliResource) automatically when no dbt Python
+# package is importable; see scripts/install_dbt_oss.sh for the install logic.
+RUN TARBALL="dbt-core-${DBT_OSS_VERSION}-x86_64-unknown-linux-gnu.tar.gz" && \
+    curl -fsSL "https://github.com/dbt-labs/dbt-core/releases/download/v${DBT_OSS_VERSION}/${TARBALL}" \
+        -o /tmp/dbt.tar.gz && \
+    echo "${DBT_OSS_SHA256}  /tmp/dbt.tar.gz" | sha256sum --check --quiet && \
+    tar xzf /tmp/dbt.tar.gz -C /tmp && \
+    install -m 0755 "$(find /tmp -maxdepth 2 -name dbt -type f | head -1)" /usr/local/bin/dbt && \
+    rm -rf /tmp/dbt.tar.gz /tmp/dbt-core-*
 
 # Create the non-root user.  UID/GID 1000 matches the host-side ownership
 # documented in the one-time host setup commands in docker-compose.yml.

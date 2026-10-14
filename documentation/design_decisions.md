@@ -1,425 +1,381 @@
 # Design Decisions and Trade-offs
 
-Last updated: June 2026
+Why the project is built the way it is: the problem it targets, the ten
+architectural decisions (with the alternatives that were considered and what was
+given up), the dependencies and why each is there, the engineering principles
+that recur in the code, and the known limitations.
 
-This document explains the architectural decisions made in this project: what problem each decision solves, what alternatives were evaluated, and what was gained and lost. It is written for data engineers and architects who want to understand the reasoning, not just the mechanics.
-
-For implementation details and how-to guides, see [python_code_explained.md](python_code_explained.md), [silver_model_logic.md](silver_model_logic.md), and [dbt_macros.md](dbt_macros.md). For the system overview and tech stack, see [CLAUDE.md](../CLAUDE.md).
-
----
-
-## ADR-1: DuckDB as the single query engine for all layers
-
-**Decision:** Use DuckDB as the sole query engine for Bronze, Silver, and Gold. All data lives in a single `.duckdb` file (or optionally in DuckLake, a separate but attached database). No Snowflake, BigQuery, Spark, or MotherDuck.
-
-**Context:** This is a learning/reference project intended to run on a low-cost infrastructure (a single €35/month server including storage and backups). The data volume is modest: ~18 parliamentary entities (millions of rows) and 7 Rfam tables (millions of rows). Fast iteration and ease of understanding matter more than distributed-query optimization.
-
-**Alternatives considered:**
-
-- **Snowflake / BigQuery.** Industry standard. Horizontal scalability. But: requires paying per query; API-only (no local debugging); difficult to run on a laptop for development.
-- **Spark.** Open source. Distributed. But: overkill for single-node data; complex to set up; not a "just data" engine (requires scheduler, cluster management).
-- **MotherDuck.** Hybrid local + cloud DuckDB. But: vendor lock-in; complicates offline mode; adds credentials overhead.
-- **Plain PostgreSQL.** Stable. But: slower for analytical queries than a columnar engine; window functions are less idiomatic.
-
-**Trade-offs:**
-
-*Gained:*
-- Runs on a laptop with no cloud setup. Extraction and transformation happen in the same `.duckdb` file — no data movement between systems.
-- Single-node simplicity. No distributed query coordination, no eventual consistency, no shuffle overhead.
-- Fast iteration during development. Change a macro, re-run dbt, see results instantly.
-- Parquet and Delta support are first-class. Native `read_parquet()`, `read_json_auto()`, and the `delta_scan` extension.
-
-*Lost:*
-- **Cannot scale horizontally.** If rows grow to >10 billion, a single-node architecture becomes painful. But at that scale, you'd be replacing the entire platform anyway — this is not a steppingstone.
-- **Single-writer constraint.** Only one process may hold a write connection at a time. This shapes the executor strategy (see ADR-5). Metabase must be stopped around dbt runs.
-- **No built-in replication or failover.** A corrupted `.duckdb` file is catastrophic (mitigated by backups, but not automatic failover).
-
-**Consequences:**
-
-- The entire job scheduler (Dagster) must respect the single-writer rule — dbt jobs use `in_process_executor`, not multiprocess.
-- Bronze/Silver/Gold all live in the same database file, making backup / restore atomic.
-- Metabase integration requires explicit lifecycle management (stop before writes, start after).
-- SQL syntax is DuckDB-specific (e.g., `QUALIFY`, `COLUMNS(lambda)`) — queries would need porting to migrate to a different engine.
+For *how* things work see [project_reference.md](project_reference.md),
+[python_code_explained.md](python_code_explained.md) and
+[dbt_transformations.md](dbt_transformations.md).
 
 ---
 
-## ADR-2: Medallion architecture with explicit layer semantics
+## The problem and when this design fits
 
-**Decision:** Implement a three-layer medallion (Bronze → Silver → Gold) with strict rules:
-- **Bronze:** Read-only views over raw extracted files. Zero transformation, one view per entity plus a `_latest` view.
-- **Silver:** Persisted, incremental CDC tables with SCD Type 2 history. One table per entity plus a `_cv` (current-version) view.
-- **Gold:** Read-only views. Star-schema modeling on top of Silver `_cv` views. No new data, pure presentation layer.
+The setting: a few heterogeneous sources (here a REST API and a MySQL
+database), a need for full history and a clean dimensional model, a small team
+and budget, and data that fits comfortably on one machine. The largest table in
+this project, individual votes, has about two million rows; the whole modelled
+state is a few hundred MB.
 
-**Context:** Medallion is the modern standard for data lakehouses. This project needed a structure that separated concerns clearly and made the pipeline observable — you should always be able to query Bronze to see what was extracted, Silver to understand what changed, and Gold to answer business questions.
+At that scale a distributed engine adds cost and failure modes without solving a
+real problem. So the project runs everything on **one server**: dlt, dbt and
+DuckDB, orchestrated by Dagster, for about €35/month on Hetzner, or €0 on a
+laptop.
 
-**Alternatives considered:**
+**A good fit when:**
 
-- **Two-layer (Raw → Processed).** Simpler naming. But: loses the distinction between "captured change" (Silver) and "modeled for consumption" (Gold). Gold queries would have to recompute CDC logic or reference half-finished Silver tables.
-- **Direct extraction to Gold.** Skip Bronze/Silver. But: no auditability (if a Gold metric is wrong, you can't trace back to the raw input). No historical record. No ability to re-run Silver logic with a bug fix.
-- **Flat schema (all tables in one schema).** Simpler file layout. But: harder to understand which tables are internal vs. production; no clear isolation between layers.
+- the active data fits on one machine (hundreds of GB, not tens of TB);
+- daily batch is fast enough;
+- sources are APIs or databases that give snapshots, not change streams;
+- you want a medallion with CDC and SCD Type 2 history, all as code in one repo;
+- you may need to feed Microsoft Fabric / Power BI, but don't want ADF or Synapse.
 
-**Trade-offs:**
-
-*Gained:*
-- **Auditability.** Every layer is queryable. A bug in Gold logic doesn't destroy the Silver history — re-run dbt, and Gold updates.
-- **Separation of concerns.** Bronze never fails (it just reads files). Silver changes are always tracked (insert/update/delete detected via hash). Gold is pure math.
-- **Incremental rebuilds.** You can re-run Silver without re-extracting Bronze, or re-run Gold without re-processing Silver.
-
-*Lost:*
-- **Complexity.** Three layers with inter-dependencies, not two. The CDC logic in Silver is non-trivial (see ADR-3). Adding a new entity means code-generating models at three layers, not one.
-- **Storage overhead.** Silver stores full SCD Type 2 history (every version of every row). A daily update to actor #42 means two Silver rows (one with the old hash, one with the new). On large tables, this can grow 2–3× the latest-version size over a year.
-- **Query latency for consumers.** Gold is views, not materialized tables. A complex star-schema join in Gold re-reads Silver `_cv` views (which are themselves views) every time. Not a problem for dashboard refreshes every hour, but not suitable for low-latency transactional systems.
-
-**Consequences:**
-
-- dbt model counts scale with entity count. Each Bronze entity generates a main view and a `_latest` variant; each Silver entity generates a CDC table and a `_cv` current-version view; Gold includes star-schema views for key analytics dimensions plus corresponding `_cv` views. Adding a new entity touches all three layers.
-- The `LKHS_` column prefix is used consistently across all tables so downstream tools (Power BI, Metabase) see the tracking metadata as opaque.
-
-**Schema Evolution:**
-
-Additive changes (new columns at source) propagate automatically — Bronze views use `read_json_auto` / `read_parquet`, which infer and include new columns; Silver uses `on_schema_change='append_new_columns'` in the incremental macro and `union_by_name=true` to match on name. Breaking changes (column renames, type changes, column drops) require manual intervention: edit the Bronze column alias in the model macro, then run `dbt build --select <model> --full-refresh` to rebuild Silver from Bronze. There is no automatic handling for type changes (e.g., string → int) or removals; these are explicit operations to prevent silent data loss.
+**Not a fit when** you need real-time ingestion, multi-terabyte ad-hoc
+queries, several concurrent writers on the transformation layer, row-level
+security, multi-tenancy, or high availability.
 
 ---
 
-## ADR-3: Hash-based CDC (SHA256) vs. log-based CDC
+## ADR-1: DuckDB as the single query engine
 
-**Decision:** Detect changes via SHA-256 hashing of all business columns (excluding tracking columns). When the hash differs between Bronze snapshots, a row has changed (insert, update, or delete).
+**Decision.** DuckDB runs every transformation: Bronze views, Silver CDC tables,
+Gold views and the export reads. Bronze, Gold and (by default) Silver live in one
+local `.duckdb` file.
 
-**Context:** The extraction sources (Danish Parliament OData API and Rfam MySQL) do not provide change feeds or transaction logs. They only provide snapshots: the OData API returns all entities as of a date, and the MySQL tables return all rows or rows with `updated >= date`. To detect changes, we compare snapshots.
+**Alternatives.** Snowflake/BigQuery (pay per query, no offline development);
+Spark (cluster overhead for single-node data); MotherDuck (vendor dependency,
+complicates offline use); PostgreSQL (row store, slower for analytics).
 
-**Alternatives considered:**
+**Gained.** Runs on a laptop with no cloud setup; direct debugging (open the
+file, run the query); first-class JSON, Parquet and Delta reads; no per-query
+bill.
 
-- **Debezium + Kafka.** Enterprise-grade CDC. Captures exact transaction order and old/new row pairs. But: adds operational complexity (Kafka cluster); requires code inside the source databases (connectors); overkill for public read-only data sources.
-- **Column-by-column comparison.** For each row, compare each column value to the previous snapshot. But: slow (O(n × m) where n = rows, m = columns) and hard to express in SQL.
-- **Timestamp-based CDC.** Rely on the source's `updated` or `modified` timestamp. But: clocks can skew, and if a row is updated twice in the same second, only one update is seen.
-- **Surrogate key + sequence number.** Assume sources provide monotonic row IDs. But: not all sources do; and a deleted row's ID can be reused.
+**Given up.**
 
-**Trade-offs:**
-
-*Gained:*
-- **Minimal infrastructure.** No Debezium, no Kafka, no external dependency beyond DuckDB's hash function. Bronze files are just JSON/Parquet.
-- **Simple to implement.** SHA256 in SQL is one function call; the macro logic is straightforward.
-- **Works with append-only extraction.** Each new Bronze file doesn't need to be a full snapshot (for incremental entities) — the hash comparison works across any sequence of files.
-- **Deterministic and reproducible.** Same input always produces the same hash. `--full-refresh` of Silver always produces identical output.
-
-*Lost:*
-- **No row-level operation semantics.** Hash comparison detects "something changed," not "columns X, Y, Z changed." For precise auditing (e.g., "who changed this field and when?"), you'd need column-by-column tracking.
-- **Late-arriving data and backfills are tricky.** If a late insert of row #42 arrives days after the initial insert, the hash changes. The `LKHS_date_valid_from` will carry the late file's date, not the actual insertion date (which may be lost). Workaround: the `LKHS_date_inserted_src` column preserves the earliest `opdateringsdato` per entity from Bronze, but full row-level timestamps are not kept.
-- **Hash collisions (theoretical).** Two different rows could theoretically produce the same SHA256 hash. Probability is negligible for these data volumes, but it's a non-zero risk. Mitigated by: not doing critical decisions on hash alone (always confirm with business logic).
-- **Excludes tracking columns from the hash.** The `LKHS_` columns themselves don't affect change detection. If a row's hash is the same but `LKHS_date_inserted` changed, it's treated as "no change." Correct for CDC logic, but means Silver cannot track when dbt re-ran if no business data changed.
-
-**Consequences:**
-
-- Every Silver table has `LKHS_hash_value` (SHA256 hex string) and `LKHS_cdc_operation` (I/U/D) columns. The hash is stable across runs so deduplication guards can use it.
-- The `generate_base_for_hash` macro dynamically builds the hash expression by querying `information_schema.columns` at compile time. This is hidden from users but means dbt needs `DESCRIBE` or equivalent privileges.
-
-**Known Limitations:**
-
-*Incremental deletes are not captured between runs.* For date-filtered incremental sources (DDD entities), hard deletes at the source are not detected between runs. The delete anti-join at full-refresh correctly identifies missing keys against the cumulative `bronze_*_latest` view, but only when (a) the initial load pulled a complete snapshot, and (b) Bronze files are not pruned below that baseline. Between runs, a silently-removed record remains in Silver as its last-known state. For compliance use cases, a periodic full-snapshot reconciliation run (fetch the complete keyset weekly, anti-join against Silver `_cv`) would close this gap — not currently implemented. See [ARCHITECTURE_PHILOSOPHY.md](ARCHITECTURE_PHILOSOPHY.md#incremental-delete-limitation) for details and rationale.
+- **No horizontal scale.** Growth means a bigger machine; far beyond this scale
+  the platform would be replaced, not extended.
+- **Single writer.** One process may write the file at a time. This shapes the
+  orchestration (ADR-5): dbt runs serially and Metabase, which holds a read
+  connection, is stopped during dbt runs.
+- **No failover.** A corrupt file means restoring from backup.
+- **DuckDB-specific SQL** (`QUALIFY`, `COLUMNS(lambda)`, `EXCLUDE`,
+  `read_json_auto`) would need porting to another engine.
 
 ---
 
-## ADR-4: dlt for extraction, not a custom HTTP client
+## ADR-2: Medallion with strict layer roles
 
-**Decision:** Use dlt (Data Load Tool) to orchestrate extraction from both the OData API and the MySQL database, writing to Bronze as JSON/Parquet files.
+**Decision.** Bronze = views over the raw files, no transformation. Silver =
+append-only CDC tables with full SCD Type 2 history, plus `_cv` current-version
+views; it historises but deliberately does not clean or enrich. Gold = star
+schema views with English names and surrogate keys.
 
-**Context:** Extraction needs to handle pagination (OData), state management (tracking which date range was last loaded), and schema inference (don't hardcode column lists). These are not trivial.
+**Alternatives.** Two layers (loses the split between "captured change" and
+"modelled for consumption"); loading straight into a model (no audit trail, no
+replay after a bug fix).
 
-**Alternatives considered:**
+**Gained.** Every layer is queryable, so a wrong Gold number can be traced to
+the raw file. Silver can be rebuilt from Bronze, and Gold re-run without
+touching Silver.
 
-- **Custom Python HTTP client.** Direct `requests` library calls with manual pagination loops. But: error-prone pagination (need to parse `@odata.nextLink`); manual retry logic; schema changes break the script.
-- **Apache Sqoop.** Purpose-built for JDBC to Hadoop. But: Java-heavy; overkill for this data volume; not suitable for local development.
-- **Azure Data Factory.** Fully managed. But: expensive; vendor lock-in; difficult to version-control pipelines (defined in UI).
+**Given up.** More models (generated, see ADR-8). Silver keeps every version of
+every row. Gold is views, so each query recomputes its joins; fine for
+dashboards, not for low-latency serving.
 
-**Trade-offs:**
-
-*Gained:*
-- **Schema inference.** dlt's `read_json_auto` tells DuckDB "figure out what columns exist," not "I hardcoded them." New API fields are automatically visible.
-- **Checkpoint management.** dlt's `load_info` and `pipeline.state` track which files were loaded, enabling idempotent re-runs (if you retry the same extraction, dlt avoids re-loading the same file).
-- **Multi-destination abstraction.** dlt can write to local filesystem (`file://`) or Azure Data Lake (`az://`) with one config change.
-
-*Lost:*
-- **Incremental cursor NOT used.** Notably: dlt has a built-in `incremental` parameter that can track the last value of a column (e.g., `max(updated)`) and automatically filter on the next run. This project **does not use it**. Instead, the extraction scripts manually construct the OData `$filter=opdateringsdato ge DateTime'...'` and the MySQL `WHERE updated >= :date`. Why? Because the incremental cursor is global per resource, and some entities are extracted both fully and incrementally in different jobs. Using dlt's cursor would couple the two and create confusion. This is a deliberate design: **dlt is used for format conversion and schema inference, not for incremental state**. The `DLT_PIPELINES_DIR` directory contains dlt's internal checkpoints, but the CDC logic (deciding which date to load from) lives entirely in Python / Dagster layer.
-- **file_to_file pipeline type is not really dlt.** Some entities (seed data) are just copied from one location to another. This is wrapped in dlt's abstraction for consistency, but it's really just `shutil.copy` with dlt's directory layout. dlt adds little value here, but the consistency is worth it.
-
-**Consequences:**
-
-- Extraction is fast but I/O-bound (network round-trips for OData pagination, database queries for Rfam). Dagster extraction jobs use `multiprocess_executor` (max 4 workers) for concurrency.
-- dlt's internal layout (`_dlt_*` metadata columns) is stripped out by Bronze views, so downstream sees clean data.
+**Schema evolution.** New source columns flow through: `read_json_auto` with
+`union_by_name` picks them up in Bronze, the hash expression is rebuilt from
+`information_schema`, and Silver uses `on_schema_change='append_new_columns'`.
+Renames, type changes and dropped columns need a deliberate change plus a
+`--full-refresh` of the affected model.
 
 ---
 
-## ADR-5: Dagster software-defined assets, not Airflow DAGs
+## ADR-3: Hash-based CDC instead of log-based CDC
 
-**Decision:** Use Dagster (not Airflow) as the orchestrator. Model the pipeline as **software-defined assets** (not tasks/operators). Every extraction, dbt model, and export is an asset with explicit dependencies.
+**Decision.** Detect changes by comparing a SHA-256 hash of each row's business
+columns across successive Bronze files.
 
-**Context:** Orchestration is about "run X, then Y, then Z." Task-DAG tools (Airflow, Prefect) model this as directed graphs of tasks. Asset-DAG tools (Dagster, dbt Cloud) model it as producers and consumers of data objects. This project chose assets because the mapping is clearer: "aktoer asset produced, silver_aktoer asset consumes it."
+**Context.** Neither source offers a change feed: the OData API returns rows
+filtered by modification date, and the public Rfam database is read-only.
+Snapshot comparison is the only option.
 
-**Alternatives considered:**
+**Alternatives.** Debezium + Kafka (needs binlog access and a Kafka cluster; not
+possible on these sources); column-by-column comparison (verbose, slow); trusting
+the source's update timestamp (it can be wrong, and says nothing about deletes).
 
-- **Airflow.** Mature. Wide adoption. But: task-centric mental model requires you to invent artificial tasks for "run dbt model X" instead of saying "produce the aktoer asset." Operator boilerplate is heavy. Harder to test individual assets without mocking the full DAG.
-- **cron + shell scripts.** Simplest. But: no retry logic, no alerting, no UI to monitor failures, no history.
-- **dbt Cloud.** Native dbt integration. But: only orchestrates dbt; doesn't handle extraction (dlt) or export. Would need to bolt on external tooling.
+**Gained.** No infrastructure beyond DuckDB; deterministic (the same files always
+give the same history); overlapping extraction windows are free, because
+unchanged rows hash the same.
 
-**Trade-offs:**
+**Given up.**
 
-*Gained:*
-- **Asset-centric view.** Each dbt model automatically becomes an asset. Extraction tasks explicitly declare their output assets. Export tasks declare which assets they read. The lineage is correct by construction, not by manual wiring.
-- **Op/asset factory pattern.** Extraction assets (DDD and Rfam) are created via factory functions in loops, not separate blocks of boilerplate. Same for export. Change one factory, and all assets update.
-- **Testability.** Dagster's `materialize([...])` helper lets you test a subset of the asset graph in isolation.
-- **Integrated run history.** Every Dagster run is logged to SQLite (`DAGSTER_HOME`). The `data_engineering` layer reads this history and makes it queryable — "which assets materialized yesterday, and for how long?"
-
-*Lost:*
-- **Learning curve.** Dagster's resource/asset/job/schedule model is different from Airflow's operator/DAG/sensor model. The docs are good, but it takes time.
-- **Not as widely deployed.** Airflow is at more companies. If you need to hand off to a team unfamiliar with Dagster, they're starting from zero.
-- **Single-writer bottleneck is explicit (in a good way).** Because the project chose DuckDB (ADR-1), and DuckDB enforces single-writer, dbt jobs cannot run in parallel. Dagster makes this visible: dbt jobs must use `in_process_executor`. An Airflow equivalent would hide the constraint until runtime (and then fail mysteriously with lock timeouts). Here, the code and execution model align.
-
-**Consequences:**
-
-- Two executor strategies: `multiprocess_executor` for extraction/export (I/O-bound, 4 workers), and `in_process_executor` for dbt (single-writer constraint).
-- Metabase lifecycle is controlled via two mechanisms: a private `_with_metabase_control(selection)` helper in `jobs.py` that wraps asset selections with `stop_metabase_asset` and `start_metabase_asset`, and per-asset `deps=[STOP_METABASE_ASSET_KEY]` declarations that prevent any asset from starting until Metabase is stopped. Both reinforce the same rule: DuckDB write access stays exclusive.
-
----
-
-## ADR-6: Switchable Silver storage (DuckDB native vs. DuckLake)
-
-**Decision:** Make the Silver layer storage pluggable. The `SILVER_STORAGE_FORMAT` env var switches between:
-- `duckdb` (default) — Silver tables live in the main `.duckdb` file.
-- `ducklake` — Silver tables live in a [DuckLake](https://ducklake.select) catalog (Parquet files + metadata).
-
-This is **independent** of `STORAGE_TARGET`, which only controls the Delta Lake export destination (local vs. OneLake).
-
-**Context:** During development, we realized that DuckDB's native binary format is opaque (hard to inspect, troubleshoot, or migrate). DuckLake is an open table format (Parquet data + JSON-based catalog) that makes the data portable. But DuckLake adds complexity (another extension, another file to manage). The solution: make both available, switchable at runtime.
-
-**Alternatives considered:**
-
-- **Always use DuckLake.** Portability from day one. But: adds operational complexity (manage two file hierarchies) and makes the first-run setup harder.
-- **Always use native DuckDB.** Simplicity. But: locks you into DuckDB's binary format; if you ever need to migrate to Parquet or Delta, it's a full export job.
-- **Always use Delta Lake for Silver.** Delta Lake is portable and has tooling (Databricks, Polars, etc.). But: Delta writes are slower than DuckDB native (test ran ~1.5× slower on the Silver layer), and it would eliminate the "offline on a laptop" use case (Delta requires external coordination for ACID).
-
-**Trade-offs:**
-
-*Gained:*
-- **Optionality.** Start with native DuckDB (fast, simple). Later, switch to DuckLake if you need portability.
-- **Offline development + production compatibility.** In dev: `SILVER_STORAGE_FORMAT=duckdb`, no catalog overhead. In production: `SILVER_STORAGE_FORMAT=ducklake`, Parquet files are portable and inspectable with Pandas / Polars.
-- **DuckLake catalog has time-travel.** Snapshots can be versioned; you can query "what did Silver look like 30 days ago?"
-
-*Lost:*
-- **Operational complexity.** Two code paths. The DuckLake helpers (`_current_temp` tables, bookmark tracking) must work in both modes, so all helper-table names are fully qualified with `{{ this.database }}`. This constraint is invisible in `duckdb` mode (one database) but critical in `ducklake` mode (two databases, single-transaction isolation).
-- **No automatic migration.** Switching `SILVER_STORAGE_FORMAT` does not migrate existing data — you must run `dbt build --select silver --full-refresh` to rebuild from Bronze. This is safe but can take hours on large histories.
-- **Size overhead in DuckLake mode.** Parquet is columnar and compresses well, but it's not as space-efficient as DuckDB's native format for this scale (~10 GB native vs. ~15 GB Parquet in our tests).
-
-**Consequences:**
-
-- dbt profile selection is driven by `SILVER_STORAGE_FORMAT`: always `local_ducklake` if `ducklake` mode, otherwise `local` or `onelake` per `STORAGE_TARGET`.
-- Backup/restore logic knows about both storage modes: in ducklake mode, the data files are backed up separately from the catalog, and restored in file-first order (data before catalog).
-- Downstream tools (Metabase, DBeaver) must load the `ducklake` extension and `ATTACH` the catalog in ducklake mode. The Metabase Dockerfile bakes in the extension; DBeaver users need manual setup.
+- The hash says *that* a row changed, not *which* columns changed.
+- **Deletes of incremental entities are only detected on a `--full-refresh`.**
+  A deleted record just stops appearing in date-filtered extracts. A full
+  refresh compares Silver's current state with the newest Bronze file
+  (`bronze_<entity>_latest`), so that file must be a **complete** snapshot:
+  run a full extraction (early `date_to_load_from`) first. A periodic
+  full-keyset reconciliation would close the gap; it is not implemented.
+  Full-extract entities detect deletes on every run. Details:
+  [dbt_transformations.md §3.4](dbt_transformations.md#34-deletes-of-incremental-entities---full-refresh-only).
+- Tracking columns are excluded from the hash, so a re-run with no data change
+  leaves no trace in Silver (intended).
 
 ---
 
-## ADR-7: Delta Lake export via PyArrow + deltalake (not DuckDB native delta writer)
+## ADR-4: dlt for extraction, without its incremental cursor
 
-**Decision:** For Delta Lake export, use the following split:
-- **Read:** `delta_scan('<target_path>')` via DuckDB's delta extension. This reads the target Delta table as a SQL relation without materializing it into memory.
-- **Write:** `deltalake.write_deltalake()` via the Python `deltalake` library, backed by PyArrow.
+**Decision.** dlt writes the Bronze files. The project code fetches the data
+(an OData pagination loop over `requests`, streamed SQLAlchemy queries) and
+yields records one at a time; dlt handles batching, schema inference and writing
+NDJSON to the local filesystem or S3.
 
-**Context:** At the pinned DuckDB version (≥1.5.1, <1.6), the delta extension is **read-only**. There is no `COPY ... (FORMAT delta)` writer. Newer DuckDB versions add a Delta writer, but there is a known **Azure/OneLake regression** that makes Delta writes fail on Fabric. The compromise: use the delta extension only for reads (dedup anti-join), and `deltalake` for writes.
+**Alternatives.** Hand-written file writing (reinvents batching and
+destinations); Azure Data Factory (paid, GUI-defined, hard to version);
+Airbyte/Meltano (heavier runtime for two sources).
 
-**Alternatives considered:**
+**Incremental state: a lookback window, not a cursor.** dlt can track a
+high-water mark, but this project builds the filter itself from a fixed
+lookback window (31 days for DDD, 365 for Rfam, overridable per run). There is
+no cursor to corrupt or rewind, a backfill is just an earlier
+`date_to_load_from`, and the overlap costs nothing because of ADR-3.
+`DLT_PIPELINES_DIR` holds only dlt's working directory.
 
-- **Use `deltalake` for both read and write.** Uniform approach. But: reading the full target table into PyArrow memory (via `DeltaTable(...).to_pyarrow_table()`) defeats the purpose of incremental append — you materialize the entire existing table, then filter to find new rows. For a 1 GB Delta table, this is wasteful.
-- **Upgrade DuckDB and use the native writer.** Future-proof. But: blocks on the Azure regression fix. Once the regression is resolved and a new DuckDB version is released with the writer, revisit this. For now, waiting is safer than shipping broken code.
-- **Materialize to Parquet, then ingest as Delta.** Avoid the `deltalake` library entirely. But: extra file I/O and temporary storage overhead.
-
-**Trade-offs:**
-
-*Gained:*
-- **Memory-efficient dedup read.** The anti-join (Silver records not yet exported) runs inside DuckDB with projection pushdown. Only join keys are fetched from the target, not entire rows. For a 100 M-row Silver table exporting 1 M new rows, this is the difference between materializing 100 M rows vs. materializing 1 M + 1 M rows.
-- **Clean separation of concerns.** DuckDB handles SQL (read + join + filter). PyArrow/deltalake handles Delta metadata (schema, partitioning, version history).
-
-*Lost:*
-- **Mixed read/write libraries.** Code couples two libraries. If you ever need to swap one, both paths are affected.
-- **Dependency on `deltalake` library.** Adds a maintained external dependency. If `deltalake` ever stops being maintained or pivots, this breaks. (Currently, Databricks maintains it, so risk is low.)
-- **Azure regression blocks upgrade.** We are pinned to a DuckDB version with a read-only Delta extension until the Azure regression is fixed in a newer version. This is a hard stop for any DuckDB bump.
-
-**Consequences:**
-
-- On the next DuckDB version bump (when both a writer-capable version exists AND the Azure regression is fixed), revisit this decision. The entire write path could move to `COPY ... (FORMAT delta)`.
-- Gold export always does full overwrite (no dedup needed), so it still uses `deltalake.write_deltalake()` with PyArrow but doesn't need to read the target.
+**Given up.** Some data is re-extracted every day. The `file_to_file` pipeline
+type is a plain byte copy behind the same dispatcher, kept for future sources
+and currently unused.
 
 ---
 
-## ADR-8: Single source of truth in configuration_variables.py
+## ADR-5: Dagster software-defined assets
 
-**Decision:** All entity lists (DDD entities, Rfam tables, their PKs, date columns, SQL queries) live in one Python file: `ddd_python/ddd_utils/configuration_variables.py`. Everywhere else in the codebase (dbt model generation, Dagster assets, tests), lists are derived via comprehensions or loop over this file.
+**Decision.** Every extraction, dbt model and export is a Dagster asset with
+declared dependencies; `dagster-dbt` turns each dbt model into an asset and maps
+dbt sources onto the extraction assets, so lineage runs from API to Delta table.
 
-**Context:** A data pipeline has many named things: tables, columns, primary keys. If each name is hardcoded in 5 places, you'll inevitably update 4 of them and miss the 5th. A single source of truth prevents this.
+**Alternatives.** Airflow (task-centric, more boilerplate, harder to test
+assets in isolation); cron + scripts (no retries, history or UI); dbt Cloud
+(orchestrates dbt only).
 
-**Alternatives considered:**
+**Gained.** Lineage by construction; assets built by factories; `materialize()`
+for tests; the run history in SQLite feeds the observability layer.
 
-- **Metadata in the database.** Store entity lists in a DuckDB table. Pros: queryable, version-controllable via dbt seeds. Cons: chicken-and-egg problem (need the DB to know what to extract).
-- **YAML config file (separate from code).** Familiar, human-readable. Pros: clear separation of data and logic. Cons: parsing overhead; not as easy to validate at import time; harder to tie tests to the config.
-- **Multiple files per layer.** Bronze config in Bronze generator, Silver config in Silver generator, etc. Pros: decoupled. Cons: redundancy; easy to drift.
+**Given up.** A smaller user base than Airflow; another concept set to learn.
 
-**Trade-offs:**
+**Consequences of the single writer (ADR-1).**
 
-*Gained:*
-- **Single point of truth.** Add an entity: update `DANISH_DEMOCRACY_FILE_NAMES` and `DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS`. All extraction assets, dbt Bronze models, dbt Silver models, and tests automatically use the new entity.
-- **Validated on import.** `configuration_variables.py` has import-time guards (ValueError exceptions, not assertions) that check: entity counts and subsets are consistent, all entities have PKs, all Rfam tables have SQL queries. These run before `dbt generate` or any extraction, catching errors early.
-- **No duplication.** Derived lists like `DANISH_DEMOCRACY_MODELS_SILVER = [m.replace("bronze_", "silver_", 1) for m in DANISH_DEMOCRACY_MODELS_BRONZE]` are guaranteed to stay in sync.
-
-*Lost:*
-- **Fat import.** Importing `configuration_variables` pulls in the entire config graph: all entity names, all PKs, all Rfam queries. For a tiny script that only needs one entity name, this is overkill. Mitigated by: the module is small (~200 lines) and imports are cheap in Python.
-- **Less flexible at runtime.** You can't add an entity without code changes (to this file). In a fully metadata-driven system, you could add an entity by inserting a row into a table. This is a non-issue for a learning project, but it's a constraint.
-
-**Consequences:**
-
-- Test file `test_configuration_variables.py` enforces the constraints at CI time: if someone accidentally deletes a PK, the test fails.
-- The `generate_dbt_models.py` script reads this config at runtime and generates SQL files for Bronze (views: one main and one `_latest` per entity, plus utilities), Silver (one CDC table and one `_cv` view per entity), and Gold (star-schema views). A new entity immediately generates multiple new files.
+- dbt jobs and `full_pipeline_job` use `in_process_executor`; extraction and
+  export jobs run four-wide with `multiprocess_executor`. Inside
+  `full_pipeline_job` the extraction steps therefore also run one by one.
+- Metabase is stopped before and started after every job that writes
+  (`_with_metabase_control`), and every writing asset depends on
+  `stop_metabase_asset`. If a run fails, the failure sensor restarts Metabase.
 
 ---
 
-## ADR-9: Lazy environment loading via PEP 562 __getattr__
+## ADR-6: Switchable Silver storage (DuckDB or DuckLake)
 
-**Decision:** Use a module-level `__getattr__` function (PEP 562) in `get_variables_from_env.py` to defer loading of Azure credentials and other required env vars until first access. Optional vars are loaded eagerly at import time.
+**Decision.** `SILVER_STORAGE_FORMAT=duckdb` (default) keeps Silver in the main
+file; `ducklake` stores it as Parquet files plus a DuckLake catalog, attached as
+`ducklake_catalog`. Bronze and Gold are unaffected.
 
-**Context:** The project must run in multiple modes:
-- **Local mode (laptop):** No Azure credentials needed. Tests, code generation, and extraction should work without them.
-- **OneLake mode (production):** Azure credentials are required. They must be validated early so failures are loud, not silent.
+**Alternatives.** Only DuckDB (the history is locked in DuckDB's binary format);
+only DuckLake (more moving parts for every user); Delta Lake for Silver (needs a
+writer DuckDB does not have, see ADR-7).
 
-If every required var were read at module import time, you couldn't even `import configuration_variables` to run tests on a laptop.
+**Gained.** An open, inspectable format and snapshot time travel when wanted,
+with the simpler native format as the default. With `RAW_STORAGE_TARGET=s3` the
+Parquet data can live in object storage.
 
-**Alternatives considered:**
+**Given up.**
 
-- **Eager loading, with fallback to None.** Read all vars at import. If missing, set to `None`. But: downstream code can't distinguish "not configured" from "misconfigured as None." Bugs are silent.
-- **Try/except at every call site.** Let callers handle `EnvironmentError`. But: error handling is inconsistent; errors are far from the root cause.
-- **Module class + sys.modules swap.** Replace the module object in `sys.modules` with a custom class that implements `__getattr__`. But: breaks IDE autocomplete and static type checkers.
-- **Pytest fixtures to mock env vars.** Use fixtures in tests only. But: doesn't solve the problem for local code generation or manual testing.
-
-**Trade-offs:**
-
-*Gained:*
-- **Lazy resolution.** Required vars are fetched only when used. If you never call an export function, Azure secrets are never read. This enables local/test modes without credentials.
-- **IDE support.** Module-level `__getattr__` is standard Python (PEP 562). IDEs and type checkers understand it correctly — no `# type: ignore` hacks needed.
-- **Clear semantics.** Optional vars are plain module globals (resolve at import). Required vars go through `__getattr__` (resolve on first access). The distinction is clear in the code.
-- **Early failure on required vars.** The first time you call `get_variables_from_env.AZURE_CLIENT_SECRET`, if it's missing, you get a clear error message ("EnvironmentError: AZURE_CLIENT_SECRET not set"). Better than a silent failure downstream.
-
-*Lost:*
-- **Slightly less obvious.** A newcomer reading the code might not realize that accessing a name in the module can raise an `EnvironmentError`. Mitigated by: docstrings and comments in the module.
-- **No static analysis of required vs. optional.** A type checker can't automatically know that `STORAGE_TARGET` is optional but `AZURE_CLIENT_SECRET` is required. You have to read the code or docs. But: this is a minor issue, and the `_LAZY_REQUIRED` dict documents the distinction.
-
-**Consequences:**
-
-- Every Azure-dependent function (export, OneLake logging) must be designed to defer the Azure import. This is done with function-local `import` statements inside the OneLake branch.
-- Tests can mock `os.environ` without worrying about pre-loaded credentials.
+- Two code paths. Every Silver helper table must be qualified with
+  `{{ this.database }}`, because DuckDB will not let one transaction write to two
+  databases.
+- Switching moves no data: rebuild Silver from Bronze or, for
+  `duckdb` → `ducklake`, run `migrate_silver_to_ducklake`.
+- Parquet takes more space than the native format, and BI tools need the
+  `ducklake` extension plus an `ATTACH` (Metabase's image has it built in).
+- The catalog needs occasional maintenance (`ducklake_cleanup_job`).
 
 ---
 
-## ADR-10: S3-compatible raw storage (independent of Delta export)
+## ADR-7: Delta export reads with DuckDB, writes with `deltalake`
 
-**Decision:** Make Bronze raw files and DuckLake Parquet data optionally storable on
-S3-compatible storage (MinIO for local dev, AWS S3 for production) via a
-`RAW_STORAGE_TARGET=local|s3` environment variable. This is completely
-**independent** of `STORAGE_TARGET=local|onelake` (which governs Delta Lake
-export destination).
+**Decision.** The Silver export finds new rows inside DuckDB: an anti-join of
+the Silver table against `delta_scan('<target>')` on (primary key,
+`LKHS_date_valid_from`). Only those rows are written, with
+`deltalake.write_deltalake`. Gold is a full overwrite and does not read the
+target.
 
-**Context:** During production deployment, keeping all Bronze files on a single
-server's local disk becomes a scalability and durability risk. S3 offers:
-- Durability via versioning and replication.
-- Reduced load on the orchestration machine (I/O offloaded to S3).
-- Portability: downstream tools (Spark, Polars, other data pipelines) can read
-  Bronze and DuckLake data directly from S3 without copying to local disk.
+**Context.** At the pinned DuckDB version (≥1.5.6, <1.6) the delta extension
+can only read. Newer DuckDB versions can write Delta, but have an Azure/OneLake
+regression.
 
-However, offline development (on a laptop, no S3) must remain viable. The solution:
-make raw storage pluggable, independent of export destination.
+**Alternatives.** Read the target with `DeltaTable(...).to_pyarrow_table()`
+(loads the whole target into memory every run); Parquet then convert (extra I/O).
 
-**Alternatives considered:**
+**Gained.** Only the join keys of the target are read, with projection pushdown;
+the write path is a mature library.
 
-- **Always use S3.** Eliminate the local path entirely. But: breaks offline dev;
-  adds credentials overhead; MinIO adds operational complexity even for local dev.
-- **Use S3 only for Delta exports.** Store Bronze locally, export to S3/OneLake.
-  But: defeats the purpose — if Bronze is local-only, downstream tools still can't
-  read it from S3; they have to wait for it to be exported.
-- **Combine `RAW_STORAGE_TARGET` and `STORAGE_TARGET` into one variable.** Have a
-  three-way switch like `STORAGE_TARGET=local|s3|onelake`. But: confuses the
-  distinction between internal storage (Bronze, DuckLake) and output storage
-  (Delta Lake). OneLake is not suitable for intermediate storage (single-writer
-  constraint breaks dlt's parallel uploads).
-
-**Trade-offs:**
-
-*Gained:*
-- **Offline dev remains viable.** Default `RAW_STORAGE_TARGET=local` requires no
-  credentials or cloud setup. Switch to S3 only when scaling up.
-- **Decoupled storage and export.** You can store Bronze on S3 but export Delta
-  Lake to local disk (or vice versa). This flexibility enables hybrid scenarios.
-- **Auto-derivation of DuckLake location.** When both `RAW_STORAGE_TARGET=s3`
-  and `SILVER_STORAGE_FORMAT=ducklake`, `DUCKLAKE_DATA_PATH` is automatically
-  computed from `S3_BUCKET_DUCKLAKE + S3_PREFIX_DUCKLAKE`. Users don't manually
-  construct S3 URIs; the S3 bucket variables are the source of truth.
-- **MinIO parity in dev.** Local development can use MinIO (S3-compatible) with
-  identical configuration, enabling production-like testing on a laptop.
-
-*Lost:*
-- **Two more env vars.** The three-way split (`STORAGE_TARGET`, `SILVER_STORAGE_FORMAT`,
-  `RAW_STORAGE_TARGET`) adds surface area; it's easier to explain one switch
-  than three. Mitigated by: clear documentation and conservative defaults.
-- **S3 configuration overhead.** When using S3, you must set 7 additional env vars
-  (`S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, etc.). For local dev with MinIO, this is
-  minor; for AWS S3, it's standard. But it's not zero.
-- **Backup strategy changes.** When `RAW_STORAGE_TARGET=s3` and Silver is on S3,
-  local archival of DuckLake is skipped — you rely on S3 versioning/lifecycle
-  instead. This is intentional (no point archiving data that's already versioned
-  in S3), but it's a different operational model.
-
-**Consequences:**
-
-- dlt extraction respects `RAW_STORAGE_TARGET`: it reads S3 credentials from env
-  and passes them to the filesystem destination, or writes locally if `local`.
-- DuckLake attach (in `path_utils.py`) auto-configures S3 secrets when
-  `DUCKLAKE_DATA_PATH` starts with `s3://`, allowing downstream tools (dbt,
-  exports) to reach S3-stored Parquet files transparently.
-- Backup/restore logic skips the local DuckLake target when data is on S3 (the
-  S3 bucket's versioning is the durability mechanism).
-- Documentation and examples include both MinIO (local) and AWS S3 (prod)
-  configurations.
+**Given up.** Two libraries in one code path. Revisit on the next DuckDB upgrade,
+once a writer-capable version is pinned **and** the Azure regression is fixed.
 
 ---
 
-## Summary: Why These Choices
+## ADR-8: One source of truth for entities
 
-| Choice | Core Reason | Acceptable For |
-|--------|------------|-----------------|
-| DuckDB | Single-node simplicity, runs on laptop | Scale: millions of rows; not billions |
-| Medallion | Clear layer semantics, auditability | Learning project, BI dashboards |
-| Hash-based CDC | No external infrastructure (Debezium), snapshot-based sources | Historical tracking, not row-level audit trail |
-| dlt | Schema inference, multi-destination, state mgmt | Standard extraction patterns (API + DB) |
-| Dagster | Asset-centric, testable, integrated observability | Workflow <100 assets; small team |
-| DuckDB-or-DuckLake | Optionality, offline + portable | Neither is a constraint; pick by use case |
-| Delta export split (delta_scan + deltalake) | Memory efficiency, workaround Azure regression | Known regression is temporary |
-| Single source of truth | Maintainability, DRY | Entity-driven systems (not arbitrary code) |
-| Lazy env vars | Local mode without credentials | Multi-mode systems with optional features |
-| S3-compatible raw storage | Offline dev + production durability decoupled | Scaling Bronze files beyond single machine |
+**Decision.** `ddd_python/ddd_utils/configuration_variables.py` holds every
+entity list, primary key, date column and Rfam query. Model names and other
+lists are derived from it with comprehensions; the model generator, Dagster
+asset factories and tests all read it.
 
----
+**Alternatives.** A metadata table (the extractor would need the database to know
+what to extract); YAML (another format to validate); per-layer lists (drift).
 
-## What Was Traded Away
+**Gained.** Adding an entity is a list change plus `generate_dbt_models`.
+Import-time checks (`ValueError`, so they survive `python -O`) catch a table
+without a primary key or date-column entry; `test_configuration_variables.py`
+checks subsets and counts.
 
-### Not Addressed in This Project
-
-1. **Multi-tenancy.** All data for all entities in one `.duckdb` file. No row-level security, no per-tenant queries. Acceptable for a single-user learning project; not acceptable for SaaS.
-2. **Streaming ingestion.** Bronze is batch-only (extracts every 6 hours). No real-time SQL as data arrives. For a parliamentary body, batch is sufficient.
-3. **Schema evolution support.** If an API adds a new field, the extraction discovers it (dlt's schema inference), but old Bronze files still have the old schema. The `COLUMNS(lambda)` view syntax masks this, but it's not seamless. A production system would have explicit schema versioning.
-4. **Exactly-once semantics.** The pipeline deduplicates via `NOT EXISTS` guards, but it doesn't enforce transactional exactly-once between Bronze and Silver. If an extraction fails mid-upload, a partial file might be recovered on retry. Risk is low because dlt implements its own state management, but it's not a formal guarantee.
-5. **Cross-source joins in Silver.** The Silver layer separates DDD and Rfam cleanly. Joining an actor (DDD) to a family (Rfam) must happen in Gold. For this data model, it's the right choice, but a more tightly integrated schema would allow Silver-level joins.
-6. **Formal data contracts.** No schema registry (like Confluent Schema Registry). dbt tests exist, but there's no external specification of "Rfam family table MUST have columns X, Y, Z." For a public API, the API specification is the contract; for MySQL, there's no equivalent.
-
-### Conscious Constraints
-
-1. **No automatic scaling.** DuckDB scales vertically (bigger machine), not horizontally (more machines). At 10 billion rows, rethink the platform.
-2. **No distributed query.** Analytical queries can't span multiple machines. For this data, not needed; for a multi-source federation, it would be.
-3. **No streaming state.** Incremental extraction is date-windowed, not event-based. The next extraction can take days; there's no real-time state updates. Acceptable for parliamentary data (meeting records are not real-time).
+**Given up.** No adding entities at runtime. The Gold star schema is still
+modelled by hand, by design.
 
 ---
 
-*See [CLAUDE.md](../CLAUDE.md) for the system overview and [python_code_explained.md](python_code_explained.md) for implementation details.*
+## ADR-9: Lazy environment variables (PEP 562)
+
+**Decision.** `get_variables_from_env.py` reads optional variables at import
+and resolves required ones (Azure credentials, Fabric workspace) through a
+module-level `__getattr__` on first access, raising `OSError` with the variable
+name when one is missing. A `.pyi` stub declares the lazy names for mypy.
+
+**Why.** Code generation, tests and local runs import the configuration module
+but never need Azure. Eager loading would make every import fail without
+credentials; defaulting to `None` would turn misconfiguration into silent
+bugs.
+
+**Given up.** Attribute access on a module can raise, which is less obvious to a
+newcomer; the docstring and the `_LAZY_REQUIRED` map spell it out. The storage
+switches themselves are validated eagerly, so a typo fails at import.
+
+---
+
+## ADR-10: S3-compatible raw storage, independent of the export
+
+**Decision.** `RAW_STORAGE_TARGET=local|s3` decides where Bronze files and
+DuckLake Parquet data live. It is independent of `STORAGE_TARGET`, which only
+decides where the Delta export goes. The DuckDB file and the DuckLake catalog
+always stay local.
+
+**Alternatives.** Always S3 (breaks offline development); one combined switch
+(cannot express "Bronze on S3, export to OneLake").
+
+**Gained.** Durable, shareable raw data when needed (MinIO locally, AWS S3 in
+production) while the default stays offline. With DuckLake on S3,
+`DUCKLAKE_DATA_PATH` is derived from the bucket variables.
+
+**Given up.** Three switches to explain instead of one (12 combinations, see
+[storage_combinations.md](storage_combinations.md)) and more variables to set. In
+S3 mode the local DuckLake backup is skipped; bucket versioning is the
+durability mechanism.
+
+---
+
+## Dependencies and why each is there
+
+Versions are pinned as ranges in [`pyproject.toml`](../pyproject.toml).
+
+| Package | Role here |
+| --- | --- |
+| `dlt` | Writes extracted records as NDJSON Bronze files to local disk or S3 (ADR-4) |
+| `requests` | OData pagination loop (follows `odata.nextLink`, 30 s timeout) |
+| `sqlalchemy` + `pymysql` | Rfam extraction: streamed queries with bound parameters; pure-Python driver, no C build in the image |
+| `python-dotenv` | Loads `.env` before configuration is read |
+| `duckdb` | The query engine (ADR-1); pinned `<1.6` for the delta extension (ADR-7) |
+| `deltalake` + `pyarrow` | Writes Delta tables; Arrow is the zero-copy hand-off from DuckDB |
+| `azure-identity` + `azure-storage-file-datalake` | OneLake export only: service-principal token for `deltalake`, and the Fabric capacity pause/resume CLI. Imported lazily |
+| `dagster`, `dagster-webserver`, `dagster-dbt` | Orchestration and UI (`[dagster]` extra); `dagster-dbt` drives the dbt binary in CLI mode |
+| `pytest`, `pytest-cov`, `ruff`, `mypy`, `types-requests`, `pandas`, `boto3` | Tests, coverage, lint/format, types (`[dev]` extra). pandas only reads query results in tests; boto3 only creates buckets in the S3 tests |
+
+**dbt is not a Python dependency.** dbt-oss 2.0.5 is a standalone binary with
+the DuckDB adapter built in, installed by `scripts/install_dbt_oss.sh` (and in
+the Dockerfile) with a SHA-256 check. Installing a dbt Python package next to
+`dagster-dbt` would switch it out of CLI mode.
+
+**Capped on purpose:** `grpcio-health-checking<1.82` in the `[dagster]` extra,
+because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
+
+---
+
+## Engineering principles that recur in the code
+
+1. **One source of truth.** Entity lists, backup targets and the Danish name
+   normalisation each exist once and are imported everywhere else.
+2. **Generate the repetitive models, write the star schema by hand.** 50 Silver and 53
+   Bronze models are one macro call each; the Gold star schema is written by
+   hand.
+3. **Business logic lives in SQL.** Python moves data and orchestrates; meaning
+   is defined in dbt models, not in Python or in the BI tool.
+4. **Deterministic and re-runnable.** Content hashes, `run_started_at` instead
+   of `now()`, and `NOT EXISTS` guards make every stage safe to repeat.
+5. **Fail fast and loud.** Storage switches are validated at import, dates are
+   validated before they reach a query, required variables raise with their
+   name, and extraction and export loops attempt every item, then raise once.
+6. **Observability never breaks the run.** Every pipeline call writes an NDJSON
+   log record, with secrets scrubbed; a failed log write or alert becomes a
+   warning.
+7. **Defence proportionate to the risk.** Bound SQL parameters, connection
+   timeouts, non-root containers and a firewall allowlist; no TLS, because
+   nothing is public.
+8. **Test the real thing.** The CDC logic is tested by running SQL in DuckDB on
+   fixture files, and CI runs a real `dbt build` on a committed sample.
+
+---
+
+## Known limitations and possible improvements
+
+Deliberate limits of a single-node reference project:
+
+- Batch only (daily); no streaming.
+- One server: no high availability or failover (nightly backups instead), and
+  no dev/staging/prod split.
+- Access control is the firewall plus file permissions; no row-level security.
+- Deletes in incremental entities need a full extraction plus a
+  `--full-refresh` (ADR-3).
+- Bronze can only be pruned down to a complete file that is older than
+  `LKHS_filename_previous` in the model's `_last_file` table. Silver compares
+  each version with the key's previous version in Bronze, and a normal run
+  evaluates the files from `LKHS_filename_previous` onwards again. For
+  incremental entities that means a full extraction after which at least two
+  newer files have been processed; full-extract entities need their last three
+  processed files. Pruning more gives extra `I` rows in Silver, and a full
+  refresh after pruning keeps only the history in the remaining files. Details:
+  [dbt_transformations.md §3.6](dbt_transformations.md#36-never-delete-bronze-files-arbitrarily).
+
+Improvements worth making, roughly in order of value:
+
+1. **Request-level retries for the OData loop.** Retries are per Dagster asset
+   (two attempts, exponential back-off), so a failure on page 47 of 50 restarts
+   the whole entity.
+2. **Timeouts on the remaining subprocess calls.** The Metabase scripts and the
+   backup `docker`/`rsync`/`ssh` calls have no `timeout=`, so a hung Docker
+   daemon would block a run (the dbt call already has one).
+3. **Concurrent extraction inside `full_pipeline_job`.** Its in-process executor
+   also serialises extraction, which never touches the `.duckdb` file. A
+   run-level concurrency limit for the dbt steps would remove that.
+4. **Test the backup/restore sequence.** `backup_platform.py` is excluded from
+   coverage; a test with a stubbed `subprocess.run` could assert that stopped
+   containers always restart.
+5. **Extend the Silver grain test to Rfam.** The singular test
+   `silver_no_duplicate_id_date_valid_from` covers the 18 DDD tables only, because
+   Rfam primary keys vary; `SILVER_TABLE_PRIMARY_KEYS` has the keys it would need.
+6. **A lockfile** (for example `uv.lock`) for reproducible installs.
+7. **Broader secret scrubbing.** `_scrub_secrets` matches four substrings in
+   top-level keys only; keys like `api_key` or nested dictionaries would pass.
+8. **Explicit Rfam column lists** instead of `SELECT *`, so an upstream schema
+   change is noticed at the boundary.
+9. **Volume and anomaly tests** (row counts within bounds, no empty daily load)
+   on top of the existing correctness tests.

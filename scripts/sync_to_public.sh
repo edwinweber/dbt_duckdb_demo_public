@@ -34,7 +34,10 @@ if [[ "$BASE_COMMIT" == "$HEAD_COMMIT" ]]; then
 fi
 
 # ── Find changed files ────────────────────────────────────────────────────────
-CHANGED=$(git -C "$PRIVATE_REPO" diff --name-only "$BASE_COMMIT" "$HEAD_COMMIT")
+# --no-renames is required: with rename detection on, `diff --name-only` prints
+# only the new path for a renamed file, so the old path never gets deleted from
+# the public repo. --no-renames reports renames as a delete + add pair instead.
+CHANGED=$(git -C "$PRIVATE_REPO" diff --no-renames --name-only "$BASE_COMMIT" "$HEAD_COMMIT")
 
 if [[ -z "$CHANGED" ]]; then
     echo "No file changes detected between $BASE_COMMIT and $HEAD_COMMIT"

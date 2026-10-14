@@ -3,13 +3,18 @@ FROM eclipse-temurin:21-jre-noble
 
 ARG METABASE_VERSION=v0.60.7.x
 ARG DUCKDB_DRIVER_VERSION=1.5.3.0
+# The community driver has no 1.5.6 release yet, so its bundled DuckDB JDBC engine
+# (classes + native libs) is overlaid with this duckdb_jdbc version to match the
+# pipeline's DuckDB (pyproject: duckdb 1.5.6).  Drop the overlay once the driver
+# publishes a release for this DuckDB version.
+ARG DUCKDB_JDBC_VERSION=1.5.6.0
 
 LABEL org.opencontainers.image.title="metabase-duckdb" \
       org.opencontainers.image.description="Metabase with DuckDB community driver" \
       org.opencontainers.image.version="${METABASE_VERSION}"
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl tini ca-certificates && \
+    apt-get install -y --no-install-recommends curl tini ca-certificates zip unzip && \
     rm -rf /var/lib/apt/lists/* && \
     mkdir -p /app /plugins /metabase-data && \
     curl -fsSL --retry 3 --retry-delay 2 \
@@ -21,10 +26,17 @@ RUN apt-get update && \
     groupadd -g 2000 metabase && \
     useradd -u 2000 -g metabase -m -d /home/metabase -s /usr/sbin/nologin metabase && \
     mkdir -p /home/metabase/.duckdb/extensions && \
-    mkdir -p /opt/duckdb-extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64 && \
     curl -fsSL --retry 3 --retry-delay 2 \
-        "https://extensions.duckdb.org/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension.gz" \
-        | gunzip -c > /opt/duckdb-extensions/v${DUCKDB_DRIVER_VERSION%.*}/linux_amd64/ducklake.duckdb_extension && \
+        "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/${DUCKDB_JDBC_VERSION}/duckdb_jdbc-${DUCKDB_JDBC_VERSION}.jar" \
+        -o /tmp/duckdb_jdbc.jar && \
+    mkdir /tmp/jdbc && unzip -q /tmp/duckdb_jdbc.jar -d /tmp/jdbc && \
+    zip -q -d /plugins/duckdb.metabase-driver.jar 'org/duckdb/*' 'libduckdb_java.so_*' && \
+    (cd /tmp/jdbc && zip -q -r /plugins/duckdb.metabase-driver.jar org libduckdb_java.so_*) && \
+    rm -rf /tmp/jdbc /tmp/duckdb_jdbc.jar && \
+    mkdir -p /opt/duckdb-extensions/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64 && \
+    curl -fsSL --retry 3 --retry-delay 2 \
+        "https://extensions.duckdb.org/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/ducklake.duckdb_extension.gz" \
+        | gunzip -c > /opt/duckdb-extensions/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/ducklake.duckdb_extension && \
     chown -R metabase:metabase /app /plugins /metabase-data /home/metabase /opt/duckdb-extensions
 
 # Entrypoint stages baked-in DuckDB extensions (e.g. ducklake) into the persisted

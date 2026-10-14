@@ -18,5 +18,12 @@ documentation/
 tests/
 
 docker-compose.yml
-docker/docker-seed-volumes.sh
 docker/DOCKER_USAGE.md
+data/
+sandbox/
+tmp/
+logs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage

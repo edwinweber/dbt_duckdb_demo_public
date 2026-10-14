@@ -72,12 +72,10 @@ from dlt.destinations import filesystem as dlt_filesystem
 from sqlalchemy import create_engine, text
 
 import dlt
+from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 logger = logging.getLogger(__name__)
-
-from ddd_python.ddd_dagster._constants import MAX_CONCURRENT_WORKERS
-from ddd_python.ddd_utils import get_variables_from_env
-from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 
 class PipelineTask(TypedDict):
@@ -91,14 +89,9 @@ class PipelineTask(TypedDict):
 # not .jsonl.gz — downstream dbt models glob for *.json / *.jsonl.
 os.environ.setdefault("NORMALIZE__DATA_WRITER__DISABLE_COMPRESSION", "true")
 
-# Prevent dlt from normalizing the dataset_name (which we use as a directory path
-# containing dots and slashes, e.g. "<YOUR_LAKEHOUSE>.Lakehouse/Files/Bronze/DDD").
+# Prevent dlt from normalizing the dataset_name, which is used as a directory path
+# containing slashes (e.g. "Files/Bronze/DDD").
 os.environ.setdefault("DESTINATION__FILESYSTEM__ENABLE_DATASET_NAME_NORMALIZATION", "false")
-
-# Maximum concurrent pipeline tasks in ThreadPoolExecutor (extraction pool).
-# Imported from ddd_dagster._constants — single source of truth shared with
-# the Dagster multiprocess_executor in jobs.py.
-_MAX_PIPELINE_WORKERS = MAX_CONCURRENT_WORKERS
 
 # Keys whose values are redacted in run logs to prevent credential leakage.
 _SENSITIVE_KEYS = frozenset({"connection_string", "secret", "password", "token"})
@@ -183,7 +176,15 @@ def _make_destination(
     """
     parent_path = str(Path(directory_path).parent)
 
-    def _resolve_path(
+    # dlt >= 1.30 appends ``.{ext}`` to a layout that does not contain ``{ext}``, which
+    # turned ``x_20260707_133549.json`` into ``x_20260707_133549.json.jsonl``. So the
+    # layout below contains ``{ext}`` and we override that placeholder: the data table
+    # gets exactly the extension of ``file_name``, other tables keep dlt's own.
+    stem, dot, file_ext = file_name.rpartition(".")
+    if not dot:
+        stem, file_ext = file_name, ""
+
+    def _resolve_stem(
         schema_name: str,
         table_name: str,
         load_id: str,
@@ -191,8 +192,22 @@ def _make_destination(
         ext: str,
     ) -> str:
         if table_name == data_table_name:
-            return file_name
-        return f"{table_name}.{file_id}.{ext}"
+            return stem
+        return f"{table_name}.{file_id}"
+
+    def _resolve_ext(
+        schema_name: str,
+        table_name: str,
+        load_id: str,
+        file_id: str,
+        ext: str,
+    ) -> str:
+        if table_name == data_table_name and file_ext:
+            return file_ext
+        return ext
+
+    layout = "{table_name}/{_resolve_stem}.{ext}"
+    extra_placeholders: dict[str, Any] = {"_resolve_stem": _resolve_stem, "ext": _resolve_ext}
 
     if get_variables_from_env.RAW_STORAGE_TARGET == "s3":
         bucket_url = f"s3://{get_variables_from_env.S3_BUCKET_BRONZE}"
@@ -200,8 +215,8 @@ def _make_destination(
             bucket_url = f"{bucket_url}/{get_variables_from_env.S3_PREFIX_BRONZE.strip('/')}"
         destination = dlt_filesystem(
             bucket_url=bucket_url,
-            layout="{table_name}/{_resolve_path}",
-            extra_placeholders={"_resolve_path": _resolve_path},
+            layout=layout,
+            extra_placeholders=extra_placeholders,
             credentials={
                 "aws_access_key_id": get_variables_from_env.S3_ACCESS_KEY_ID,
                 "aws_secret_access_key": get_variables_from_env.S3_SECRET_ACCESS_KEY,
@@ -212,8 +227,8 @@ def _make_destination(
     else:
         destination = dlt_filesystem(
             bucket_url=f"file://{get_variables_from_env.LOCAL_STORAGE_PATH}",
-            layout="{table_name}/{_resolve_path}",
-            extra_placeholders={"_resolve_path": _resolve_path},
+            layout=layout,
+            extra_placeholders=extra_placeholders,
         )
     return destination, parent_path
 
@@ -688,7 +703,7 @@ def execute_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# Shared orchestration helper
+# Rfam query helper
 # ---------------------------------------------------------------------------
 
 
@@ -718,6 +733,11 @@ def build_rfam_sql(
     return query_template.format(where_clause=""), {}
 
 
+# ---------------------------------------------------------------------------
+# Shared orchestration helper
+# ---------------------------------------------------------------------------
+
+
 def run_extraction_pool(
     tasks: list[PipelineTask],
     script_name: str,
@@ -725,7 +745,7 @@ def run_extraction_pool(
     date_to_load_from: str,
     start_time: datetime,
     resource_label: str = "resource",
-    max_workers: int = _MAX_PIPELINE_WORKERS,
+    max_workers: int = configuration_variables.MAX_CONCURRENT_WORKERS,
 ) -> None:
     """Run a set of pipeline tasks concurrently and write a script-level summary log.
 

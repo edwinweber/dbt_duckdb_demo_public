@@ -11,6 +11,7 @@
 #      their directories and Metabase (UID 2000) can write to its own.
 #   3. Sets cross-UID read/write bits so:
 #        - Metabase (UID 2000) can write DuckDB WAL files in a UID-1000 dir.
+#        - Metabase (UID 2000) can read DuckLake Parquet data in a UID-1000 dir.
 #        - backup (UID 1000) can read Metabase data owned by UID 2000.
 #   4. Detects the Docker socket GID and writes DOCKER_GID to .env (once).
 #   5. Prints a summary so you can verify each directory looks right.
@@ -70,6 +71,7 @@ printf 'Step 1: create directories\n'
 for dir in \
     /data/dlt_pipelines \
     /data/duckdb \
+    /data/ducklake \
     /data/dbt_logs \
     /data/dagster \
     /data/local \
@@ -93,10 +95,11 @@ printf '\n'
 
 printf 'Step 2: ownership\n'
 
-info "chown 1000:1000  /data/dlt_pipelines /data/duckdb /data/dbt_logs /data/dagster /data/local"
+info "chown 1000:1000  /data/dlt_pipelines /data/duckdb /data/ducklake /data/dbt_logs /data/dagster /data/local"
 run chown -R 1000:1000 \
     /data/dlt_pipelines \
     /data/duckdb \
+    /data/ducklake \
     /data/dbt_logs \
     /data/dagster \
     /data/local
@@ -117,6 +120,12 @@ printf 'Step 3: cross-UID access bits\n'
 # directory even during read-only queries — o+rwx on the directory and files.
 info "chmod o+rwx  /data/duckdb  (Metabase WAL access)"
 run chmod -R o+rwx /data/duckdb
+
+# Metabase (UID 2000) reads the DuckLake Parquet files behind the Silver tables
+# (SILVER_STORAGE_FORMAT=ducklake). The directory is mounted in every mode, so it
+# is always created; o+rX = read files, traverse directories.
+info "chmod o+rX   /data/ducklake  (Metabase DuckLake read access)"
+run chmod -R o+rX /data/ducklake
 
 # backup (UID 1000) reads Metabase data (UID 2000) to create zip archives.
 # o+rX = read files, traverse directories; no write needed.
@@ -168,6 +177,7 @@ printf '  %-45s  %s\n' "----" "---------------"
 for dir in \
     /data/dlt_pipelines \
     /data/duckdb \
+    /data/ducklake \
     /data/dbt_logs \
     /data/dagster \
     /data/local \

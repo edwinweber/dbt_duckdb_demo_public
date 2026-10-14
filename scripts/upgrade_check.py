@@ -19,7 +19,7 @@ Usage:
     python upgrade_check.py --test      # also run pytest in the temp venv
     python upgrade_check.py --apply     # patch pyproject.toml + reinstall real venv
 
-Requirements: Python >=3.12, internet access, pip in PATH.
+Requirements: Python >=3.13, internet access, pip in PATH.
 """
 
 from __future__ import annotations
@@ -41,59 +41,59 @@ PYPROJECT = REPO / "pyproject.toml"
 
 # ── Current constraints from pyproject.toml (keep in sync manually) ───────────
 # These are the *combined* install extras: .[dagster,dev]
+# Note: dbt-core and dbt-duckdb are NOT listed here — the project uses the
+# dbt-oss standalone binary (see scripts/install_dbt_oss.sh). dagster-dbt
+# 0.29.x uses CLI mode (DbtCliResource) and does not require dbt-core as a
+# Python package.
 CURRENT_CONSTRAINTS: dict[str, str] = {
     # Core dependencies
-    "dlt": ">=1.28.1,<2",
+    "dlt": ">=1.31.0,<2",
     "requests": ">=2.34.2",
-    "python-dotenv": ">=1.0",
-    "adlfs": ">=2026.5.0",
-    "azure-identity": ">=1.25.3",
-    "azure-storage-file-datalake": ">=12.25.0",
-    "dbt-core": ">=1.11,<1.12",
-    "dbt-duckdb": ">=1.10,<2",
-    "duckdb": ">=1.5.4,<1.6",
-    "deltalake": ">=1.6.1",
-    "pyarrow": ">=24.0.0",
-    "sqlalchemy": ">=2.0",
-    "pymysql": ">=1.1",
+    "python-dotenv": ">=1.2.4",
+    "azure-identity": ">=1.26.0",
+    "azure-storage-file-datalake": ">=12.26.0",
+    "duckdb": ">=1.5.6,<1.6",
+    "deltalake": ">=1.6.6",
+    "pyarrow": ">=25.0.0",
+    "sqlalchemy": ">=2.0.51",
+    "pymysql": ">=1.2.3",
     # Dagster extras
-    "dagster": ">=1.13.11,<2",
-    "dagster-webserver": ">=1.13.11,<2",
-    "dagster-dbt": ">=0.29.11,<1",
+    "dagster": ">=1.13.26,<2",
+    "dagster-webserver": ">=1.13.26,<2",
+    "dagster-dbt": ">=0.29.26,<1",
     # Dev extras
     "pytest": ">=9.1.1",
-    "ruff": ">=0.15.20",
-    "mypy": ">=1.10",
+    "ruff": ">=0.17.0",
+    "mypy": ">=2.4.0",
     "types-requests": ">=0",
-    "pandas": ">=2.0",
+    "pandas": ">=3.0.6",
 }
 
 # ── Relaxed constraints: drop upper caps so pip can go as high as possible ───
 # We keep floors so pip respects the minimum API surface we actually use.
 # Note: dlt<2, dagster<2, dagster-dbt<1 are *major* caps — kept intentionally
 # because 2.0 releases typically break APIs. Remove them here to probe.
+# dbt-core and dbt-duckdb are intentionally absent — the project uses the
+# dbt-oss standalone binary; no dbt Python package is installed.
 RELAXED_CONSTRAINTS: list[str] = [
-    "dlt>=1.28.1",
+    "dlt>=1.31.0",
     "requests>=2.34.2",
-    "python-dotenv>=1.0",
-    "adlfs>=2026.5.0",
-    "azure-identity>=1.25.3",
-    "azure-storage-file-datalake>=12.25.0",
-    "dbt-core>=1.11",  # cap removed — let dagster-dbt constrain it
-    "dbt-duckdb>=1.10",
-    "duckdb>=1.5.4",  # cap removed — see Azure-regression note below
-    "deltalake>=1.6.1",
-    "pyarrow>=24.0.0",
-    "sqlalchemy>=2.0",
-    "pymysql>=1.1",
-    "dagster>=1.13.11",
-    "dagster-webserver>=1.13.11",
-    "dagster-dbt>=0.29.11",
+    "python-dotenv>=1.2.4",
+    "azure-identity>=1.26.0",
+    "azure-storage-file-datalake>=12.26.0",
+    "duckdb>=1.5.6",  # cap removed — see Azure-regression note below
+    "deltalake>=1.6.6",
+    "pyarrow>=25.0.0",
+    "sqlalchemy>=2.0.51",
+    "pymysql>=1.2.3",
+    "dagster>=1.13.26",
+    "dagster-webserver>=1.13.26",
+    "dagster-dbt>=0.29.26",
     "pytest>=9.1.1",
-    "ruff>=0.15.20",
-    "mypy>=1.10",
+    "ruff>=0.17.0",
+    "mypy>=2.4.0",
     "types-requests",
-    "pandas>=2.0",
+    "pandas>=3.0.6",
 ]
 
 # ── Known coupling constraints (informational — not enforced by pip alone) ────
@@ -105,15 +105,11 @@ COUPLING_NOTES = [
         "minor in lockstep. Check the dagster-dbt release notes before bumping.",
     ),
     (
-        "dagster-dbt ↔ dbt-core",
-        "dagster-dbt caps dbt-core at <(next minor). E.g. 0.29.x requires "
-        "dbt-core<1.12. To use dbt-core 1.12+ you must upgrade dagster-dbt "
-        "to a version that supports it.",
-    ),
-    (
-        "dbt-duckdb ↔ dbt-core + duckdb",
-        "dbt-duckdb requires dbt-core>=1.8 (no upper cap) and duckdb>=1.0 "
-        "(no upper cap as of 1.10.1) — so dbt-duckdb itself is not the blocker.",
+        "dbt-oss standalone binary ↔ dagster-dbt DbtCliResource",
+        "This project uses the dbt-oss standalone binary (no dbt Python package). "
+        "dagster-dbt 0.29.x uses DbtCliResource in CLI mode automatically. "
+        "When upgrading dagster-dbt, verify that DbtCliResource still works "
+        "without a dbt Python package installed.",
     ),
     (
         "duckdb >=1.6 — Azure/OneLake regression",
@@ -219,10 +215,13 @@ def install_relaxed(venv: Path) -> tuple[bool, str]:
 
 
 def smoke_import(venv: Path) -> tuple[bool, str]:
-    """Run a quick import of the key packages inside *venv*."""
+    """Run a quick import of the key packages inside *venv*.
+
+    dbt is a standalone binary (dbt-oss), not a Python package — it is not
+    imported here.  Check it separately via the CLI if needed.
+    """
     code = (
-        "import dlt, dbt.version, duckdb, dagster, deltalake, sqlalchemy; "
-        "print('dbt', dbt.version.__version__); "
+        "import dlt, duckdb, dagster, deltalake, sqlalchemy; "
         "print('duckdb', duckdb.__version__); "
         "print('dagster', dagster.__version__); "
         "print('dlt', dlt.__version__); "
@@ -383,8 +382,6 @@ def main() -> int:
     print_section("Step 1 — Query PyPI for latest versions")
     key_packages = [
         "dlt",
-        "dbt-core",
-        "dbt-duckdb",
         "duckdb",
         "deltalake",
         "pyarrow",
@@ -393,7 +390,6 @@ def main() -> int:
         "dagster-dbt",
         "requests",
         "python-dotenv",
-        "adlfs",
         "azure-identity",
         "azure-storage-file-datalake",
         "sqlalchemy",
@@ -412,25 +408,17 @@ def main() -> int:
 
     # ── Step 2: Check key coupling constraints via PyPI metadata ─────────────
     print_section("Step 2 — Inspect cross-package coupling constraints")
-    dbt_latest = pypi_latest_map.get("dagster-dbt")
-    if dbt_latest:
-        reqs = pypi_requires_dist("dagster-dbt", dbt_latest)
+    dagster_dbt_latest = pypi_latest_map.get("dagster-dbt")
+    if dagster_dbt_latest:
+        reqs = pypi_requires_dist("dagster-dbt", dagster_dbt_latest)
         relevant = [
             r for r in reqs if any(k in r.lower() for k in ["dagster", "dbt-core", "dbt-common"])
         ]
-        print(f"  dagster-dbt {dbt_latest} requires:")
+        print(f"  dagster-dbt {dagster_dbt_latest} requires:")
         for r in relevant:
             print(f"    {r}")
-
-    dbt_duckdb_latest = pypi_latest_map.get("dbt-duckdb")
-    if dbt_duckdb_latest:
-        reqs = pypi_requires_dist("dbt-duckdb", dbt_duckdb_latest)
-        relevant = [
-            r for r in reqs if any(k in r.lower() for k in ["dbt-core", "duckdb", "dbt-common"])
-        ]
-        print(f"  dbt-duckdb {dbt_duckdb_latest} requires:")
-        for r in relevant:
-            print(f"    {r}")
+        if not any("dbt-core" in r.lower() for r in relevant):
+            print("  (no dbt-core dependency — CLI mode confirmed)")
 
     # ── Step 3: Resolve in a temp venv ───────────────────────────────────────
     print_section("Step 3 — Resolve relaxed constraints in isolated venv")

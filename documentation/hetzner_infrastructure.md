@@ -1,7 +1,7 @@
 # Hetzner Production Infrastructure
 
-Operational reference for the live production server that runs the Danish Democracy Data pipeline.  
-Last updated: 2026-06-11.
+Operational reference for the live production server that runs the Danish Democracy Data pipeline.
+Docker usage on any host is described in [docker/DOCKER_USAGE.md](../docker/DOCKER_USAGE.md).
 
 ---
 
@@ -28,7 +28,7 @@ They are formatted as **ext4** and mounted at boot via `/etc/fstab`.
 
 | Mount point | Size | Purpose |
 | --- | --- | --- |
-| `/data` | 50 GB | Live operational data (DuckDB, dlt state, dbt logs, Dagster home, Metabase state, Bronze/Silver/Gold files) |
+| `/data` | 50 GB | Live operational data (DuckDB, DuckLake, dlt working dir, dbt logs, Dagster home, Metabase state, Bronze files, local Delta exports, run logs) |
 | `/data_backup` | 50 GB | Local backup archives (per-target retention: 62 days dagster/metabase, 7 days duckdb/ducklake) and structured backup logs |
 
 ### One-time volume setup (run once after attaching each volume in the Hetzner console)
@@ -75,15 +75,17 @@ df -h /data /data_backup
 
 ```
 /data/
-├── dlt_pipelines/          # dlt incremental state (owned by UID 1000)
+├── dlt_pipelines/          # dlt working directory (owned by UID 1000)
 ├── duckdb/                 # DuckDB .duckdb file + WAL (owned 1000, o+rwx for Metabase)
 ├── dbt_logs/               # dbt JSON execution logs (owned by UID 1000)
 ├── dagster/                # Dagster home — run history, schedules, SQLite (owned by UID 1000)
-├── local/                  # Bronze / Silver / Gold file storage (owned by UID 1000)
-│   └── Files/
-│       ├── Bronze/
-│       ├── Silver/
-│       └── Gold/
+├── ducklake/               # DuckLake Parquet data, ducklake mode only (owned 1000, o+rx for Metabase)
+├── local/                  # LOCAL_STORAGE_PATH (owned by UID 1000)
+│   ├── Files/
+│   │   ├── Bronze/         # extraction files
+│   │   ├── Silver/         # Delta export (STORAGE_TARGET=local)
+│   │   └── Gold/           # Delta export (STORAGE_TARGET=local)
+│   └── logs/               # NDJSON run logs
 └── metabase/
     ├── data/               # Metabase application database (owned by UID 2000)
     └── duckdb-extensions/  # DuckDB extensions pre-loaded for Metabase (owned by UID 2000)
@@ -115,6 +117,7 @@ What this script does:
 2. Sets `app` (UID 1000) as owner of pipeline and backup directories.
 3. Sets Metabase user (UID 2000) as owner of `/data/metabase/`.
 4. Applies `o+rwx` to `/data/duckdb/` so Metabase (UID 2000) can write WAL files into the UID-1000-owned directory.
+   Applies `o+rX` to `/data/ducklake/` so Metabase can read the DuckLake Parquet files.
 5. Applies `o+rX` to `/data/metabase/data` so the backup container (UID 1000) can read Metabase state.
 6. Detects the Docker socket GID and writes `DOCKER_GID=<gid>` into `.env`.
 
@@ -318,7 +321,7 @@ The repository on the server must have the GitHub deploy key authorised so that
 ### Manual backup
 
 ```bash
-# Back up all targets (Dagster + Metabase + DuckDB)
+# Back up all targets (Dagster, Metabase, DuckDB, and DuckLake in ducklake mode)
 docker compose run --rm backup
 
 # Back up a single target
@@ -349,6 +352,7 @@ Structured NDJSON run logs go to `/data_backup/logs/backup_log_<timestamp>.ndjso
 | `/data_backup/dagster/` | 62 days |
 | `/data_backup/metabase/` | 62 days |
 | `/data_backup/duckdb/` | 7 days |
+| `/data_backup/ducklake/` | 7 days (ducklake mode only) |
 | Hetzner StorageBox | 31 daily + 12 monthly archives per target (grandfather-father-son rotation) |
 
 The StorageBox rotation keeps the most recent archive of each of the last 31 days
@@ -382,5 +386,5 @@ Use this checklist when provisioning a new server from scratch.
 [ ] Stage StorageBox SSH key for UID 1000 in /data_backup/.ssh (see "Staging the key" above)
 [ ] Set up StorageBox SSH key and verify rsync: docker compose run --rm backup
 [ ] scripts/setup_backup_cron.sh --install   (nightly 02:00 backup)
-[ ] Run a full pipeline to verify end-to-end: docker compose run --rm run ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
+[ ] Verify end-to-end: in the Dagster UI run full_pipeline_job, then enable the schedules
 ```

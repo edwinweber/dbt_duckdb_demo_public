@@ -1,5 +1,7 @@
 """Dagster Definitions entrypoint for the project."""
 
+import os
+
 from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv())
@@ -126,6 +128,7 @@ defs = Definitions(
         "dbt": DbtCliResource(
             project_dir=_DBT_PROJECT_DIR,
             profiles_dir=_DBT_PROJECT_DIR,
+            dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
         ),
     },
 )

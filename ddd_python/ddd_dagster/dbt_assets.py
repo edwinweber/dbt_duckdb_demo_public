@@ -14,7 +14,7 @@ Lineage chain
            │
            ▼  (via DddDbtTranslator: source deps mapped to dlt asset keys)
     dbt Bronze models      (group: ddd_bronze)
-           │   e.g. bronze_afstemning → reads OneLake JSON via DuckDB
+           │   e.g. bronze_afstemning → reads Bronze NDJSON via DuckDB
            │
            ▼
     dbt Silver models      (group: ddd_silver)
@@ -246,7 +246,7 @@ def dbt_bronze_assets(
     dbt: DbtCliResource,
     stop_metabase_asset,
 ):
-    """Run all dbt Bronze models (views that read raw JSON from OneLake).
+    """Run all dbt Bronze models (views over the raw Bronze NDJSON files).
 
     Executes ``dbt build --select bronze`` against the local DuckDB target.
     Bronze models are thin views that read the NDJSON files written by the dlt
@@ -376,7 +376,7 @@ def dbt_data_engineering_assets(
                                          with step timing (PLANNED → MATERIALIZED)
 
     Failure tracking:
-    * ``dagster_step_failures_raw``    — Python model: one row per failed asset per run
+    * ``dagster_step_failures_raw``    — one row per failed asset per run (reads NDJSON exported by the failure sensor)
     * ``dagster_step_failure``         — enriched view with surrogate keys and FKs
     """
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()

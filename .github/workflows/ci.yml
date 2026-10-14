@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ── Python tests ────────────────────────────────────────────────────────────
   test:
@@ -16,11 +20,19 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
 
       - name: Install dependencies
         run: pip install -e ".[dagster,dev]"
+
+      - name: Install dbt-oss binary
+        run: bash scripts/install_dbt_oss.sh
+        env:
+          PREFIX: ${{ runner.tool_cache }}/dbt-oss
+
+      - name: Add dbt-oss to PATH
+        run: echo "${{ runner.tool_cache }}/dbt-oss/bin" >> $GITHUB_PATH
 
       - name: Generate dbt manifest
         run: |
@@ -39,7 +51,7 @@ jobs:
           DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=ddd_python --cov-fail-under=35 --cov-report=term-missing
+        run: pytest tests/ -v --tb=short --cov=ddd_python --cov-fail-under=80 --cov-report=term-missing
         env:
           # Minimal env vars required by the lazy env-loading module.
           # Tests use monkeypatch / MagicMock for everything else.
@@ -72,11 +84,19 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
+
+      - name: Install dbt-oss binary
+        run: bash scripts/install_dbt_oss.sh
+        env:
+          PREFIX: ${{ runner.tool_cache }}/dbt-oss
+
+      - name: Add dbt-oss to PATH
+        run: echo "${{ runner.tool_cache }}/dbt-oss/bin" >> $GITHUB_PATH
 
       - name: Install dbt packages
         run: dbt deps --project-dir dbt --profiles-dir dbt
@@ -141,37 +161,37 @@ jobs:
           DBT_FRESHNESS_WARN_AFTER_DAYS: "2"
           DBT_FRESHNESS_ERROR_AFTER_DAYS: "7"
 
-  # ── S3/MinIO integration tests ──────────────────────────────────────────────
+  # ── S3 integration tests ──────────────────────────────────────────────
   test-s3:
-    name: pytest (S3/MinIO)
+    name: pytest (S3-compatible)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Start MinIO
+      # SeaweedFS instead of MinIO: MinIO no longer publishes its community image to
+      # a registry CI can pull from.  Any S3-compatible server works for these tests.
+      - name: Start S3-compatible server (SeaweedFS)
         run: |
           docker run -d \
-            --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio server /data
-          timeout 60 bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
+            --name s3 \
+            -p 9000:8333 \
+            chrislusf/seaweedfs server -s3 -dir=/data
+          timeout 90 bash -c 'until curl -s -o /dev/null http://localhost:9000/; do sleep 2; done'
 
       - name: Run S3 integration tests
         run: pytest tests/test_integration_s3_pipeline.py -v --tb=short
         env:
           S3_TEST_ENDPOINT: http://localhost:9000
-          S3_TEST_ACCESS_KEY_ID: minioadmin
-          S3_TEST_SECRET_ACCESS_KEY: minioadmin
+          S3_TEST_ACCESS_KEY_ID: any
+          S3_TEST_SECRET_ACCESS_KEY: any
           # Minimal env required by get_variables_from_env at import time
           STORAGE_TARGET: local
           SILVER_STORAGE_FORMAT: duckdb
@@ -186,7 +206,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
 
       - name: Install dev dependencies
@@ -200,3 +220,109 @@ jobs:
 
       - name: mypy
         run: mypy --package ddd_python --config-file pyproject.toml
+
+  # ── Full dbt build on a committed sample ─────────────────────────────────────
+  # Runs the real Bronze -> Silver -> Gold build plus every dbt test against a
+  # small, referentially coherent slice of the source data
+  # (tests/fixtures/bronze_sample, refresh with scripts/build_ci_sample.py).
+  dbt-build-sample:
+    name: dbt build (sample data)
+    runs-on: ubuntu-latest
+    env:
+      STORAGE_TARGET: local
+      SILVER_STORAGE_FORMAT: duckdb
+      DUCKDB_DATABASE_LOCATION: ${{ github.workspace }}/ci_sample.duckdb
+      DUCKDB_DATABASE: ci_sample
+      DANISH_DEMOCRACY_DATA_SOURCE: ${{ github.workspace }}/tests/fixtures/bronze_sample/DDD
+      RFAM_DATA_SOURCE: ${{ github.workspace }}/tests/fixtures/bronze_sample/RFAM
+      DBT_PROJECT_DIRECTORY: ${{ github.workspace }}/dbt
+      LOCAL_STORAGE_PATH: ${{ github.workspace }}/ci_sample_storage
+      DBT_FRESHNESS_WARN_AFTER_DAYS: "100000"
+      DBT_FRESHNESS_ERROR_AFTER_DAYS: "100000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install dbt-oss binary
+        run: bash scripts/install_dbt_oss.sh
+        env:
+          PREFIX: ${{ runner.tool_cache }}/dbt-oss
+
+      - name: Add dbt-oss to PATH
+        run: echo "${{ runner.tool_cache }}/dbt-oss/bin" >> $GITHUB_PATH
+
+      - name: dbt deps
+        run: dbt deps --project-dir dbt --profiles-dir dbt
+
+      # The data_engineering models read Dagster's own SQLite history, which
+      # does not exist in CI.
+      - name: dbt build (models + seeds + tests)
+        run: dbt build --project-dir dbt --profiles-dir dbt --target local --exclude path:models/data_engineering
+
+      - name: Check the Gold layer is populated
+        run: python scripts/ci_check_sample_build.py "$DUCKDB_DATABASE_LOCATION"
+
+      # Runs both Silver macros with dbt through every documented case
+      # (dbt_transformations.md §3.10), in DuckDB and DuckLake mode, on copies of
+      # the sample (a few minutes).
+      - name: Silver logic (real dbt runs)
+        run: pytest tests/test_dbt_silver.py -v
+        env:
+          DBT_INTEGRATION_TESTS: "1"
+
+      - name: Generate dbt docs site
+        run: dbt docs generate --project-dir dbt --profiles-dir dbt --target local --exclude path:models/data_engineering --output-dir "$GITHUB_WORKSPACE/dbt-docs-site"
+
+      - name: Upload docs site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dbt-docs-site
+
+  # ── Publish the dbt docs (lineage + model docs) to GitHub Pages ─────────────
+  # One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+  publish-docs:
+    name: publish dbt docs
+    needs: dbt-build-sample
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ── Docker images ───────────────────────────────────────────────────────────
+  docker-build:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build pipeline image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: danish-democracy-data:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image (dbt binary + package import)
+        run: |
+          docker run --rm --entrypoint dbt danish-democracy-data:ci --version
+          docker run --rm --entrypoint python danish-democracy-data:ci -c "import ddd_python.ddd_dagster.definitions"

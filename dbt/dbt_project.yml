@@ -47,7 +47,7 @@ on-run-start:
         KEY_ID '{{ env_var("S3_ACCESS_KEY_ID") }}',
         SECRET '{{ env_var("S3_SECRET_ACCESS_KEY") }}'
         {% if env_var('S3_ENDPOINT', '') != '' %}
-        , ENDPOINT '{{ env_var("S3_ENDPOINT").split("://")[-1] }}'
+        , ENDPOINT '{{ env_var("S3_ENDPOINT") | replace("http://", "") | replace("https://", "") }}'
         , URL_STYLE '{{ env_var("S3_URL_STYLE", "path") }}'
         , USE_SSL {{ env_var("S3_USE_SSL", "false") }}
         {% endif %}
@@ -86,3 +86,5 @@ models:
       +schema: data_engineering
       +materialized: view
       +tags: ['data_engineering']
+flags:
+  require_generic_test_arguments_property: true

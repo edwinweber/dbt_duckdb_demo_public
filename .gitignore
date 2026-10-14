@@ -39,3 +39,10 @@ logs/
 CLAUDE.md
 .claude/codebase_index.md
 .claude/settings.local.json
+
+# Local experiments (multi-GB DuckDB replicas)
+sandbox/
+tmp/
+
+# Generated dbt docs site (hundreds of bundled viewer files) — regenerate, don't commit
+documentation/dbt-docs/

@@ -4,7 +4,9 @@
 assets use OData date filtering; full-extract assets always load fully for clean
 delete detection. Date range is configurable via Dagster Config. Concurrent
 execution via multiprocess executor (max 4). Retry policy handles transient API
-failures. dlt state tracking manages the high-water mark.
+failures. Incremental assets reload a fixed lookback window
+(``DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD``, default 31 days) rather than a dlt
+cursor; Silver's hash-based CDC drops the rows that did not change.
 
 See documentation/python_code_explained.md for design rationale.
 """
@@ -103,7 +105,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{api_resource}** from the Danish "
-            "Parliament OData API into OneLake Bronze.  "
+            "Parliament OData API into Bronze (local or S3).  "
             "One file per run.  Date lower-bound set via run config "
             "(defaults to today minus DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD)."
         ),
