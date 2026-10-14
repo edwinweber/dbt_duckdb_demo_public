@@ -229,7 +229,7 @@ Every push and pull request to `main` runs `.github/workflows/ci.yml`:
 | `dbt parse` | Every SQL/YAML file parses on all three storage targets (`local`, `local_ducklake`, `local_ducklake_s3`). |
 | `dbt build (sample data)` | A real Bronze → Silver → Gold `dbt build` including **all dbt tests** on a committed 1.6 MB sample ([`tests/fixtures/bronze_sample`](../tests/fixtures/bronze_sample)), followed by a non-empty check on key tables (`scripts/ci_check_sample_build.py`) and the real-dbt tests of the Silver layer (`test_dbt_silver.py`). |
 | `docker build` | The pipeline image builds and the `dbt` binary and Dagster definitions load inside it. |
-| `publish dbt docs` | On `main` only: the dbt docs site is generated from the sample build and published to GitHub Pages. |
+| `publish dbt docs` | On `main` only, and only when repo variable `ENABLE_GITHUB_PAGES_PUBLISH=true`: the dbt docs site is generated from the sample build and published to GitHub Pages. |
 
 The sample is cut from a full extraction by `scripts/build_ci_sample.py` (a few
 dozen votes plus every row they reference, lookups in full). Refresh it only when

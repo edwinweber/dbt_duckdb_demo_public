@@ -286,11 +286,13 @@ jobs:
           path: dbt-docs-site
 
   # ── Publish the dbt docs (lineage + model docs) to GitHub Pages ─────────────
-  # One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+  # One-time setup:
+  #   1) repo Settings -> Pages -> Source: "GitHub Actions"
+  #   2) repo variable ENABLE_GITHUB_PAGES_PUBLISH=true
   publish-docs:
     name: publish dbt docs
     needs: dbt-build-sample
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_GITHUB_PAGES_PUBLISH == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write
