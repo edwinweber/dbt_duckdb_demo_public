@@ -2,12 +2,11 @@
 FROM eclipse-temurin:21-jre-noble
 
 ARG METABASE_VERSION=v0.60.7.x
-ARG DUCKDB_DRIVER_VERSION=1.5.3.0
-# The community driver has no 1.5.6 release yet, so its bundled DuckDB JDBC engine
-# (classes + native libs) is overlaid with this duckdb_jdbc version to match the
-# pipeline's DuckDB (pyproject: duckdb 1.5.6).  Drop the overlay once the driver
-# publishes a release for this DuckDB version.
-ARG DUCKDB_JDBC_VERSION=1.5.6.0
+ARG DUCKDB_DRIVER_VERSION=1.5.6.0
+# The community driver (1.5.6.0) bundles DuckDB JDBC 1.5.6. Overlay the JDBC
+# classes + native libs with duckdb_jdbc 2.0.0.0 so the driver speaks DuckDB
+# 2.0 protocol and can connect to the quack server.
+ARG DUCKDB_JDBC_VERSION=2.0.0.0
 
 LABEL org.opencontainers.image.title="metabase-duckdb" \
       org.opencontainers.image.description="Metabase with DuckDB community driver" \
@@ -35,8 +34,8 @@ RUN apt-get update && \
     rm -rf /tmp/jdbc /tmp/duckdb_jdbc.jar && \
     mkdir -p /opt/duckdb-extensions/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64 && \
     curl -fsSL --retry 3 --retry-delay 2 \
-        "https://extensions.duckdb.org/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/ducklake.duckdb_extension.gz" \
-        | gunzip -c > /opt/duckdb-extensions/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/ducklake.duckdb_extension && \
+        "https://extensions.duckdb.org/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/quack.duckdb_extension.gz" \
+        | gunzip -c > /opt/duckdb-extensions/v${DUCKDB_JDBC_VERSION%.*}/linux_amd64/quack.duckdb_extension && \
     chown -R metabase:metabase /app /plugins /metabase-data /home/metabase /opt/duckdb-extensions
 
 # Entrypoint stages baked-in DuckDB extensions (e.g. ducklake) into the persisted
@@ -44,6 +43,9 @@ RUN apt-get update && \
 # version bump.  See docker-entrypoint.metabase.sh.
 COPY --chown=metabase:metabase docker/docker-entrypoint.metabase.sh /usr/local/bin/docker-entrypoint.metabase.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.metabase.sh
+# Init SQL template — baked into the image; entrypoint substitutes the token
+# at runtime and writes the rendered version to /metabase-data/duckdb-init.sql.
+COPY --chown=metabase:metabase docker/metabase-duckdb-init.sql /app/metabase-duckdb-init.sql
 
 ENV MB_PLUGINS_DIR=/plugins \
     MB_DB_FILE=/metabase-data/metabase.db \

@@ -4,6 +4,8 @@ The cleanup test runs against a real local DuckLake catalog in ``tmp_path`` and
 is skipped when the ``ducklake`` extension cannot be installed (offline).
 """
 
+import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -48,6 +50,10 @@ def test_cleanup_removes_current_temp_but_keeps_dbt_tmp(tmp_path):
     live.mkdir(parents=True)
     (stale / "old.parquet").write_bytes(b"x")
     (live / "live.parquet").write_bytes(b"x")
+    # The sweep only removes directories nothing has touched for a while.
+    two_hours_ago = time.time() - 2 * 3600
+    for path in (stale / "old.parquet", stale):
+        os.utime(path, (two_hours_ago, two_hours_ago))
 
     catalog = tmp_path / "catalog.ducklake"
     db_file = tmp_path / "main.duckdb"

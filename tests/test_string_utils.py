@@ -4,7 +4,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
+from ddd_python.ddd_utils.string_utils import (
+    is_full_extract,
+    normalize_danish_name,
+    resolve_date_to_load_from,
+)
 
 # ---------------------------------------------------------------------------
 # normalize_danish_name
@@ -86,3 +90,18 @@ class TestResolveDateToLoadFrom:
     def test_non_date_string_raises_value_error(self):
         with pytest.raises(ValueError):
             resolve_date_to_load_from("not-a-date", 31, self._REF)
+
+
+# ---------------------------------------------------------------------------
+# is_full_extract
+# ---------------------------------------------------------------------------
+
+
+class TestIsFullExtract:
+    @pytest.mark.parametrize("date", ["1900-01-01", "1899-12-31", "0001-01-01"])
+    def test_the_full_extraction_date_and_earlier(self, date):
+        assert is_full_extract(date) is True
+
+    @pytest.mark.parametrize("date", ["1900-01-02", "2000-01-01", "2026-01-15"])
+    def test_later_dates_are_incremental(self, date):
+        assert is_full_extract(date) is False

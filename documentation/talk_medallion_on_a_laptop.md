@@ -53,7 +53,7 @@ Two public sources with different shapes:
 | Why | relational data with change history | a SQL source with different keys and columns |
 
 - Both are public: no API key or data agreement needed.
-- Two sources with different keys, date columns and extraction modes show that the pipeline is not tied to one source.
+- Two sources with different keys and extraction modes show that the pipeline is not tied to one source.
 
 <!--
 Rfam has nothing to do with parliament data; it was chosen because it is a
@@ -137,8 +137,8 @@ OData filter, and the MySQL filter is a bound parameter.
 
 ## Bronze: views over files
 
-- 53 views, all generated. Most are `read_json_auto()` over a folder.
-- A `_latest` view per entity (newest file) and three utility views.
+- 28 views: one generated view per entity, `read_json_auto()` over its folder,
+  and three utility views.
 - No data is copied: Bronze views read the files directly.
 
 ```sql
@@ -213,7 +213,7 @@ the approach and a good reference for the Data Vault background.
 ## Silver, part 3: generated models
 
 - Bronze and Silver models are **generated** from one Python file (`configuration_variables.py`).
-- That file is the single source of truth: entity lists, primary keys, date columns, SQL templates.
+- That file is the single source of truth: entity lists, primary keys, SQL templates.
 - Adding an entity means editing the lists and regenerating. The macros contain the CDC logic.
 - Import-time checks and tests keep the lists consistent (counts, subsets, no duplicates), so a missing entry fails at import or in CI.
 
@@ -265,8 +265,8 @@ DuckDB allows **one writing process** per database file. The orchestration accou
 
 - **dbt jobs use `in_process_executor`.** Everything that writes the database runs in one process, one step at a time.
 - **Extraction and export use `multiprocess_executor` (max 4).** They write files, not the database, so they can run in parallel.
-- **Metabase keeps a connection open, so Dagster stops it before a dbt run and starts it afterwards**, also when the run fails.
-- **Other connections (DBeaver, etc.) must be closed during a run.**
+- **`duckdb_server` owns the database file; Dagster, dbt and Metabase are its quack clients**, so nothing is stopped for a run.
+- **Tools such as DBeaver connect through the quack server too**, instead of opening the file.
 
 <!--
 This is a property of the engine, not something that shaped the whole design.
@@ -347,8 +347,8 @@ Four targets: `dagster`, `metabase`, `duckdb`, and (in DuckLake mode) `ducklake`
 
 <!--
 With the data files archived first, every file the catalog references is in the
-backup. The duckdb and ducklake backups also stop the Dagster and Metabase
-containers while they run.
+backup. The duckdb and ducklake backups also stop the duckdb_server container
+while they run.
 -->
 
 ---

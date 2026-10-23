@@ -59,9 +59,8 @@ dbt run --select bronze --profiles-dir .        # Bronze only
 dbt run --select silver --profiles-dir .        # Silver only
 dbt run --select gold   --profiles-dir .        # Gold only
 
-# Rebuild Silver from all Bronze files. Run a full extraction first
-# (--date_to_load_from 1900-01-01), or incremental entities get false deletes.
-dbt run --select silver --full-refresh --profiles-dir .
+# Silver is the state: every Silver model ignores --full-refresh. Repairs go
+# through backups; see documentation/runbook.md §7.
 
 dbt test --profiles-dir .                       # All data quality tests
 dbt test --select silver --profiles-dir .       # Silver tests only
@@ -71,7 +70,7 @@ dbt docs generate --profiles-dir . && dbt docs serve   # Lineage browser on :808
 
 ## Connection
 
-Uses DuckDB through the adapter built into the dbt-oss binary (installed with
-`scripts/install_dbt_oss.sh`). `profiles.yml` has four targets (`local`,
+Uses DuckDB through `dbt-core` + `dbt-duckdb` (installed with
+`pip install -e .`; in Docker through the `dbt-quack` wrapper). `profiles.yml` has four targets (`local`,
 `local_ducklake`, `local_ducklake_s3`, `onelake`) and picks one from the storage
 switches; every target uses `threads: 1`.

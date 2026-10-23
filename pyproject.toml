@@ -17,20 +17,27 @@ dependencies = [
     "azure-storage-file-datalake>=12.26.0",
 
     # Transformation
-    # dbt-core Python package removed — project now uses the dbt-oss 2.0.5 standalone
-    # binary (see scripts/install_dbt_oss.sh). dagster-dbt uses CLI mode (DbtCliResource)
-    # automatically when no dbt Python package is importable; installing any dbt Python
-    # package alongside dagster-dbt 0.29.26 triggers issue #34215 (NoneType/enabled crash).
-    "duckdb>=1.5.6,<1.6",
+    # dbt-core is capped at <1.13 — dagster-dbt 0.29.x hard limit.
+    # dbt-duckdb 1.11.0 targets dbt-core 1.11 but is compatible with 1.12.
+    # Do not add dbt-oss: installing dbt-core AND dbt-oss together triggers
+    # dagster-dbt issue #34215 (NoneType/enabled crash in DbtCliResource).
+    "dbt-core>=1.12.6,<1.13",
+    "dbt-duckdb>=1.11.0,<2",
+    "duckdb>=2.0.0,<3",
+    # DuckDB 2.0 needs numpy for Python UDFs (the server-side ducklake_sweep_current_temp).
+    "numpy>=2.0",
 
     # Export to Delta Lake
     "deltalake>=1.6.6",
     "pyarrow>=25.0.0",
 
     # SQL source pipeline (used by dlt_pipeline_execution_functions.py)
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.1.5",
     "pymysql>=1.2.3",
 ]
+
+[project.scripts]
+dbt-quack = "ddd_python.ddd_dbt.dbt_quack:main"
 
 [project.urls]
 Homepage = "https://github.com/edwinweber/dbt_duckdb_demo"
@@ -54,11 +61,11 @@ dagster = [
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
-    "ruff>=0.17.0",
+    "ruff>=0.17.1",
     "mypy>=2.4.0",
     "types-requests",  # mypy stubs for requests; without this, newer mypy raises import-untyped
     "pandas>=3.0.6",  # needed by duckdb.fetchdf() in integration tests
-    "boto3>=1.34",    # S3 integration tests: bucket setup/teardown against MinIO
+    "boto3>=1.34",    # S3 integration tests: bucket setup/teardown against RustFS
 ]
 
 [tool.setuptools.packages.find]
@@ -68,8 +75,8 @@ include = ["ddd_python*"]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
-    "s3_integration: tests that require a live S3-compatible endpoint (MinIO); skipped when S3_TEST_ENDPOINT is unset",
-    "dbt_integration: tests that run the dbt-oss binary against the sample data; skipped unless DBT_INTEGRATION_TESTS=1",
+    "s3_integration: tests that require a live S3-compatible endpoint (RustFS); skipped when S3_TEST_ENDPOINT is unset",
+    "dbt_integration: tests that run dbt against the sample data; skipped unless DBT_INTEGRATION_TESTS=1",
 ]
 
 [tool.coverage.report]
@@ -135,6 +142,7 @@ module = [
     "pyarrow.*",
     "azure.*",
     "dotenv.*",
+    "dbt.*",
 ]
 ignore_missing_imports = true
 
@@ -145,8 +153,8 @@ ignore_missing_imports = true
 module = [
     "ddd_python.ddd_dagster.dbt_assets",
     "ddd_python.ddd_dagster.jobs",
-    "ddd_python.ddd_dagster.metabase_control_assets",
     "ddd_python.ddd_dagster.sensors",
+    "ddd_python.ddd_dbt.dbt_quack",
 ]
 disallow_untyped_defs = false
 

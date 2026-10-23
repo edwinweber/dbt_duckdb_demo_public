@@ -41,10 +41,6 @@ PYPROJECT = REPO / "pyproject.toml"
 
 # ── Current constraints from pyproject.toml (keep in sync manually) ───────────
 # These are the *combined* install extras: .[dagster,dev]
-# Note: dbt-core and dbt-duckdb are NOT listed here — the project uses the
-# dbt-oss standalone binary (see scripts/install_dbt_oss.sh). dagster-dbt
-# 0.29.x uses CLI mode (DbtCliResource) and does not require dbt-core as a
-# Python package.
 CURRENT_CONSTRAINTS: dict[str, str] = {
     # Core dependencies
     "dlt": ">=1.31.0,<2",
@@ -52,11 +48,14 @@ CURRENT_CONSTRAINTS: dict[str, str] = {
     "python-dotenv": ">=1.2.4",
     "azure-identity": ">=1.26.0",
     "azure-storage-file-datalake": ">=12.26.0",
-    "duckdb": ">=1.5.6,<1.6",
+    "duckdb": ">=2.0.0,<3",
     "deltalake": ">=1.6.6",
     "pyarrow": ">=25.0.0",
-    "sqlalchemy": ">=2.0.51",
+    "sqlalchemy": ">=2.1.5",
     "pymysql": ">=1.2.3",
+    # dbt: core capped at <1.13 (dagster-dbt 0.29.x limit); dbt-duckdb for the adapter
+    "dbt-core": ">=1.12.6,<1.13",
+    "dbt-duckdb": ">=1.11.0,<2",
     # Dagster extras
     "dagster": ">=1.13.26,<2",
     "dagster-webserver": ">=1.13.26,<2",
@@ -73,24 +72,24 @@ CURRENT_CONSTRAINTS: dict[str, str] = {
 # We keep floors so pip respects the minimum API surface we actually use.
 # Note: dlt<2, dagster<2, dagster-dbt<1 are *major* caps — kept intentionally
 # because 2.0 releases typically break APIs. Remove them here to probe.
-# dbt-core and dbt-duckdb are intentionally absent — the project uses the
-# dbt-oss standalone binary; no dbt Python package is installed.
 RELAXED_CONSTRAINTS: list[str] = [
     "dlt>=1.31.0",
     "requests>=2.34.2",
     "python-dotenv>=1.2.4",
     "azure-identity>=1.26.0",
     "azure-storage-file-datalake>=12.26.0",
-    "duckdb>=1.5.6",  # cap removed — see Azure-regression note below
+    "duckdb>=2.0.0",
     "deltalake>=1.6.6",
     "pyarrow>=25.0.0",
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.1.5",
     "pymysql>=1.2.3",
+    "dbt-core>=1.12.6",
+    "dbt-duckdb>=1.11.0",
     "dagster>=1.13.26",
     "dagster-webserver>=1.13.26",
     "dagster-dbt>=0.29.26",
     "pytest>=9.1.1",
-    "ruff>=0.17.0",
+    "ruff>=0.17.1",
     "mypy>=2.4.0",
     "types-requests",
     "pandas>=3.0.6",
@@ -105,19 +104,24 @@ COUPLING_NOTES = [
         "minor in lockstep. Check the dagster-dbt release notes before bumping.",
     ),
     (
-        "dbt-oss standalone binary ↔ dagster-dbt DbtCliResource",
-        "This project uses the dbt-oss standalone binary (no dbt Python package). "
-        "dagster-dbt 0.29.x uses DbtCliResource in CLI mode automatically. "
-        "When upgrading dagster-dbt, verify that DbtCliResource still works "
-        "without a dbt Python package installed.",
+        "dbt-core cap at <1.13",
+        "dagster-dbt 0.29.x hard-requires dbt-core <1.13. Do not remove this cap "
+        "until dagster-dbt is upgraded. Do NOT reinstall dbt-oss alongside dbt-core "
+        "— both ship the 'dbt' package namespace and trigger a NoneType/enabled "
+        "crash in dagster-dbt (issue #34215).",
     ),
     (
-        "duckdb >=1.6 — Azure/OneLake regression",
-        "DuckDB's built-in Delta writer has an Azure/OneLake regression in "
-        "versions >=1.6 (at the time this note was written). We export via "
-        "the 'deltalake' Python library (not DuckDB's writer), so the regression "
-        "does NOT block a duckdb bump — but verify with a real OneLake run before "
-        "shipping >=1.6 to production.",
+        "dbt-duckdb ↔ duckdb server",
+        "dbt-duckdb uses the Python duckdb package (2.0.0) to connect via quack. "
+        "dbt-oss 2.0.8 bundled DuckDB 1.5.4 (Rust) and could not deserialize "
+        "against a DuckDB 2.0 quack server — that is why dbt-oss was replaced.",
+    ),
+    (
+        "duckdb Delta writer vs deltalake library",
+        "DuckDB's built-in Delta writer has an Azure/OneLake regression in newer "
+        "versions. Exports use the 'deltalake' Python library (not DuckDB's writer), "
+        "so that regression does not block a duckdb bump — but verify with a real "
+        "OneLake run before shipping to production.",
     ),
 ]
 
@@ -215,11 +219,7 @@ def install_relaxed(venv: Path) -> tuple[bool, str]:
 
 
 def smoke_import(venv: Path) -> tuple[bool, str]:
-    """Run a quick import of the key packages inside *venv*.
-
-    dbt is a standalone binary (dbt-oss), not a Python package — it is not
-    imported here.  Check it separately via the CLI if needed.
-    """
+    """Run a quick import of the key packages inside *venv*."""
     code = (
         "import dlt, duckdb, dagster, deltalake, sqlalchemy; "
         "print('duckdb', duckdb.__version__); "

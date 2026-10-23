@@ -267,12 +267,13 @@ Update the firewall rules in the Hetzner Cloud console:
 ## Docker Compose Services
 
 The application stack is defined in [docker-compose.yml](../docker-compose.yml).
-Four services are configured; only `dagster` and `metabase` run persistently.
+Five services are configured; `duckdb_server`, `dagster` and `metabase` run persistently.
 
 | Service | Container name | Host port | Memory limit | Restart policy | Purpose |
 |---|---|---|---|---|---|
+| `duckdb_server` | `ddd-duckdb-server` | 9494 (`QUACK_SERVER_BIND`) | 8 GB | `unless-stopped` | The only DuckDB writer; quack server for all other containers |
 | `dagster` | `ddd-dagster` | 3000 | 6 GB | `unless-stopped` | Dagster webserver + daemon |
-| `metabase` | `ddd-metabase` | 3001 | 4 GB | `unless-stopped` | Metabase BI, reads DuckDB directly |
+| `metabase` | `ddd-metabase` | 3001 | 4 GB | `unless-stopped` | Metabase BI, a quack client of `duckdb_server` |
 | `run` | `ddd-run` | — | — | none | One-off Python module runner |
 | `backup` | `ddd-backup` | — | — | none | Backup and restore runner |
 
@@ -281,9 +282,11 @@ Both `dagster` and `metabase` have HTTP health checks configured (30 s interval,
 
 ### Docker socket access
 
-`dagster` and `backup` mount `/var/run/docker.sock` so they can stop/start sibling
-containers (e.g. Metabase is stopped before every dbt run to satisfy DuckDB's
-single-writer constraint). The socket GID must be set in `.env`:
+`backup` mounts `/var/run/docker.sock` so it can stop and start the container of
+the target it backs up (`ddd-duckdb-server` for `duckdb` and `ducklake`,
+`ddd-metabase` and `ddd-dagster` for their own data). Nothing is stopped for dbt
+runs: Metabase and Dagster are quack clients of `duckdb_server`. The socket GID
+must be set in `.env`:
 
 ```bash
 echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env

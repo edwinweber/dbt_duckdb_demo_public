@@ -5,7 +5,7 @@ historised Silver layer and a star-schema Gold layer. It covers the layer
 conventions, every macro, the change-detection (CDC) logic in depth, and the
 operational rules that keep Silver correct.
 
-For how the models are run (jobs, schedules, Metabase stop/start) see
+For how the models are run (jobs, schedules) see
 [daily_pipeline_execution.md](daily_pipeline_execution.md); for the reasons
 behind the design see [design_decisions.md](design_decisions.md).
 
@@ -15,7 +15,7 @@ behind the design see [design_decisions.md](design_decisions.md).
 
 | Layer | Materialization | Models | Built from |
 | --- | --- | --- | --- |
-| **Bronze** (`main_bronze`) | view | one view + one `_latest` view per entity, plus 3 utility views (`bronze_dates`, `bronze_dates_holidays`, `bronze_source_systems`) | the extraction files, read with `read_json_auto()` |
+| **Bronze** (`main_bronze`) | view | one view per entity, plus 3 utility views (`bronze_dates`, `bronze_dates_holidays`, `bronze_source_systems`) | the extraction files, read with `read_json_auto()` |
 | **Silver** (`main_silver`) | incremental table + view | one CDC table + one `_cv` view per entity | Bronze |
 | **Gold** (`main_gold`) | view | handcrafted dimensions/facts + generated `_cv` views | Silver `_cv` views and tables |
 | **data_engineering** | views (2 tables) | Dagster run history as a small star schema | Dagster's SQLite + step-failure NDJSON |
@@ -38,7 +38,6 @@ behind the design see [design_decisions.md](design_decisions.md).
 | `LKHS_date_valid_from` | SCD Type 2 validity start = timestamp in the file name |
 | `LKHS_cdc_operation` | `I` insert, `U` update, `D` delete |
 | `LKHS_date_inserted` | dbt run start (`run_started_at`) that wrote the row |
-| `LKHS_date_inserted_src` | earliest source date for the key (the entity's date column, or the file timestamp when there is none) |
 
 - **Storage.** In `SILVER_STORAGE_FORMAT=ducklake` mode the Silver tables are
   created in the attached `ducklake_catalog` database instead of the main
@@ -57,19 +56,16 @@ A Bronze model is two lines:
 ```
 
 The macro reads the dbt source (defined in `models/bronze/__sources*.yml` as
-`read_json_auto('<DATA_SOURCE>/<entity>/<entity>_*.json*', filename=True, union_by_name=true)`)
+`read_json_auto('<DATA_SOURCE>/<entity>/<entity>_*.json*', filename=True, union_by_name=true, timestampformat='iso')`)
 and returns every column except dlt's `_dlt_*` columns, plus `LKHS_filename`
 and `LKHS_source_system_code`. `DISTINCT` removes exact duplicate rows within a
 file.
 
 Because Bronze models are **views**, a new extraction file is visible to Silver
-immediately; re-running Bronze only redeploys the view definitions. Bronze
-storage is wherever `DANISH_DEMOCRACY_DATA_SOURCE` / `RFAM_DATA_SOURCE` point:
-the local filesystem or S3.
-
-The **`_latest` view** reads only the newest file of an entity (the
-lexicographically largest file name, which is also the newest timestamp). It is
-used for delete detection on a Silver `--full-refresh` (§3.4).
+immediately; re-running Bronze only redeploys the view definitions. A view opens
+every file in its folder, so processed files are archived from time to time
+(§3.6). Bronze storage is wherever `DANISH_DEMOCRACY_DATA_SOURCE` /
+`RFAM_DATA_SOURCE` point: the local filesystem or S3.
 
 ---
 
@@ -85,46 +81,150 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY src.LKHS_source_system_code, src.id
                            ORDER BY src.LKHS_date_valid_from DESC) = 1
 ```
 
+**Silver is the state.** A run reads only the Bronze files that are newer than
+the model's bookmark and compares them with Silver's latest version of each key.
+Processed Bronze files are never read again, so they can be archived (§3.6), and
+the cost of a run does not grow with the number of files. Silver is never rebuilt
+from Bronze: every Silver model sets `full_refresh=false`, so dbt ignores
+`--full-refresh` for them (§3.7).
+
+**Why.** The project first derived Silver from all Bronze files on every run:
+each version was compared with the key's previous version in Bronze. That made
+Silver reproducible from the files, but every run read and hashed the whole
+history, and DuckDB 2.0 reserves 32 MiB of memory for every JSON file a view
+opens. With Silver as the state, a run costs what its new files cost. The price
+is that Silver cannot be rebuilt from Bronze by a refresh; repairs go through
+backups or a replay (§3.7).
+
+**One run, step by step:**
+
+```text
+compile    bookmark (newest processed file) ──► stop on a late file ──► list the newer Bronze files ──► log them as pending
+run        read only those files ──► compare with Silver's latest version per key ──► stop on a mass delete ──► append I / U / D rows
+post-hook  pending ──► bookmark, pending files ──► processed          (only when the run succeeded)
+```
+
+**What this guarantees:**
+
+- No Bronze file is processed twice, and a run that fails leaves the bookmark
+  where it was, so it is simply repeated.
+- Several new files in one run give exactly the rows that one run per file
+  gives (§3.5).
+- A repeated run without new files writes nothing.
+- A file that arrives while a run is going is left for the next run.
+- A file that arrives late (older than the bookmark) stops the run instead of
+  being skipped without notice (§3.7).
+- A file that would delete too many keys, such as a truncated extraction, stops
+  the run before anything is written (the delete guard, §3.1).
+
+**What it does not guarantee.** Silver is exactly as complete as the extractions
+it is given. Its current state equals what the Bronze files say, not necessarily
+what the source holds today:
+
+- **Versions between extractions are not seen.** A key that changed twice
+  between two extractions gets one version, and `LKHS_date_valid_from` is the
+  extraction time, not the moment the source changed.
+- **Incremental entities only see changes inside a lookback window.** A run
+  extracts the rows changed in the last 31 days (DDD) or 365 days (Rfam). When no
+  extraction runs for longer than that, the changes in the gap are never
+  extracted, and nothing warns about it. The next full extraction (`_full`
+  file) repairs the state, dated at that extraction.
+- **Deletes of incremental entities appear only at a full extraction** (§3.4).
+- **A source row that changes without a new `opdateringsdato` (DDD) or `updated`
+  (Rfam)** is not in any incremental file; only a full extraction shows it.
+- **The first build of an incremental entity holds only the keys in its files.**
+  Start an incremental entity with a full extraction, or it holds only the keys
+  that changed recently.
+- **One row per key per file** is assumed: duplicates are detected by the grain
+  tests, not resolved (§3.10).
+
+Full extractions of the incremental entities are therefore the reconciliation:
+run them regularly, and after any gap in the daily runs. The runbook (§10) has
+the queries that compare Silver with the Bronze files.
+
+*Example from the development data (23 October 2026).* No extraction ran between
+7 July and 10 October; the 10 October run looked back to 9 September. Silver's
+current state matched every Bronze file exactly, but a fresh full extraction
+showed what the gap had hidden:
+
+| Entity | Source keys | In the source, not live in Silver | Live in Silver, deleted at the source | Different values |
+| --- | --- | --- | --- | --- |
+| `aktoer` | 18,424 | 2 | 1 | 86 |
+| `moede` | 14,011 | 32 | 0 | 32 |
+| `sagstrin` | 225,395 | 576 | 5 | 87,644 (a source-wide update in July) |
+
+One normal Silver run over the three `_full` files brought all three tables to an
+exact match with the source; the repaired versions carry 23 October as
+`LKHS_date_valid_from`. The Rfam tables `family` and `genome` show the first-build
+case: their first files were incremental, so Silver holds 540 of the 4,227
+families until a full extraction.
+
 There are two Silver macros because the two extraction types deliver different
 information:
 
 | | Full-extract entities | Incremental entities |
 | --- | --- | --- |
 | Entities | 12 DDD lookups + 5 Rfam (`clan`, `clan_membership`, `author`, `literature_reference`, `dead_family`) | 6 DDD (`aktoer`, `moede`, `sag`, `sagstrin`, `sagstrinaktoer`, `stemme`) + 2 Rfam (`family`, `genome`) |
-| Each Bronze file contains | **every** row | only rows changed in the lookback window (31 days DDD, 365 days Rfam by default) |
+| Each Bronze file contains | **every** row | only rows changed in the lookback window (31 days DDD, 365 days Rfam by default); a full extraction (`<entity>_<timestamp>_full.json`) holds every row |
 | Macro | `generate_model_silver_full_extraction` | `generate_model_silver_incr_extraction` |
-| Insert | key not in the previous file | first time the key appears in any file, or first version after a `D` |
-| Update | hash differs from the previous file | hash differs from the key's previous version |
-| Delete | key missing from the next file, on every run | only on `--full-refresh`, against `_latest` |
+| Insert | key not in the previous snapshot (Silver's state for the first new file) | key not in Silver, or deleted there |
+| Update | hash differs from the previous snapshot | hash differs from the key's latest version |
+| Delete | key in the previous snapshot, missing from the next | key alive in Silver and missing from a `_full` file that is the only new file (§3.4) |
 
 ### 3.1 Shared building blocks
 
-**Run modes.** "Incremental" names a kind of entity here; for dbt's run modes
-this document uses three terms:
+**Run modes.**
 
-| | First build | Normal run | Full refresh |
-| --- | --- | --- | --- |
-| When | the Silver table does not exist (also with `--full-refresh`) | `dbt build` / `run` on an existing table (`is_incremental()` is true) | `--full-refresh` on an existing table |
-| `generate_pre_hook_silver` | creates an empty `_last_file` | creates `_last_file` only if it is missing | drops and recreates `_last_file` empty |
-| `generate_pre_hook_silver_full_refresh` (incremental entities) | nothing | nothing | copies the newest version of every key and every `D` row to `_current_temp` |
-| Bronze files read | all | all | all |
-| Rows written | every version from all files | the versions from `LKHS_filename_previous` onwards that are not in the table yet | every version from all files |
-| Full-extract deletes | from every file pair | from the file pairs in that range | from every file pair |
-| Incremental deletes | none | none | carried `D` rows plus new deletes (§3.4) |
-| `D` rows used to recognise returning keys (incremental) | none | from the table | from `_current_temp` |
-| How the table is written | created | rows appended by column name; new source columns are added at the end | created anew, columns in Bronze order |
-| Post-hooks | `_last_file` = newest file and its predecessor | same | same, and `_current_temp` is dropped |
+| | First build | Normal run |
+| --- | --- | --- |
+| When | the Silver table does not exist | the table exists (`is_incremental()` is true); also with `--full-refresh`, which is ignored |
+| Bronze files read | all | the files newer than the bookmark |
+| Compared with | an empty state | Silver's latest version of each key |
+| Deletes | full-extract entities: between the files; incremental entities: none | full-extract entities: against the state and between the new files; incremental entities: from a `_full` file that is the only new file |
+| How the table is written | created | rows appended by column name; new source columns are added at the end |
 
-**`CTE_BRONZE`** reads the Bronze view and adds `LKHS_hash_value =
-sha256(<base_for_hash>)` and `LKHS_date_inserted_src`. Bronze selects `DISTINCT`
-rows without dlt's `_dlt_*` columns, so an exact duplicate of a row in one file
-is a single version.
+**The bookmark.** `<model>_last_file` holds one row: `LKHS_filename`, the newest
+Bronze file the model has processed, and `LKHS_filename_pending`, the newest file
+of the run in progress. When the model compiles, the macro `silver_files` lists
+the entity's files newer than the bookmark (a `glob()`, no file is opened), notes
+the newest of them as pending, and the model reads exactly those files: the
+filters on the file name are constants, so DuckDB skips the other files. A file
+that arrives during the run waits for the next one. The post-hook
+`silver_bookmark_post_hook` moves pending to `LKHS_filename` only after a
+successful run, so a failed run is simply repeated. The bookmark row is only
+ever updated in place, so a failure while it is written cannot leave it empty. A
+first build starts with an empty bookmark. On a normal run a missing or empty
+bookmark stops the run with an error: without it every Bronze file would be
+compared with Silver's state again.
 
-**The hash.** `generate_base_for_hash` reads the Bronze view's columns from
-`information_schema.columns` at compile time, in column order, and leaves out
+**The file log.** `<model>_files` has one row per Bronze file:
+`LKHS_filename`, `LKHS_status` and `LKHS_date_inserted`. The new files of a run
+are logged as `pending` at compile time and become `processed` in the post-hook
+`silver_files_post_hook`. A file that is skipped on purpose is `skipped`. A Silver
+table built before the log existed gets one on its next run, with the files then
+in the folder up to the bookmark as `seeded`. The log is the audit trail of what
+Silver has read, and it is how late files are found.
+
+**Files and validity.** `LKHS_date_valid_from` is the `YYYYMMDD_HHMMSS`
+timestamp in the file name (`parse_filename_ts`), so files must be named in
+timestamp order. The glob `<entity>_*.json*` matches the `.json`, `.jsonl` and
+`.json.jsonl` names that different dlt versions write. A file whose name sorts
+before the bookmark is never read. When such a file is in the folder but not in
+the log, it arrived late and the run stops (§3.7).
+
+**`CTE_BRONZE`** reads the new files through the Bronze view and adds
+`LKHS_hash_value = sha256(<base_for_hash>)`. Bronze selects `DISTINCT` rows
+without dlt's `_dlt_*` columns, so an exact duplicate of a row in one file is a
+single version.
+
+**The hash.** `generate_base_for_hash` reads the Bronze view's columns at compile
+time with `DESCRIBE SELECT * FROM <Bronze view>`, in column order, and leaves out
 the primary key and the columns in the dbt variable
 `bronze_columns_to_exclude_in_silver_hash` (`LKHS_date_inserted`,
-`LKHS_filename`). `LKHS_source_system_code` is included. Each column becomes
+`LKHS_filename`). `LKHS_source_system_code` is included. `DESCRIBE` binds the view
+against the files that are in its folder now; `information_schema` would still
+list the columns the view had when it was last created, which after archiving can
+include a column that no remaining file has (see §3.9). Each column becomes
 `COALESCE(col::VARCHAR, '<NULL>')` followed by the delimiter `]##[`, and
 `LKHS_hash_value` is the SHA-256 of the concatenation. For `sagskategori` that
 is:
@@ -137,297 +237,296 @@ sha256(CONCAT(COALESCE(kategori::VARCHAR, '<NULL>'), ']##[',
 
 A NULL and an empty string hash differently. A NULL and the literal text
 `<NULL>` hash the same, and so do two adjacent values that differ only in where
-`]##[` falls (`'x]##['`, `'y'` and `'x'`, `']##[y'`). A new source column is
-picked up automatically and changes the hash of every key that has a value in
-it (§3.9).
+`]##[` falls (`'x]##['`, `'y'` and `'x'`, `']##[y'`).
 
-**Files and validity.** `CTE_FILES` lists the entity's files with
-`read_text('<entity>_*.json*')`, which matches the `.json`, `.jsonl` and
-`.json.jsonl` names that different dlt versions write, and uses `LAG()`/`LEAD()`
-to know each file's predecessor and successor. `LKHS_date_valid_from` is the
-`YYYYMMDD_HHMMSS` timestamp in the file name (`parse_filename_ts`), so files
-must be named in timestamp order.
+**Silver's state.** `CTE_SILVER_LATEST` is the latest version of every key in the
+Silver table. Its hash is computed again with the same expression, over the
+Bronze view's current columns (`silver_state_columns`): a column that Silver does
+not have yet counts as NULL. The stored `LKHS_hash_value` is never compared, so a
+new source column does not make every key look changed (§3.9).
+
+**Column types.** `read_json_auto` infers each column's type from the files that
+are in the folder at the time. Archiving can therefore change a type: a DOUBLE
+column whose decimal values were all in archived files is read as BIGINT, and
+`3` would no longer hash like Silver's `3.0`. On a normal run `CTE_BRONZE`
+therefore casts every column that Silver already has to Silver's type
+(`silver_bronze_columns`) before hashing, and dbt logs a warning that names the
+columns whose types differ. A value that does not fit Silver's type (text in a
+BIGINT column) stops the run: that is a real type change, handled by hand
+(§3.9). With `timestampformat='iso'` the DDD dates are text in Bronze and Silver,
+so they do not drift.
 
 **`LKHS_` columns per kind of row:**
 
-| Column | `I` / `U` row | Full-extract `D` | Incremental new `D` | Carried `D` (incremental full refresh) |
-| --- | --- | --- | --- | --- |
-| `LKHS_filename` | file of the version | first file without the key | newest file | file of its `LKHS_date_valid_from`; the stored name if that file was pruned |
-| `LKHS_date_valid_from` | timestamp of that file | timestamp of the file without the key | timestamp of the newest file | unchanged |
-| business columns, `LKHS_hash_value` | that version | the deleted version's | the deleted version's | unchanged |
-| `LKHS_date_inserted` | start of the dbt run that wrote it; a full refresh rewrites it | same | start of the full refresh | unchanged |
-| `LKHS_date_inserted_src` | earliest value of the entity's date column for the key, or the timestamp of the first file with the key when there is no date column; computed by the run that writes the row | the deleted version's | the deleted version's | unchanged |
+| Column | `I` / `U` row | `D` against Silver's state | `D` between two new files (full-extract) |
+| --- | --- | --- | --- |
+| `LKHS_filename` | file of the version | the new file without the key | the next file, without the key |
+| `LKHS_date_valid_from` | timestamp of that file | timestamp of that file | timestamp of that file |
+| business columns, `LKHS_hash_value` | that version | the latest Silver version's, as stored | the version in the previous new file |
+| `LKHS_date_inserted` | start of the dbt run that wrote it | same | same |
 
-**Bookmark.** `<model>_last_file` holds one row: the newest processed file and
-its predecessor (`LKHS_filename_previous`, NULL after a first build with one
-file). The post-hook rebuilds it from the files present at the end of the run.
-A normal run still reads and hashes every Bronze file, because the comparisons
-need each key's previous version, but only writes rows from
-`LKHS_filename_previous` onwards. It re-evaluates `LKHS_filename_previous` and
-the newest processed file so that a file arriving slightly late is still
-processed (§3.8); that is also why the file before `LKHS_filename_previous`
-must stay in Bronze (§3.6).
+**Idempotency guard.** `NOT EXISTS (pk, LKHS_date_valid_from)` against the
+existing table drops any version that is already there.
 
-**Idempotency guard.** On a normal run, `NOT EXISTS (pk, LKHS_date_valid_from)`
-against the existing table drops every re-evaluated version that is already
-there, so no version is inserted twice.
+**The delete guard.** A truncated extraction (a page of the API that failed
+without an error, an empty export) looks like a mass delete. On a normal run
+`CTE_DELETE_GUARD` counts, per new file, the keys it deletes and the live keys it
+is compared with. The run stops when a file deletes every live key, or more than
+`silver_delete_guard_min_rows` (10) keys that are also more than
+`silver_delete_guard_fraction` (0.1) of the live keys. The check runs inside the
+insert (DuckDB's `error()`), so nothing is written and the bookmark stays where
+it was. The message names the file and the counts:
+
+```text
+silver_ddd_afstemning: afstemning_20261023_120000.json would delete 9536 of 10536 live keys
+(silver_delete_guard_fraction 0.1, silver_delete_guard_min_rows 10). Check the file; if the
+deletes are real, run this model once with --vars '{silver_delete_guard: false}'.
+```
+
+When the source really deleted that many rows, run Silver once with the guard
+off: `--vars '{silver_delete_guard: false}'` for dbt,
+`--no_silver_delete_guard` for `dbt_build_with_unique_logfile`, or
+`delete_guard: false` in the Launchpad config of the Silver assets. The
+thresholds are dbt variables in `dbt_project.yml`. A first build has no guard:
+its deletes come from history that is already known.
 
 ### 3.2 Full-extract entities
 
-Every file is a full snapshot, so consecutive files can be compared directly:
+Every file is a complete snapshot. The new files form a chain that starts at
+Silver's state; each snapshot is compared with the one before it:
 
 ```text
-file N-1 ──LEFT JOIN on pk──► file N ──LEFT JOIN on pk──► file N+1
-  key not in N-1          → I            key in N but not in N+1 → D
-  key in N-1, hash differs → U           (timestamped with file N+1)
+Silver's state ──► new file 1 ──► new file 2 ──► …
+  key not in the previous snapshot           → I   (also a key that comes back after a D)
+  key in it, hash differs                     → U
+  key in the previous snapshot, not in this   → D   (as of this file)
 ```
 
-Every key that was in the previous file but is missing from the newest file
-therefore gets a `D` as soon as the newest file is processed, with its
-timestamp and name. A key that is still present in the newest file can only be
-deleted by a later file.
+The state contains the keys whose latest version is not a `D`, so a key that
+comes back after a delete is not in it and gets an `I`. A key missing from
+several consecutive snapshots gets one `D`, at the first. A `D` carries the
+content of the version it deletes. A first build starts from an empty state and
+runs the same chain over all files.
 
-A key missing from several consecutive files gets one `D`, at the first file
-without it; in the following pairs it is absent from both files. When it comes
-back, it is not in the previous file, so it is an `I` again (`I1 D2 I4` for a
-key missing from files 2 and 3). The `D` row carries the content of the version
-it deletes. Because every delete is derived from Bronze file pairs, a
-`--full-refresh` rebuilds all of them and needs no full extraction first.
+Example: Silver holds keys A, B and C (all inserted on day 1); two new snapshots
+arrive.
+
+| | State | Day 2 | Day 3 | Rows written |
+| --- | --- | --- | --- | --- |
+| A | present | unchanged | changed | `U3` |
+| B | present | missing | back | `D2`, `I3` |
+| C | present | missing | missing | `D2` |
+| N | – | new | unchanged | `I2` |
 
 ### 3.3 Incremental entities
 
-A file only contains changed rows, so "missing from the next file" means
-nothing. Instead the macro takes the previous hash **for the same key** across
-the whole file history:
+A file only contains changed rows. A key's first version among the new files is
+compared with its latest Silver version; a later version in the same run with
+the version before it:
 
-```sql
-LAG(LKHS_hash_value) OVER (PARTITION BY id ORDER BY LKHS_filename)
--- NULL → I;  different → U;  equal → no row
+```text
+key not in Silver, or its latest version is a D   → I
+hash differs                                       → U
+equal                                              → no row
 ```
 
 Because the lookback windows overlap, the same unchanged row appears in many
-files; equal hashes produce no Silver row, so the overlap costs nothing.
-
-**Keys that come back after a delete.** `D` rows of incremental entities are
-written by a `--full-refresh` (§3.4) and are not in Bronze, so `LAG()` does not
-see them. The macro therefore also reads the `D` rows already in Silver: from
-the table itself on a normal run, from `_current_temp` on a full refresh. A
-Bronze version is an `I` when Silver has a `D` for the key between the key's
-previous Bronze version and this one, whatever its hash. A key can be deleted
-and come back any number of times:
+files; equal hashes produce no Silver row, so the overlap costs nothing. A key
+can be deleted (§3.4) and come back any number of times, in a plain or a
+`_full` file:
 
 ```text
-F1 key present → I    F2 (complete) key absent, --full-refresh → D
-F3 key back, same hash → I    F4 (complete) absent, --full-refresh → D    F5 back → I
+F1 key present → I    F2 (_full) key absent → D    F3 (plain) key back, same hash → I
+F4 (_full) key absent → D    F5 key back → I
 ```
 
-### 3.4 Deletes of incremental entities (`--full-refresh` only)
+The rows in `silver_ddd_sag` for one key after five runs (hashes shortened):
+
+| `LKHS_filename` | `LKHS_date_valid_from` | `LKHS_cdc_operation` | `titel` | `LKHS_hash_value` | Why |
+| --- | --- | --- | --- | --- | --- |
+| `sag_20260901_020000.json` | 2026-09-01 02:00 | `I` | Lov om A | `3f2a…` | new key |
+| `sag_20260902_020000.json` | 2026-09-02 02:00 | `U` | Lov om A, ændret | `9c41…` | title changed |
+| `sag_20260903_020000.json` | – | – | – | – | unchanged in the overlap: no row |
+| `sag_20260915_020000_full.json` | 2026-09-15 02:00 | `D` | Lov om A, ændret | `9c41…` | missing from the full extraction; the content and hash of the version it deletes |
+| `sag_20260920_020000.json` | 2026-09-20 02:00 | `I` | Lov om A, ændret | `9c41…` | back with the same content: `I`, not `U` |
+
+`sag_cv` returns the last row. Gold dimensions read every row and derive
+`LKHS_date_valid_to` from the next `LKHS_date_valid_from`.
+
+### 3.4 Deletes of incremental entities (`_full` files)
 
 A record deleted at the source simply stops appearing in incremental files, so
-normal runs cannot see deletes. They are detected on a `--full-refresh`:
-
-1. Pre-hook `generate_pre_hook_silver_full_refresh` copies the newest version
-   of every key **and every `D` row** of the existing table into
-   `<model>_current_temp`.
-2. The table is rebuilt from the full Bronze history (all I/U rows, with the
-   rule for returning keys from §3.3), plus two extra branches:
-   - **Carried deletes:** every `D` row from `_current_temp`. Its
-     `LKHS_filename` is set to the Bronze file of its `LKHS_date_valid_from`;
-     if that file was pruned, the stored name is kept.
-   - **New deletes:** per key, the newest version, rebuilt from Bronze or, for
-     a key no longer in Bronze, taken from `_current_temp`. When that version
-     is not a `D` and the key is **absent from `bronze_<entity>_latest`**, a
-     `D` row is added with the newest file's name and timestamp, and the
-     content of the deleted version.
-3. The post-hook drops `_current_temp`.
-
-All `D` rows are needed, not only the newest per key: each one is history that
-cannot be rebuilt from Bronze, and each one marks the following return as an
-`I`. The three branches are combined with `UNION ALL BY NAME`, because after a
-new source column the existing Silver rows have that column at the end, while
-the rebuilt rows have it in its Bronze position. Repeating a full refresh
-reproduces the table (except `LKHS_date_inserted`).
-
-> **Run a full extraction first.** `_latest` is a single file. After a normal
-> daily run that file holds only the last 31 days of changes, and a
-> `--full-refresh` would mark every other record as deleted (see
-> [runbook §7](runbook.md#7-silver-needs-a-rebuild) for the repair). Before a full
-> refresh of incremental entities, extract them with an early start date so the
-> newest file is a complete snapshot:
->
-> ```bash
-> python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data --date_to_load_from 1900-01-01
-> python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam --date_to_load_from 1900-01-01
-> ```
->
-> (In Dagster: set `date_to_load_from` in the Launchpad config.) A full refresh
-> of a table that does not exist yet, such as after switching
-> `SILVER_STORAGE_FORMAT`, skips the delete branch and is safe.
-
-### 3.5 Batch and sequential runs give the same history
-
-Extractions and Silver runs can be interleaved freely. Five files processed in
-one Silver run produce exactly the rows five separate runs would have produced:
-the full-extract macro evaluates every consecutive file pair independently, the
-incremental macro's `LAG()` runs over the whole history, and the `NOT EXISTS`
-guard drops anything already written. Example for one key in an incremental
-entity:
+only a full extraction can show a delete. Full extractions of incremental
+entities are marked in the file name:
 
 ```text
-id=42 in F1: LAG = NULL     → I
-id=42 in F2: LAG = hash_F1  → U   (changed)
-id=42 in F3: LAG = hash_F2  → —   (unchanged)
-id=42 in F4: LAG = hash_F2  → U   (changed again)
-Silver: [I, U, U] — whether Silver ran once after F4 or after every file
+aktoer_20260901_020000.json         incremental, never deletes
+aktoer_20260901_020000_full.json    full extraction, holds every key
 ```
 
-### 3.6 Never delete Bronze files arbitrarily
+The extraction scripts and the Dagster assets add `_full` when
+`date_to_load_from` is `1900-01-01` or earlier (`FULL_EXTRACT_DATE` in
+`string_utils.py`). Full-extract entities are not marked: each of their files is
+complete, and their deletes come from the snapshots (§3.2).
 
-Both macros compare each version with the key's previous version **in
-Bronze**, not in Silver. That keeps Silver a function of the files on storage:
-whatever happened, a `--full-refresh` rebuilds it (§3.4, §3.8). The price is
-that Bronze files cannot be deleted at will. A deleted file is simply missing
-from the comparisons: delete F2 and F3 from F1…F5, and F4's predecessor becomes
-F1, so rows first seen in F2 look new in F4 and are inserted a second time.
+**The procedure.** A `_full` file must be the only new file:
 
-**The rule (both macros).** Files can be deleted as long as the oldest
-remaining file
+1. Process the waiting files first (a normal Silver run).
+2. Run the full extraction (`--date_to_load_from 1900-01-01`; in Dagster, set
+   `date_to_load_from` in the Launchpad config).
+3. Run Silver again. Every key whose latest Silver version is not a `D` and that
+   is missing from the file gets a `D`, with the file's name and timestamp and the
+   content of that latest version. Keys in the file whose latest version is a `D`
+   get an `I`.
 
-1. is **complete**: any file of a full-extract entity, a full extraction
-   (§3.4) for an incremental entity; and
-2. is **older than `LKHS_filename_previous`** in the model's `_last_file`
-   table.
+If a `_full` file is new together with other files, the run stops with an error
+that lists them: move the `_full` file aside, run Silver, put it back and run
+again. Plain incremental files have no such limit (§3.5).
 
-**Why complete.** Every later comparison starts at the oldest remaining file.
-A key that is not in it has its previous version in a deleted file, so its next
-version is compared with nothing and becomes an `I`: an `I` instead of a `U`
-when it changed, a second `I` with unchanged content when it did not. A
-complete file contains every key.
+- A plain file never deletes, even when it happens to hold every key.
+- A first build writes no deletes for incremental entities, also when a `_full`
+  file is among the files.
+- Run full extractions regularly: a deleted key is only seen at the next one.
 
-**Why older than `LKHS_filename_previous`.** A normal run does not only write
-rows from new files. It writes rows from `LKHS_filename_previous` onwards, so
-that a file that arrives slightly late is still processed (§3.8). Evaluating a
-file a second time is normally harmless: its versions are either in Silver
-already (the `NOT EXISTS` guard drops them) or equal to the version before them
-(no row). In the oldest remaining file, however, no key has a previous version
-in Bronze, so every row is an `I`, and the guard does not stop it: Silver has
-the key, but not at this file's `LKHS_date_valid_from`. The oldest remaining
-file must therefore be outside the range a normal run evaluates again.
+> **Only a complete extraction may be named `_full`.** A `_full` file deletes every
+> key it lacks. The next real full extraction brings those keys back as `I`, so
+> `_cv` and Gold are correct again, but the false `D` rows and the `I` rows after
+> them stay in the history. To remove them, restore the Silver backup (`duckdb`
+> or `ducklake` target) from before that run, take `_full` out of the file name and
+> run Silver again. Full extractions from before the `_full` naming have no marker;
+> `python -m ddd_python.ddd_utils.mark_full_extracts` (a plan, then `--apply`) finds
+> them in the extraction run log or by size. Renaming them has no effect on a
+> Silver table that already processed them; it matters for a replay (§3.7).
 
-Example: F3 is a full extraction, F1 and F2 are deleted.
+### 3.5 Several files in one run
 
-| Files processed after F3 | `_last_file` (newest, `LKHS_filename_previous`) | Next normal run writes rows from | Result |
-| --- | --- | --- | --- |
-| none | F3, F2 | F2, so F3 is evaluated again | an extra `I3` for every key |
-| one (F4) | F4, F3 | F3 | an extra `I3` for every key |
-| two (F4, F5) | F5, F4 | F4 | correct |
+Extractions and Silver runs can be interleaved freely; only a `_full` file of an
+incremental entity must be the only new file (§3.4). Five files processed in one
+run give the same rows as five runs: the full-extract macro compares each new
+snapshot with the one before it, starting at Silver's state, and the incremental
+macro compares a key's first new version with Silver and the next ones with the
+version before them. Example for one key in an incremental entity:
 
-Hence "at least two files processed after the full extraction". Only processed
-files count: a file that has been extracted but not yet run through Silver
-does not move the bookmark. Check the bookmark before deleting anything (in
-DuckLake mode the table is in `ducklake_catalog.main_silver`):
-
-```sql
-SELECT LKHS_filename, LKHS_filename_previous
-FROM   main_silver.silver_ddd_stemme_last_file;
--- delete only files older than a complete file that is older than LKHS_filename_previous
+```text
+id=42 in Silver: I, hash_0
+id=42 in F1: compared with hash_0  → U   (changed)
+id=42 in F2: compared with hash_F1 → —   (unchanged)
+id=42 in F3: compared with hash_F1 → U   (changed again)
+Silver: I, U1, U3 — whether Silver ran once after F3 or after every file
 ```
 
-In practice:
+For a full-extract entity the chain does the same: in the example of §3.2, a run
+over days 2 and 3 together writes `U3`, `D2`, `I3`, `D2` and `I2`, exactly what a
+run after day 2 and another after day 3 write. The tests check both paths against
+each other and against a first build over all files (§3.11).
 
-- **Full-extract entities:** every file is complete, so keep the newest
-  processed file, `LKHS_filename_previous` and the file before it.
-- **Incremental entities:** keep a full extraction after which at least two
-  newer files have been processed, and everything after it.
+### 3.6 Archiving Bronze
 
-Further points:
+Silver reads only the files newer than its bookmark, so processed files are not
+needed for any later run. They do cost: every Bronze view opens all files in its
+folder, and DuckDB 2.0 reserves 32 MiB of its memory limit for each JSON file it
+opens, whatever its size (the reason for the server's `QUACK_SERVER_MEMORY_LIMIT`).
+Archiving processed files keeps the views small.
 
-- **Deleting more** gives extra `I` rows. If the oldest remaining file is
-  evaluated again, every key in it gets an `I` (1,253 of 1,253 keys in a test).
-  If it is not complete, a key whose previous version was in a deleted file
-  gets an `I` instead of a `U` when it changes, and a second `I` with unchanged
-  content when it appears unchanged, for example in a later full extraction
-  (1,251 of 1,253 keys in a test).
-- **Silver becomes the only full history** once Bronze files are gone. Back it
-  up (the platform backup does) before pruning Bronze.
-- **Why not compare with Silver instead?** The newest Silver row per key plus
-  a complete file would be enough for a normal run, and the rule above would
-  disappear. But Silver would then be state rather than a result: a wrong row
-  would be compared against from then on instead of being rebuilt away by a
-  full refresh, and the stored hashes would have to stay comparable after
-  source column changes (§3.9). The project keeps Bronze as the reference and
-  accepts the pruning rule.
-- **A `--full-refresh` rebuilds history only from the remaining files.**
-  Versions that exist only in pruned files are lost, and a key's first version
-  moves to the first remaining file that contains it: `I1 U2 U3` becomes
-  `I2 U3` after pruning file 1, and a key unchanged since file 1 gets its `I`
-  from the next complete file. For incremental entities the `D` rows survive,
-  because they are carried forward from Silver. After pruning, avoid full
-  refreshes, or restore the pruned files first; for incremental entities the
-  full extraction rule of §3.4 still applies.
+Archiving is a separate step that runs on demand, not in the daily schedule:
+`python -m ddd_python.ddd_utils.archive_bronze`, or the Dagster job
+`bronze_archive_job` (group `maintenance`).
 
-### 3.7 Why helper tables are database-qualified
+- Per entity it archives every file older than the newest processed file (the
+  bookmark) whose timestamp is older than `--keep-days` (default 7). The newest
+  processed file always stays, so the Bronze views have a file to read and the
+  bookmark points at a file that exists. Unprocessed files are never touched.
+- The command line defaults to a dry run that prints the plan; `--execute` moves
+  the files. The Dagster job moves them unless `dry_run` is set in its config.
+- Each file is copied to `BRONZE_ARCHIVE_DIR/<source>/<entity>/` (optionally
+  gzip-compressed), checked against its SHA-256 and listed in `MANIFEST.ndjson`
+  before it is removed from Bronze. `--restore` copies archived files back,
+  checked against the manifest.
+- Silver now holds the only complete history outside the archive. Back up Silver
+  (the platform backup does) and keep the archive off the server.
 
-`_last_file` and `_current_temp` are always written as
-`{{ this.database }}.{{ this.schema }}.{{ this.name }}_…`. In DuckLake mode the
-model lives in `ducklake_catalog`, and DuckDB forbids one transaction from
-writing to two databases, so the helpers must sit next to the model. In `duckdb`
-mode `this.database` is simply the main database.
+### 3.7 No rebuild from Bronze
 
-### 3.8 Files that arrive late
+A Silver table is the result of all runs so far, not of the files that happen
+to be in Bronze, so it is never rebuilt automatically:
 
-Normal runs assume Bronze files arrive in timestamp order. A file whose
-timestamp is older than the newest processed file, such as a restored or
-re-copied extraction, is handled like this by both macros:
+- `--full-refresh` is ignored by every Silver model (`full_refresh=false`).
+- A wrong Silver table is repaired by restoring the `duckdb` (or `ducklake`)
+  backup from before the problem and running Silver again over the Bronze files
+  after it.
+- A late file (older than the bookmark, not in the `_files` log) is never read,
+  and the run stops with an error that lists it. Usually a later file covers its
+  content: the next snapshot of a full-extract entity, or the overlapping
+  lookback window of an incremental one. Then log it as skipped with one run with
+  `--vars '{silver_skip_late_files: true}'` (`--skip_late_files` for
+  `dbt_build_with_unique_logfile`, `skip_late_files: true` in the Launchpad), and
+  later runs go on. To include it in the history instead, restore Silver from
+  before its timestamp and run again with the file in place. The archive script
+  leaves late files where they are.
+- A deliberate rebuild is a replay: drop the Silver table, its `_last_file` and its `_files`,
+  restore the archived files and run Silver again. Full-extract entities can
+  process all files in one first build. Incremental entities must be replayed in
+  segments, each `_full` file on its own (§3.4), or their deletes are not
+  recreated. `LKHS_date_inserted` then holds the replay's run times.
 
-- **Newer than the bookmark's predecessor** (`LKHS_filename_previous` in
-  `_last_file`): processed normally; the history is the same as if the file had
-  arrived in order.
-- **Older than that:** its own rows are skipped, but the next file is now
-  compared with it, so Silver can get a `U` whose content equals the version
-  before it while the real change is missing (`I1 U3` instead of `I1 U2 U3`).
-  A `--full-refresh` rebuilds the correct history; for incremental entities run
-  a full extraction first (§3.4).
+### 3.8 Why the helper tables are database-qualified
+
+`_last_file` and `_files` are always written as
+`{{ this.database }}.{{ this.schema }}.{{ this.name }}_last_file` (and `_files`). In
+DuckLake mode the model lives in `ducklake_catalog`, and DuckDB forbids one
+transaction from writing to two databases, so the helpers must sit next to the
+model. In `duckdb` mode `this.database` is simply the main database.
 
 ### 3.9 Changes to the source columns
 
-The hash covers every business column, so a column change in the source shows
-up as new versions:
+The hash covers every business column. Silver's latest version is hashed again
+with the current columns (§3.1), so:
 
-- **A new field:** the next file gives a `U` for every key that has a value in
-  it; keys where it is NULL keep their hash. A normal run adds the column at the
-  end of the Silver table (`on_schema_change='append_new_columns'`); a full
-  refresh puts it in its Bronze position.
-- **A field the source stops sending:** the column stays in Bronze
-  (`union_by_name`) and is NULL in the new files, so the next file gives a `U`
-  for every key that had a value.
-- Renamed columns and type changes need a deliberate change and a
-  `--full-refresh` (see ADR-2 in [design_decisions.md](design_decisions.md)).
+- **A new field:** the next file gives a `U` only for keys that have a value in
+  it; for the others both hashes count it as NULL. A normal run adds the column at
+  the end of the Silver table (`on_schema_change='append_new_columns'`).
+- **A field the source stops sending:** as long as older files with the field are
+  in the Bronze folder, `union_by_name` keeps the column (NULL in the new files),
+  and every key that had a value gets a `U`. Once those files are archived, the
+  column leaves the Bronze view and is no longer compared; Silver keeps it. The
+  same happens to a column that is NULL in every remaining file: dlt writes a
+  column only into files where a row has a value (`folketingstidendeurl` of
+  `sagstrin` after the first production archive). It comes back with the first
+  file that has a value again.
+- **A type that Bronze infers differently** (for example after archiving): Bronze
+  is cast to Silver's type, so no key looks changed (§3.1).
+- Renamed columns and real type changes need a deliberate change of the Silver
+  table itself, for example with `ALTER TABLE`, because it is not rebuilt (see
+  ADR-2 in [design_decisions.md](design_decisions.md)). A value that does not fit
+  Silver's type stops the run until that is done.
 
 ### 3.10 All cases at a glance
 
-Results per key. Full-extract entities behave the same on a normal run and on a
-full refresh, except where noted.
+Results per key.
 
-| Case | Full-extract entities | Incremental, normal run | Incremental, `--full-refresh` |
-| --- | --- | --- | --- |
-| New key | `I` | `I` | `I` |
-| Key unchanged (also in overlapping lookback windows) | no row | no row | no row |
-| Key changed | `U` | `U` | `U` |
-| Key missing from a file | `D` at the first file without it, with the content of the last version (§3.2) | no row; an incremental file only holds changes | `D` as of the newest file if the key is missing from it, with that file's name (§3.4) |
-| Key still missing after its `D` | no row | no row | no row; the `D` is carried forward |
-| Key back after a `D`, same or changed content | `I` | `I` (§3.3) | `I` (§3.3) |
-| Deleted and back several times | every `D` and `I` | every return `I` | every `D` carried forward, every return `I` |
-| Several new files in one run | same rows as one run per file (§3.5) | same | same |
-| Repeated without new files | no new rows | no new rows | same table, except `LKHS_date_inserted` |
-| First build (table does not exist) | all `I`, `U` and `D` from the Bronze files | all `I` and `U`; no deletes | same as normal run |
-| Newest file is an incremental extract | – | – | false `D` for every key not in it; run a full extraction first (§3.4, [runbook §7](runbook.md#7-silver-needs-a-rebuild)) |
-| Late file, newer than the bookmark's predecessor | processed in order (§3.8) | processed in order | rebuilt in order |
-| Late file, older than the bookmark's predecessor | skipped; can add a `U` with unchanged content; a full refresh repairs it (§3.8) | same as full-extract | rebuilt correctly |
-| Bronze files pruned | normal runs unaffected if the newest processed file, `LKHS_filename_previous` and the file before it are kept, otherwise extra `I` rows; a full refresh loses the history in the pruned files (§3.6) | unaffected if the remaining files start with a full extraction older than `LKHS_filename_previous`, otherwise extra `I` rows (§3.6) | history in the pruned files lost; `D` rows kept (§3.6) |
-| Source adds a field | `U` for every key with a value in it (§3.9) | same | same |
-| Source stops sending a field | `U` for every key that had a value (§3.9) | same | same |
-| Same key twice in one file, different content | two rows with the same `(key, LKHS_date_valid_from)` when both differ from the previous version | can give two rows for the same `(key, LKHS_date_valid_from)` | same |
+| Case | Full-extract entities | Incremental entities |
+| --- | --- | --- |
+| New key | `I` | `I` |
+| Key unchanged (also in overlapping lookback windows) | no row | no row |
+| Key changed | `U` | `U` |
+| Key missing from a file | `D` as of that file, with the content of the last version (§3.2) | no row from a plain file; `D` when a `_full` file that is the only new file lacks it, with the content of the latest Silver version (§3.4) |
+| Key still missing after its `D` | no row | no row |
+| Key back after a `D`, same or changed content | `I` | `I`, in a plain or a `_full` file (§3.3) |
+| Deleted and back several times | every `D` and `I` | every `D` and every return `I` |
+| Several new files in one run | same rows as one run per file (§3.5) | same, but a `_full` file must be the only new file (§3.4) |
+| `_full` file new together with other files | – | the run stops with an error; nothing is written |
+| Repeated without new files | no new rows | no new rows |
+| `--full-refresh` | ignored (§3.7) | ignored |
+| First build (table does not exist) | all `I`, `U` and `D` from the Bronze files | all `I` and `U`; no deletes |
+| `_full` file that is not complete | – | false `D` for every key not in it; the next full extraction brings them back; restore the backup to remove them (§3.4) |
+| A file deletes every live key, or more than 10 keys and 10 % of them | the run stops, nothing written; run once with `silver_delete_guard: false` when the deletes are real (§3.1) | same, for a `_full` file |
+| Late file, older than the bookmark | the run stops; logged as skipped with `silver_skip_late_files: true`, never read (§3.7) | same |
+| Processed Bronze files archived | no effect (§3.6) | no effect |
+| Source adds a field | `U` only for keys with a value in it (§3.9) | same |
+| Source stops sending a field | `U` for every key that had a value, while older files with the field are in Bronze (§3.9) | same |
+| Bronze infers a column type differently | no row: Bronze is cast to Silver's type (§3.1) | same |
+| A value that does not fit Silver's column type | the run stops; alter the Silver column (§3.9) | same |
+| Same key twice in one file, different content | can give two rows with the same `(key, LKHS_date_valid_from)` | same |
 
 The source must deliver one row per key per file; duplicates are detected, not
 handled. The grain test `silver_no_duplicate_id_date_valid_from` covers all 18
@@ -438,20 +537,23 @@ Rfam tables have no grain test (improvement 5 in
 ### 3.11 How this is verified
 
 [`tests/test_dbt_silver.py`](../tests/test_dbt_silver.py) runs the real Silver
-macros with dbt-oss on copies of the CI sample; every test gets its own Bronze
+macros with dbt (dbt-core) on copies of the CI sample; every test gets its own Bronze
 directory, DuckDB file and DuckLake catalog. It covers every row of §3.10 and
 the building blocks of §3.1, for both macros:
 
 | Area | Tests |
 | --- | --- |
 | Hash: columns, order, NULL token, delimiter | `test_hash_is_sha256_of_the_business_columns_in_bronze_order`, `test_hash_null_token_and_delimiter` |
-| File names, bookmark, duplicate rows, `LKHS_` columns | `test_file_name_variants_and_bookmark`, `test_identical_rows_in_one_file_are_one_version`, `test_source_system_code_and_date_inserted`, `test_date_inserted_src_with_a_date_column`, `test_date_inserted_src_without_a_date_column` |
-| Full-extract lifecycle (`sagskategori`): new, unchanged, changed, missing, missing twice in a row, back unchanged and changed, two delete cycles; one run per file, four files in one normal run, a first build with all files; DuckDB and DuckLake | `test_full_extract_*` |
-| Incremental lifecycle (`stemme`, Rfam `family`): the same with deletes by full refresh; one run per file, two files in one full refresh, two files in one normal run; DuckDB and DuckLake | `test_incremental_*` |
-| Incremental full refresh: new table, file name and content of new deletes, false deletes and their repair | `test_full_refresh_of_a_new_table_writes_no_deletes`, `test_new_delete_has_the_newest_file_and_the_deleted_content`, `test_false_deletes_and_their_repair` |
-| Late files (§3.8) | `test_late_file_newer_than_the_bookmarks_predecessor`, `test_late_file_older_than_the_bookmarks_predecessor` |
-| Pruning (§3.6) | `test_full_extract_pruning`, `test_incremental_pruning_down_to_a_full_extraction`, `test_incremental_pruning_without_a_full_extraction`, `test_full_refresh_after_pruning_keeps_only_the_remaining_history` |
-| Source column changes (§3.9) | `test_new_source_column_then_full_refresh`, `test_dropped_source_field` |
+| File names, bookmark, file log, duplicate rows, `LKHS_` columns | `test_file_name_variants_and_bookmark`, `test_identical_rows_in_one_file_are_one_version`, `test_source_system_code_and_date_inserted` |
+| Full-extract lifecycle (`sagskategori`): new, unchanged, changed, missing, missing twice in a row, back unchanged and changed, two delete cycles; one run per file, four files in one normal run, a first build with all files, an ignored full refresh; DuckDB and DuckLake | `test_full_extract_*` |
+| Incremental lifecycle (`stemme`, Rfam `family`): the same with deletes from `_full` files, each processed on its own, a repeated run and an ignored full refresh; DuckDB and DuckLake | `test_incremental_*` |
+| Incremental deletes: a first build writes none, a plain file never deletes, the file name and content of a delete, a key back before the next `_full` file, several plain files in one run with returning keys, a `_full` file new together with another file stops the run, a `_full` file marked by mistake | `test_a_first_build_writes_no_deletes`, `test_a_plain_file_never_deletes_even_when_it_is_complete`, `test_new_delete_has_the_full_file_and_the_deleted_content`, `test_a_key_that_is_back_before_the_next_full_file_is_not_deleted`, `test_several_plain_files_in_one_run`, `test_a_full_file_with_other_files_to_process_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
+| Delete guard (§3.1): a truncated snapshot on its own and after a good file in the same run, the guard turned off | `test_a_truncated_snapshot_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
+| Late files (§3.7): the run stops, then skips them with `silver_skip_late_files` | `test_a_late_file_stops_the_run_until_it_is_skipped` |
+| A Silver table from an older version: old `_last_file` columns converted, the log seeded | `test_a_silver_table_from_an_older_version_is_migrated` |
+| Column types (§3.1): a type Bronze infers differently after archiving, a value that does not fit | `test_a_type_bronze_infers_differently_after_archiving_gives_no_false_updates`, `test_a_value_that_does_not_fit_silvers_type_stops_the_run` |
+| Archiving (§3.6): processed files removed, later files compared with Silver, deleted keys back with old or changed content, an ignored full refresh; DuckDB and DuckLake | `test_processed_files_can_be_archived` |
+| Source column changes (§3.9), also in a `D` row read from Silver | `test_new_source_column_then_full_refresh`, `test_dropped_source_field`, `test_a_delete_lines_up_with_a_new_source_column` |
 | A key twice in one file | `test_same_key_twice_in_one_file` |
 
 Besides the expected histories, the tests assert these invariants of a Silver
@@ -460,53 +562,18 @@ timestamp in `LKHS_filename` equals `LKHS_date_valid_from`; a `D` carries the
 hash of the version it deletes; a `U` differs from the version before it; no
 `D` directly after a `D` and no `I` directly after an `I` or `U`; every key
 starts with `I`; `LKHS_source_system_code` is correct; `_cv` holds exactly the
-newest version of every key. The lifecycles also check that one run per file,
-several files in one run and a full refresh give identical tables. Run them
-with `DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py` (about four
-minutes); CI runs them in the `dbt build (sample data)` job.
+newest version of every key. The full-extract lifecycle also checks that one
+run per file, several files in one run and a first build give identical tables.
+Run them with `DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py` (about
+20 minutes); CI runs them in the `dbt build (sample data)` job.
 
-**Defects fixed in commit `498482d`.** The same tests run against the macros of
-the commit before (`2dc3b83`), which differ only in
-`generate_model_silver_incr_extraction` and
-`generate_pre_hook_silver_full_refresh`: 66 pass and 25 fail. Every
-full-extract test passes on both versions; every failure is in the delete
-handling of incremental entities. Final histories of the incremental lifecycle
-(`stemme`, one run per file):
-
-| Key | Old macros | Current macros |
-| --- | --- | --- |
-| A: back unchanged after a delete | `I1 D2` | `I1 D2 I3` |
-| B: back changed after a delete | `I1 U3` | `I1 D2 I3` |
-| C: back, then deleted again | `I1 D2` | `I1 D2 I3 D4` |
-| G: back unchanged, changed later | `I1 U5` | `I1 D2 I3 U5` |
-| J: deleted and back twice | `I1 D2` | `I1 D2 I3 D4 I5` |
-| D, E, H: no return | identical | identical |
-
-The failures, by defect:
-
-1. **A key back unchanged after a `D` stayed deleted** (A, C, G, J above). In
-   `test_false_deletes_and_their_repair` the falsely deleted keys stay `D`
-   after the full extraction (`I1 D2` instead of `I1 D2 I3`), so the repair in
-   [runbook §7](runbook.md#7-silver-needs-a-rebuild) did not work.
-2. **A full refresh dropped a `D` that was no longer a key's newest row** (B,
-   G), so `test_incremental_repeat_run_and_full_refresh_change_nothing` failed:
-   a second full refresh changed the table.
-3. **A new `D` stored the previous version's file name**:
-   `test_incremental_invariants` found 6 such rows after the first full
-   refresh, and `test_new_delete_has_the_newest_file_and_the_deleted_content`
-   got `stemme_20260102_000000.json` instead of `stemme_20260103_000000.json`.
-4. **After a new source column, a full refresh shifted every `D` row by one
-   column** (`test_new_source_column_then_full_refresh`, DuckDB and DuckLake):
-   the `D` row had a wrong file name, hash and source system code, and `_cv`
-   returned two rows for its key.
-
-Besides fixing these, the current macros write `I` instead of `U` for a key that
-comes back changed (B), as the full-extract macro does.
-
-To repeat the comparison, export the old commit
-(`git archive 2dc3b83 | tar -x -C <dir>`), copy `dbt/dbt_packages` and
-`tests/test_dbt_silver.py` into it and run the module there with
-`-o addopts=''` (the old `pyproject.toml` does not register the test marker).
+**History.** Until this design, Silver was derived from all Bronze files on
+every run: each version was compared with the key's previous version in Bronze,
+a full refresh rebuilt the tables, and Bronze could only be pruned down to a
+complete file. The test run of commit `498482d` from that time, and the defects
+it found in the macros before it, are recorded in
+[silver_test_results.md](silver_test_results.md); several test names there no
+longer exist.
 
 ---
 
@@ -544,14 +611,15 @@ All macros live in [`dbt/macros/`](../dbt/macros/).
 | Macro | Used by | What it does |
 | --- | --- | --- |
 | `generate_model_bronze(table_name, source_system_code, source_name)` | every Bronze model | `SELECT DISTINCT` all columns except `filename`/`_dlt_*`, plus `LKHS_filename` and `LKHS_source_system_code` |
-| `generate_model_bronze_latest(file_name, source_system_code, source_name, data_source_env_var)` | every `_latest` model | same columns, newest file only, plus `LKHS_deleted_ind = 'N'` |
-| `generate_base_for_hash(table_name, columns_to_exclude, primary_key_columns)` | Silver models | builds the `CONCAT(COALESCE(col::VARCHAR,'<NULL>'),']##[', …)` expression from `information_schema` |
-| `generate_model_silver_full_extraction(file_name, bronze_table_name, primary_key_columns, date_column, base_for_hash, data_source_env_var)` | full-extract Silver models | file-pair CDC with I/U/D (§3.2) |
-| `generate_model_silver_incr_extraction(…same…)` | incremental Silver models | per-key `LAG` CDC with I/U, where the first version after a Silver `D` is an I, plus the carried and new delete branches on `--full-refresh` (§3.3–3.4); adds the `_current_temp` pre/post hooks |
-| `generate_pre_hook_silver(file_name, data_source_env_var)` | all Silver models | creates `_last_file` if missing; drops it first on `--full-refresh` so all Bronze files are reprocessed |
-| `generate_post_hook_silver(file_name, data_source_env_var)` | all Silver models | rebuilds `_last_file` with the newest file and its predecessor |
-| `generate_pre_hook_silver_full_refresh(primary_key_columns)` | incremental Silver models | on `--full-refresh` only, copies the newest version per key and every `D` row into `_current_temp` |
-| `parse_filename_ts(col)` | Silver macros and hooks | `strptime(regexp_extract(col, '([0-9]{8}_[0-9]{6})', 1), '%Y%m%d_%H%M%S')` |
+| `generate_base_for_hash(table_name, columns_to_exclude, primary_key_columns)` | Silver models | builds the `CONCAT(COALESCE(col::VARCHAR,'<NULL>'),']##[', …)` expression from the Bronze view's current columns (`DESCRIBE`) |
+| `generate_model_silver_full_extraction(file_name, bronze_table_name, primary_key_columns, base_for_hash, data_source_env_var)` | full-extract Silver models | compares the new snapshots with Silver's state and with each other: I/U/D (§3.2); `full_refresh=false` |
+| `generate_model_silver_incr_extraction(…same…)` | incremental Silver models | compares a key's first new version with its latest Silver version and later ones with the version before them: I/U; deletes from a `_full` file that is the only new file, and stops the run when it is not (§3.3–3.4); `full_refresh=false` |
+| `silver_files(file_name, data_source_env_var)` | both Silver macros | at compile time: reads the bookmark, stops on late files, lists the newer Bronze files, notes the newest as pending and logs the files (§3.1) |
+| `silver_bookmark_post_hook()`, `silver_files_post_hook()` | both Silver macros (post-hooks) | after a successful run: move the pending file to the bookmark, mark the pending files processed |
+| `silver_bronze_columns(bronze_table_name)` | both Silver macros | select list over the Bronze view that casts the columns Silver already has to Silver's type (normal runs) |
+| `silver_state_columns(bronze_table_name)` | both Silver macros | select list over the Silver table with the Bronze view's columns (missing ones as NULL), to hash Silver's latest version |
+| `silver_delete_guard()` | both Silver macros | the condition that stops a normal run when a file deletes too many keys (§3.1) |
+| `parse_filename_ts(col)` | Silver macros | `strptime(regexp_extract(col, '([0-9]{8}_[0-9]{6})', 1), '%Y%m%d_%H%M%S')` |
 | `cast_hash_to_bigint(columns_to_hash)` | Gold surrogate keys | DuckDB `hash()` (a 64-bit `UBIGINT`) mapped to a signed `BIGINT`, because Power BI rejects `UBIGINT` |
 
 Notes:
@@ -570,117 +638,122 @@ Notes:
 
 ## Appendix: compiled SQL
 
-The statements DuckDB runs after dbt compiles the macros, for an incremental
-run (table already exists). Paths are shortened to `.../`, long column lists to
-`...`, and the database prefix of Silver objects is omitted.
+The statements DuckDB runs after dbt compiles the macros, for a normal run (the
+table and its bookmark exist). Long column lists are shortened to `...`, file
+names are examples, and the database prefix of Silver objects is omitted. Before
+the SQL is generated, `silver_files` has listed the new files with `glob()` and
+written the newest as pending into `_last_file` and logged the files as pending
+in `_files`.
 
 <details>
 <summary><strong>Full-extract entity — <code>silver_ddd_aktoertype</code></strong></summary>
 
-**Pre-hook** — create the bookmark table if it does not exist (empty):
+**Main query** (bookmark `aktoertype_20260101_000000.json`, new files up to
+`aktoertype_20260103_000000.json`):
 
 ```sql
-CREATE TABLE IF NOT EXISTS main_silver.silver_ddd_aktoertype_last_file AS
-SELECT processed_files.*
-,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted
-FROM
-(
-SELECT LKHS_filename
-,      strptime(regexp_extract(LKHS_filename, '([0-9]{8}_[0-9]{6})', 1), '%Y%m%d_%H%M%S') AS LKHS_date_valid_from
-,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
-,      LAG(strptime(...)) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
-        FROM read_text('.../aktoertype/aktoertype_*.json*')
-        ) files
-WHERE 1 = 0
-) processed_files
-```
-
-**Main query:**
-
-```sql
-WITH CTE_BRONZE AS (
-SELECT src.*
-,sha256(CONCAT(
-    COALESCE(type::VARCHAR,'<NULL>'),']##[',
-    COALESCE(opdateringsdato::VARCHAR,'<NULL>'),']##[',
-    COALESCE(LKHS_source_system_code::VARCHAR,'<NULL>'),']##['
-)) AS LKHS_hash_value
-,CONCAT(...) AS LKHS_base_for_hash_value
-,CAST(MIN(opdateringsdato) OVER (PARTITION BY id) AS DATETIME) AS LKHS_date_inserted_src
-FROM main_bronze.bronze_ddd_aktoertype src
+WITH CTE_FILES AS (                     -- the new files, in order
+    SELECT LKHS_filename, <timestamp in the name> AS LKHS_date_valid_from
+    ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
+    ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
+    ,      LEAD(<timestamp>)   OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
+    FROM  (SELECT regexp_extract(file, '[^/]+$') AS LKHS_filename
+           FROM   glob('.../aktoertype/aktoertype_*.json*')) files
+    WHERE  LKHS_filename > 'aktoertype_20260101_000000.json'
+    AND    LKHS_filename <= 'aktoertype_20260103_000000.json'
 )
-,CTE_FILES AS (
-    SELECT LKHS_filename
-    ,      strptime(...)       AS LKHS_date_valid_from
-    ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename)  AS LKHS_filename_previous
-    ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename)  AS LKHS_filename_next
-    ,      LAG(strptime(...))  OVER (ORDER BY LKHS_filename)  AS LKHS_date_valid_from_previous
-    ,      LEAD(strptime(...)) OVER (ORDER BY LKHS_filename)  AS LKHS_date_valid_from_next
-    FROM (SELECT SUBSTRING(filename, ...) AS LKHS_filename
-          FROM read_text('.../aktoertype/aktoertype_*.json*')) files
+,CTE_BRONZE AS (
+    SELECT src.*, sha256(CONCAT(COALESCE(type::VARCHAR,'<NULL>'),']##[', ...)) AS LKHS_hash_value
+    FROM  (SELECT "id", "type", ...          -- a column whose Bronze type differs: CAST("col" AS <Silver type>)
+           FROM   main_bronze.bronze_ddd_aktoertype
+           WHERE  LKHS_filename > 'aktoertype_20260101_000000.json'
+           AND    LKHS_filename <= 'aktoertype_20260103_000000.json') src
 )
-,CTE_BRONZE_INCL_LAG AS (
-    SELECT CTE_BRONZE.*
-    ,      CTE_FILES.LKHS_date_valid_from
-    ,      CTE_BRONZE_PREVIOUS.LKHS_hash_value AS LKHS_hash_value_previous
-    ,      CTE_BRONZE_PREVIOUS.id              AS LKHS_primary_key_previous
-    FROM       CTE_BRONZE
-    INNER JOIN CTE_FILES ON CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
-    LEFT JOIN  CTE_BRONZE CTE_BRONZE_PREVIOUS                       -- previous file
-    ON         CTE_FILES.LKHS_filename_previous = CTE_BRONZE_PREVIOUS.LKHS_filename
-    AND        CTE_BRONZE.id = CTE_BRONZE_PREVIOUS.id
+,CTE_SILVER_LATEST AS (
+    SELECT * FROM main_silver.silver_ddd_aktoertype
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY LKHS_date_valid_from DESC) = 1
+)
+,CTE_STATE AS (                         -- live keys, hashed again with the current columns
+    SELECT id, sha256(CONCAT(COALESCE(type::VARCHAR,'<NULL>'),']##[', ...)) AS LKHS_hash_value
+    FROM  (SELECT "id", "type", ..., "LKHS_source_system_code"
+           FROM   CTE_SILVER_LATEST WHERE LKHS_cdc_operation != 'D') state
+)
+,CTE_PREVIOUS AS (                      -- what each new file is compared with
+    SELECT id, LKHS_hash_value, LKHS_filename FROM CTE_BRONZE
+    UNION ALL
+    SELECT id, LKHS_hash_value, '<silver>' AS LKHS_filename FROM CTE_STATE
+)
+,CTE_CHAIN AS (
+    SELECT CTE_FILES.*, COALESCE(LKHS_filename_previous, '<silver>') AS LKHS_filename_compared_with
+    FROM   CTE_FILES
+)
+,CTE_CHANGES AS (
+    SELECT cur.* EXCLUDE (LKHS_filename), cur.LKHS_filename, chain.LKHS_date_valid_from
+    ,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted
+    ,      CASE WHEN prev.id IS NULL THEN 'I'
+                WHEN cur.LKHS_hash_value != prev.LKHS_hash_value THEN 'U' END AS LKHS_cdc_operation
+    FROM       CTE_BRONZE cur
+    INNER JOIN CTE_CHAIN chain   ON chain.LKHS_filename = cur.LKHS_filename
+    LEFT JOIN  CTE_PREVIOUS prev ON prev.LKHS_filename = chain.LKHS_filename_compared_with AND prev.id = cur.id
+    WHERE      LKHS_cdc_operation IN ('I','U')
+)
+,CTE_DELETES AS (                       -- in a new file, not in the next one
+    SELECT cur.* EXCLUDE (LKHS_filename), chain.LKHS_filename_next AS LKHS_filename
+    ,      chain.LKHS_date_valid_from_next AS LKHS_date_valid_from
+    ,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted, 'D' AS LKHS_cdc_operation
+    FROM       CTE_BRONZE cur
+    INNER JOIN CTE_CHAIN chain ON chain.LKHS_filename = cur.LKHS_filename
+    WHERE      chain.LKHS_filename_next IS NOT NULL
+    AND        NOT EXISTS (SELECT 1 FROM CTE_BRONZE nxt
+                           WHERE nxt.LKHS_filename = chain.LKHS_filename_next AND nxt.id = cur.id)
+)
+,CTE_STATE_DELETES AS (                 -- live in Silver, not in the first new file
+    SELECT latest.* EXCLUDE (LKHS_filename, LKHS_date_valid_from, LKHS_date_inserted, LKHS_cdc_operation)
+    ,      first_file.LKHS_filename, first_file.LKHS_date_valid_from
+    ,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted, 'D' AS LKHS_cdc_operation
+    FROM       CTE_SILVER_LATEST latest
+    CROSS JOIN (SELECT LKHS_filename, LKHS_date_valid_from FROM CTE_CHAIN
+                WHERE LKHS_filename_previous IS NULL) first_file
+    WHERE      latest.LKHS_cdc_operation != 'D'
+    AND        NOT EXISTS (SELECT 1 FROM CTE_BRONZE b
+                           WHERE b.LKHS_filename = first_file.LKHS_filename AND b.id = latest.id)
 )
 ,CTE_ALL_ROWS AS (
--- Inserts and updates
-SELECT CTE_BRONZE_INCL_LAG.* EXCLUDE (LKHS_base_for_hash_value, LKHS_hash_value_previous, LKHS_primary_key_previous, LKHS_filename, LKHS_date_valid_from)
-,      CTE_BRONZE_INCL_LAG.LKHS_filename
-,      CTE_BRONZE_INCL_LAG.LKHS_date_valid_from
-,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted
-,      CASE
-           WHEN LKHS_primary_key_previous IS NULL THEN 'I'
-           WHEN LKHS_primary_key_previous IS NOT NULL AND LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
-       END AS LKHS_cdc_operation
-FROM   CTE_BRONZE_INCL_LAG
-WHERE  LKHS_cdc_operation IN ('I','U')
-UNION ALL
--- Deletes: key in file N but not in file N+1
-SELECT CTE_BRONZE_INCL_LAG.* EXCLUDE (...)
-,      CTE_FILES.LKHS_filename_next AS LKHS_filename
-,      LKHS_date_valid_from_next    AS LKHS_date_valid_from
-,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted
-,      'D' AS LKHS_cdc_operation
-FROM       CTE_BRONZE_INCL_LAG
-INNER JOIN CTE_FILES ON CTE_BRONZE_INCL_LAG.LKHS_filename = CTE_FILES.LKHS_filename
-LEFT JOIN  CTE_BRONZE_INCL_LAG CTE_BRONZE_INCL_LAG_NEXT           -- next file
-ON         CTE_FILES.LKHS_filename_next = CTE_BRONZE_INCL_LAG_NEXT.LKHS_filename
-AND        CTE_BRONZE_INCL_LAG.id = CTE_BRONZE_INCL_LAG_NEXT.id
-WHERE      CTE_BRONZE_INCL_LAG_NEXT.id IS NULL
-AND        CTE_FILES.LKHS_filename_next IS NOT NULL
+    SELECT * FROM CTE_CHANGES
+    UNION ALL BY NAME SELECT * FROM CTE_DELETES
+    UNION ALL BY NAME SELECT * FROM CTE_STATE_DELETES
 )
-SELECT CTE_ALL_ROWS.*
-FROM   CTE_ALL_ROWS
-WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM main_silver.silver_ddd_aktoertype_last_file)
-        OR (SELECT LKHS_filename_previous FROM main_silver.silver_ddd_aktoertype_last_file) IS NULL)
-AND NOT EXISTS (SELECT id FROM main_silver.silver_ddd_aktoertype
-                WHERE id = CTE_ALL_ROWS.id
-                AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+,CTE_DELETE_GUARD AS (                     -- per new file: deletes and the live keys before it
+    SELECT chain.LKHS_filename, COALESCE(deletes.n, 0) AS LKHS_deletes, COALESCE(keys_before.n, 0) AS LKHS_keys_before
+    FROM      CTE_CHAIN chain
+    LEFT JOIN (SELECT LKHS_filename, COUNT(*) AS n FROM CTE_ALL_ROWS
+               WHERE LKHS_cdc_operation = 'D' GROUP BY LKHS_filename) deletes
+    ON        deletes.LKHS_filename = chain.LKHS_filename
+    LEFT JOIN (SELECT LKHS_filename, COUNT(*) AS n FROM CTE_PREVIOUS GROUP BY LKHS_filename) keys_before
+    ON        keys_before.LKHS_filename = chain.LKHS_filename_compared_with
+)
+SELECT CTE_ALL_ROWS.* FROM CTE_ALL_ROWS
+WHERE NOT EXISTS (SELECT id FROM main_silver.silver_ddd_aktoertype
+                  WHERE id = CTE_ALL_ROWS.id AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+AND (SELECT bool_and(CASE WHEN g.LKHS_deletes > 0
+                           AND (g.LKHS_deletes >= g.LKHS_keys_before
+                                OR (g.LKHS_deletes > 10 AND g.LKHS_deletes > 0.1 * g.LKHS_keys_before))
+                          THEN error(printf('...: %s would delete %d of %d live keys ...', ...))
+                          ELSE TRUE END)
+     FROM CTE_DELETE_GUARD g) IS NOT FALSE
 ```
 
-**Post-hook** — rebuild the bookmark with the newest file:
+**Post-hooks** — the run succeeded, so the pending file becomes the bookmark and the
+pending files are processed:
 
 ```sql
-DROP TABLE IF EXISTS main_silver.silver_ddd_aktoertype_last_file;
-CREATE TABLE main_silver.silver_ddd_aktoertype_last_file AS
-SELECT processed_files.*, CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted
-FROM (
-    SELECT LKHS_filename, strptime(...) AS LKHS_date_valid_from
-    ,      LAG(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
-    ,      LAG(strptime(...)) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-    FROM (SELECT SUBSTRING(filename, ...) AS LKHS_filename
-          FROM read_text('.../aktoertype/aktoertype_*.json*')) files
-    QUALIFY ROW_NUMBER() OVER (ORDER BY files.LKHS_filename DESC) = 1
-) processed_files
+UPDATE main_silver.silver_ddd_aktoertype_last_file
+SET    LKHS_filename = LKHS_filename_pending, LKHS_date_inserted = CAST('2026-03-16 06:43:00.302' AS DATETIME)
+WHERE  LKHS_filename_pending IS NOT NULL AND LKHS_filename_pending != '';
+
+UPDATE main_silver.silver_ddd_aktoertype_files
+SET    LKHS_status = 'processed', LKHS_date_inserted = CAST('2026-03-16 06:43:00.302' AS DATETIME)
+WHERE  LKHS_status = 'pending';
 ```
 
 </details>
@@ -688,80 +761,58 @@ FROM (
 <details>
 <summary><strong>Incremental entity — <code>silver_ddd_aktoer</code></strong></summary>
 
-Pre- and post-hooks are the same as above. The main query replaces the
-previous-file join with a per-key `LAG()`, reads the `D` rows already in Silver
-to recognise returning keys (§3.3), and has no delete branches on incremental
-runs:
+`CTE_FILES`, `CTE_BRONZE`, `CTE_SILVER_LATEST` and the post-hook are as above.
+The delete branch is only generated when the only new file is a `_full` file (here
+`aktoer_20261101_020000_full.json`); a `_full` file among other new files stops
+the run before any SQL runs.
 
 ```sql
-WITH CTE_BRONZE AS (
-SELECT src.*
-,sha256(CONCAT(
-    COALESCE(typeid::VARCHAR,'<NULL>'),']##[',
-    COALESCE(gruppenavnkort::VARCHAR,'<NULL>'),']##[',
-    COALESCE(navn::VARCHAR,'<NULL>'),']##[',
-    ...
-    COALESCE(biografi::VARCHAR,'<NULL>'),']##[',
-    COALESCE(LKHS_source_system_code::VARCHAR,'<NULL>'),']##['
-)) AS LKHS_hash_value
-,CONCAT(...) AS LKHS_base_for_hash_value
-,CAST(MIN(opdateringsdato) OVER (PARTITION BY id) AS DATETIME) AS LKHS_date_inserted_src
-FROM main_bronze.bronze_ddd_aktoer src
+,CTE_NEW AS (                           -- each key's versions in the new files
+    SELECT CTE_BRONZE.*, CTE_FILES.LKHS_date_valid_from
+    ,      LAG(CTE_BRONZE.LKHS_hash_value) OVER (PARTITION BY id ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_hash_value_previous
+    ,      ROW_NUMBER() OVER (PARTITION BY id ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_appearance
+    FROM   CTE_BRONZE INNER JOIN CTE_FILES ON CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
 )
-,CTE_FILES AS ( ... same as above, over '.../aktoer/aktoer_*.json*' ... )
-,CTE_FILE_LATEST AS (
-    SELECT MAX(LKHS_filename) AS LKHS_filename, MAX(LKHS_date_valid_from) AS LKHS_date_valid_from
-    FROM   CTE_FILES
-)
-,CTE_BRONZE_INCL_LAG AS (
-    SELECT CTE_BRONZE.*
-    ,      CTE_FILES.LKHS_date_valid_from
-    ,      LAG(CTE_BRONZE.LKHS_hash_value)
-           OVER (PARTITION BY id ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_hash_value_previous
-    ,      LAG(CTE_FILES.LKHS_date_valid_from)
-           OVER (PARTITION BY id ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_date_valid_from_previous
-    FROM       CTE_BRONZE
-    INNER JOIN CTE_FILES ON CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
-)
-,CTE_SILVER_DELETES AS (          -- on --full-refresh: from silver_ddd_aktoer_current_temp
-    SELECT id, LKHS_date_valid_from
-    FROM   main_silver.silver_ddd_aktoer
-    WHERE  LKHS_cdc_operation = 'D'
-)
-,CTE_BRONZE_INCL_DELETES AS (
-    SELECT lagged.*
-    ,      EXISTS (SELECT 1 FROM CTE_SILVER_DELETES del
-                   WHERE  del.id = lagged.id
-                   AND    del.LKHS_date_valid_from > lagged.LKHS_date_valid_from_previous
-                   AND    del.LKHS_date_valid_from < lagged.LKHS_date_valid_from
-                  ) AS LKHS_deleted_since_previous
-    FROM   CTE_BRONZE_INCL_LAG lagged
+,CTE_STATE AS (                         -- every key's latest version, hashed with the current columns
+    SELECT id, LKHS_cdc_operation AS LKHS_latest_operation
+    ,      sha256(CONCAT(COALESCE(typeid::VARCHAR,'<NULL>'),']##[', ...)) AS LKHS_hash_value
+    FROM  (SELECT "id", "typeid", ..., LKHS_cdc_operation FROM CTE_SILVER_LATEST) state
 )
 ,CTE_CHANGES AS (
-SELECT CTE_BRONZE_INCL_DELETES.* EXCLUDE (LKHS_base_for_hash_value, LKHS_hash_value_previous, LKHS_date_valid_from,
-                                          LKHS_date_valid_from_previous, LKHS_deleted_since_previous)
-,      CTE_BRONZE_INCL_DELETES.LKHS_date_valid_from
-,      CAST('2026-03-15 21:54:17.020' AS DATETIME) AS LKHS_date_inserted
-,      CASE
-           WHEN LKHS_hash_value_previous IS NULL THEN 'I'
-           WHEN LKHS_deleted_since_previous THEN 'I'
-           WHEN LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
-       END AS LKHS_cdc_operation
-FROM   CTE_BRONZE_INCL_DELETES
-WHERE  LKHS_cdc_operation IN ('I','U')
+    SELECT n.* EXCLUDE (LKHS_hash_value_previous, LKHS_appearance, LKHS_date_valid_from), n.LKHS_date_valid_from
+    ,      CAST('2026-03-15 21:54:17.020' AS DATETIME) AS LKHS_date_inserted
+    ,      CASE
+               WHEN n.LKHS_appearance > 1 THEN CASE WHEN n.LKHS_hash_value != n.LKHS_hash_value_previous THEN 'U' END
+               WHEN state.id IS NULL OR state.LKHS_latest_operation = 'D' THEN 'I'
+               WHEN n.LKHS_hash_value != state.LKHS_hash_value THEN 'U'
+           END AS LKHS_cdc_operation
+    FROM   CTE_NEW n LEFT JOIN CTE_STATE state ON state.id = n.id
+    WHERE  LKHS_cdc_operation IN ('I','U')
 )
--- on --full-refresh only: CTE_CARRIED_DELETES, CTE_NEWEST_VERSION and CTE_NEW_DELETES (§3.4)
-,CTE_ALL_ROWS AS (
-SELECT * FROM CTE_CHANGES
--- on --full-refresh only: UNION ALL BY NAME the carried and the new 'D' rows
+,CTE_NEW_DELETES AS (                   -- only for a _full file that is the only new file
+    SELECT latest.* EXCLUDE (LKHS_filename, LKHS_date_valid_from, LKHS_date_inserted, LKHS_cdc_operation)
+    ,      'aktoer_20261101_020000_full.json' AS LKHS_filename, <its timestamp> AS LKHS_date_valid_from
+    ,      CAST('2026-03-15 21:54:17.020' AS DATETIME) AS LKHS_date_inserted, 'D' AS LKHS_cdc_operation
+    FROM   CTE_SILVER_LATEST latest
+    WHERE  latest.LKHS_cdc_operation != 'D'
+    AND    NOT EXISTS (SELECT 1 FROM CTE_BRONZE full_file
+                       WHERE full_file.LKHS_filename = 'aktoer_20261101_020000_full.json' AND full_file.id = latest.id)
 )
-SELECT CTE_ALL_ROWS.*
-FROM   CTE_ALL_ROWS
-WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM main_silver.silver_ddd_aktoer_last_file)
-        OR (SELECT LKHS_filename_previous FROM main_silver.silver_ddd_aktoer_last_file) IS NULL)
-AND NOT EXISTS (SELECT id FROM main_silver.silver_ddd_aktoer
-                WHERE id = CTE_ALL_ROWS.id
-                AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+,CTE_ALL_ROWS AS (SELECT * FROM CTE_CHANGES UNION ALL BY NAME SELECT * FROM CTE_NEW_DELETES)
+,CTE_DELETE_GUARD AS (
+    SELECT 'aktoer_20261101_020000_full.json' AS LKHS_filename
+    ,      (SELECT COUNT(*) FROM CTE_NEW_DELETES) AS LKHS_deletes
+    ,      (SELECT COUNT(*) FROM CTE_SILVER_LATEST WHERE LKHS_cdc_operation != 'D') AS LKHS_keys_before
+)
+SELECT CTE_ALL_ROWS.* FROM CTE_ALL_ROWS
+WHERE NOT EXISTS (SELECT id FROM main_silver.silver_ddd_aktoer
+                  WHERE id = CTE_ALL_ROWS.id AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+AND (SELECT bool_and(CASE WHEN g.LKHS_deletes > 0
+                           AND (g.LKHS_deletes >= g.LKHS_keys_before
+                                OR (g.LKHS_deletes > 10 AND g.LKHS_deletes > 0.1 * g.LKHS_keys_before))
+                          THEN error(printf('...: %s would delete %d of %d live keys ...', ...))
+                          ELSE TRUE END)
+     FROM CTE_DELETE_GUARD g) IS NOT FALSE        -- only with a _full file
 ```
 
 </details>

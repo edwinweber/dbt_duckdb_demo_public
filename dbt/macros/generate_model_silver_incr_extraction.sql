@@ -1,149 +1,125 @@
-{%- macro generate_model_silver_incr_extraction(file_name,bronze_table_name,primary_key_columns,date_column,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
-{{ config( materialized='incremental',incremental_strategy='append',on_schema_change='append_new_columns',unique_key=[primary_key_columns,'LKHS_date_valid_from']
-,pre_hook  = "{{ generate_pre_hook_silver_full_refresh(primary_key_columns='" ~ primary_key_columns ~ "') }}"
-,post_hook = "DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.{{ this.name }}_current_temp;"
-) }}
-{#- Deletes of incremental entities are only written by a --full-refresh, so they are not in
-    Bronze.  They are read from Silver: from the table itself on a normal run, from the
-    pre-hook's _current_temp copy on a full refresh.  A first build has none. -#}
-{%- set existing_relation = adapter.get_relation(database=this.database, schema=this.schema, identifier=this.name) -%}
-{%- set is_rebuild = is_incremental() == False and existing_relation is not none -%}
-{%- set current_temp = this.database ~ '.' ~ this.schema ~ '.' ~ this.name ~ '_current_temp' -%}
-{%- if is_incremental() -%}
-{%- set silver_rows = this -%}
-{%- elif is_rebuild -%}
-{%- set silver_rows = current_temp -%}
-{%- else -%}
-{%- set silver_rows = none -%}
-{%- endif %}
-WITH CTE_BRONZE AS (
-SELECT src.*
-,sha256({{ base_for_hash }}) AS LKHS_hash_value
-,{{ base_for_hash }} AS LKHS_base_for_hash_value
-,CAST(MIN({{ date_column }}) OVER (PARTITION BY {{ primary_key_columns }}) AS DATETIME) AS LKHS_date_inserted_src
-FROM {{ ref(bronze_table_name) }} src
-)
-,CTE_FILES AS   (
-                SELECT LKHS_filename
-                ,      {{ parse_filename_ts('LKHS_filename') }} AS LKHS_date_valid_from
-                ,      LAG(LKHS_filename)  OVER (ORDER BY LKHS_filename) AS LKHS_filename_previous
-                ,      LEAD(LKHS_filename) OVER (ORDER BY LKHS_filename) AS LKHS_filename_next
-                ,      LAG({{ parse_filename_ts('LKHS_filename') }}) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_previous
-                ,      LEAD({{ parse_filename_ts('LKHS_filename') }}) OVER (ORDER BY LKHS_filename) AS LKHS_date_valid_from_next
-                FROM    (SELECT SUBSTRING(filename, LENGTH(filename) - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
-                        FROM read_text('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*')
+{%- macro generate_model_silver_incr_extraction(file_name,bronze_table_name,primary_key_columns,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
+{#- Silver is the state: it is never rebuilt from Bronze (full_refresh=false), and a run only reads
+    the Bronze files newer than the bookmark.  An incremental file holds only changed rows.  A key's
+    first version in the new files is compared with its latest Silver version, a later one with
+    its version before it in the new files:
+      key not in Silver, or deleted there   -> I
+      hash differs                          -> U
+    Deletes come from full extractions only: a file named <entity>_<YYYYMMDD_HHMMSS>_full.json holds
+    every key.  When it is the only new file, every key that is alive in Silver and missing from it
+    gets a D.  A full file that is new together with other files stops the run; several plain files
+    are processed in one run.  A first build starts from an empty state and writes no deletes.
+    A run stops when the full file would delete too many keys (silver_delete_guard). -#}
+{{ config(full_refresh=false, post_hook=["{{ silver_bookmark_post_hook() }}", "{{ silver_files_post_hook() }}"]) }}
+{%- set files = silver_files(file_name, data_source_env_var) -%}
+{%- set run_started = "CAST('" ~ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] ~ "' AS DATETIME)" -%}
+{%- set ns = namespace(full_files=[]) -%}
+{%- for new_file in files.new_files -%}
+{%- if '_full.' in new_file -%}{%- set ns.full_files = ns.full_files + [new_file] -%}{%- endif -%}
+{%- endfor -%}
+{%- set full_files = ns.full_files -%}
+{%- if is_incremental() and full_files | length > 0 and files.new_files | length > 1 -%}
+{{ exceptions.raise_compiler_error(this.name ~ ": a _full file must be the only Bronze file to process, new files: " ~ files.new_files | join(', ') ~ ". Process the files before it first, then the _full file on its own.") }}
+{%- endif -%}
+{%- set delete_file = full_files[0] if is_incremental() and full_files | length == 1 else none %}
+WITH CTE_FILES AS (
+                  SELECT LKHS_filename
+                  ,      {{ parse_filename_ts('LKHS_filename') }} AS LKHS_date_valid_from
+                  FROM  (SELECT regexp_extract(file, '[^/]+$') AS LKHS_filename
+                         FROM   glob('{{ env_var(data_source_env_var) }}/{{ file_name }}/{{ file_name }}_*.json*')
                         ) files
-                )
-,CTE_FILE_LATEST AS (
-                    SELECT  MAX(LKHS_filename)        AS LKHS_filename
-                    ,       MAX(LKHS_date_valid_from) AS LKHS_date_valid_from
-                    FROM    CTE_FILES
-                    )
-,CTE_BRONZE_INCL_LAG AS (
-                        SELECT CTE_BRONZE.*
-                        ,      CTE_FILES.LKHS_date_valid_from
-                        ,      LAG(CTE_BRONZE.LKHS_hash_value) OVER (PARTITION BY {{ primary_key_columns }} ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_hash_value_previous
-                        ,      LAG(CTE_FILES.LKHS_date_valid_from) OVER (PARTITION BY {{ primary_key_columns }} ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_date_valid_from_previous
-                        FROM       CTE_BRONZE
-                        INNER JOIN CTE_FILES
-                        ON         CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
-                        )
-{%- if silver_rows is not none %}
--- A key that Silver deleted between its previous and its current Bronze version has come
--- back: that version is an insert, whatever its hash.
-,CTE_SILVER_DELETES AS (
-                       SELECT {{ primary_key_columns }}, LKHS_date_valid_from
-                       FROM   {{ silver_rows }}
-                       WHERE  LKHS_cdc_operation = 'D'
-                       )
-,CTE_BRONZE_INCL_DELETES AS (
-                            SELECT lagged.*
-                            ,      EXISTS (SELECT 1
-                                           FROM   CTE_SILVER_DELETES del
-                                           WHERE  del.{{ primary_key_columns }} = lagged.{{ primary_key_columns }}
-                                           AND    del.LKHS_date_valid_from > lagged.LKHS_date_valid_from_previous
-                                           AND    del.LKHS_date_valid_from < lagged.LKHS_date_valid_from
-                                          ) AS LKHS_deleted_since_previous
-                            FROM   CTE_BRONZE_INCL_LAG lagged
-                            )
+                  WHERE  LKHS_filename > '{{ files.processed }}' AND LKHS_filename <= '{{ files.newest }}'
+                  )
+,CTE_BRONZE AS (
+               SELECT src.*
+               ,      sha256({{ base_for_hash }}) AS LKHS_hash_value
+               FROM  (SELECT {{ silver_bronze_columns(bronze_table_name) }}
+                      FROM   {{ ref(bronze_table_name) }}
+                      WHERE  LKHS_filename > '{{ files.processed }}' AND LKHS_filename <= '{{ files.newest }}'
+                     ) src
+               )
+-- Each key's versions in the new files, in file order
+,CTE_NEW AS (
+            SELECT CTE_BRONZE.*
+            ,      CTE_FILES.LKHS_date_valid_from
+            ,      LAG(CTE_BRONZE.LKHS_hash_value) OVER (PARTITION BY {{ primary_key_columns }} ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_hash_value_previous
+            ,      ROW_NUMBER() OVER (PARTITION BY {{ primary_key_columns }} ORDER BY CTE_BRONZE.LKHS_filename) AS LKHS_appearance
+            FROM       CTE_BRONZE
+            INNER JOIN CTE_FILES
+            ON         CTE_BRONZE.LKHS_filename = CTE_FILES.LKHS_filename
+            )
+{%- if is_incremental() %}
+,CTE_SILVER_LATEST AS (
+                      SELECT * FROM {{ this }}
+                      QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ primary_key_columns }} ORDER BY LKHS_date_valid_from DESC) = 1
+                      )
+-- Silver's state: the latest version of every key, hashed with the current columns
+,CTE_STATE AS (
+              SELECT {{ primary_key_columns }}, LKHS_cdc_operation AS LKHS_latest_operation, sha256({{ base_for_hash }}) AS LKHS_hash_value
+              FROM  (SELECT {{ silver_state_columns(bronze_table_name) }}, LKHS_cdc_operation
+                     FROM   CTE_SILVER_LATEST
+                    ) state
+              )
+{%- endif %}
+,CTE_CHANGES AS (
+                SELECT n.* EXCLUDE (LKHS_hash_value_previous,LKHS_appearance,LKHS_date_valid_from)
+                ,      n.LKHS_date_valid_from
+                ,      {{ run_started }} AS LKHS_date_inserted
+                ,      CASE
+                           WHEN n.LKHS_appearance > 1 THEN CASE WHEN n.LKHS_hash_value != n.LKHS_hash_value_previous THEN 'U' END
+{%- if is_incremental() %}
+                           WHEN state.{{ primary_key_columns }} IS NULL OR state.LKHS_latest_operation = 'D' THEN 'I'
+                           WHEN n.LKHS_hash_value != state.LKHS_hash_value THEN 'U'
 {%- else %}
-,CTE_BRONZE_INCL_DELETES AS (
-                            SELECT lagged.*, FALSE AS LKHS_deleted_since_previous
-                            FROM   CTE_BRONZE_INCL_LAG lagged
-                            )
+                           ELSE 'I'
 {%- endif %}
-,CTE_CHANGES AS
-(
-SELECT  CTE_BRONZE_INCL_DELETES.* EXCLUDE (LKHS_base_for_hash_value,LKHS_hash_value_previous,LKHS_date_valid_from,LKHS_date_valid_from_previous,LKHS_deleted_since_previous)
-,       CTE_BRONZE_INCL_DELETES.LKHS_date_valid_from
-,       CAST('{{ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] }}' AS DATETIME) AS LKHS_date_inserted
-,       CASE
-            WHEN LKHS_hash_value_previous IS NULL THEN 'I'
-            WHEN LKHS_deleted_since_previous THEN 'I'
-            WHEN LKHS_hash_value != LKHS_hash_value_previous THEN 'U'
-        END AS LKHS_cdc_operation
-FROM    CTE_BRONZE_INCL_DELETES
-WHERE   LKHS_cdc_operation IN ('I','U')
-)
-{%- if is_rebuild %}
-{%- set bronze_latest_version = bronze_table_name + '_latest' %}
--- Full refresh: every existing D row is carried forward.  Its LKHS_filename is set to the
--- Bronze file of its LKHS_date_valid_from (older versions of this macro stored the previous
--- version's file name); if that file no longer exists the stored name is kept.
-,CTE_CARRIED_DELETES AS (
-                        SELECT    cv.* EXCLUDE (LKHS_filename)
-                        ,         COALESCE(files.LKHS_filename, cv.LKHS_filename) AS LKHS_filename
-                        FROM      {{ current_temp }} cv
-                        LEFT JOIN (SELECT LKHS_date_valid_from, MIN(LKHS_filename) AS LKHS_filename
-                                   FROM   CTE_FILES
-                                   GROUP BY LKHS_date_valid_from
-                                  ) files
-                        ON        files.LKHS_date_valid_from = cv.LKHS_date_valid_from
-                        WHERE     cv.LKHS_cdc_operation = 'D'
-                        )
--- Full refresh: the newest version of every key, rebuilt from Bronze or, for a key no longer
--- in Bronze, the newest one in Silver.  On equal timestamps the rebuilt version wins.
-,CTE_NEWEST_VERSION AS (
-                       SELECT versions.*
-                       FROM  (SELECT CTE_CHANGES.*, 1 AS LKHS_version_rank FROM CTE_CHANGES
-                              UNION ALL BY NAME
-                              SELECT cv.*, 2 AS LKHS_version_rank FROM {{ current_temp }} cv
-                             ) versions
-                       QUALIFY ROW_NUMBER() OVER (PARTITION BY versions.{{ primary_key_columns }} ORDER BY versions.LKHS_date_valid_from DESC, versions.LKHS_version_rank) = 1
-                       )
--- Full refresh: a key whose newest version is not a D and that is missing from the newest
--- Bronze file is deleted as of that file.
+                       END AS LKHS_cdc_operation
+                FROM   CTE_NEW n
+{%- if is_incremental() %}
+                LEFT JOIN CTE_STATE state
+                ON        state.{{ primary_key_columns }} = n.{{ primary_key_columns }}
+{%- endif %}
+                WHERE  LKHS_cdc_operation IN ('I','U')
+                )
+{%- if delete_file %}
+-- The only new file is a full extraction: every key whose latest Silver version is not a D and
+-- that is missing from it is deleted as of that file, with the content of that version.
 ,CTE_NEW_DELETES AS (
-                    SELECT     nv.* EXCLUDE (LKHS_filename,LKHS_date_valid_from,LKHS_date_inserted,LKHS_cdc_operation,LKHS_version_rank)
-                    ,          CTE_FILE_LATEST.LKHS_filename
-                    ,          CTE_FILE_LATEST.LKHS_date_valid_from
-                    ,          CAST('{{ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] }}' AS DATETIME) AS LKHS_date_inserted
-                    ,          'D' AS LKHS_cdc_operation
-                    FROM       CTE_NEWEST_VERSION nv
-                    CROSS JOIN CTE_FILE_LATEST
-                    LEFT JOIN  {{ ref(bronze_latest_version) }} bronze_latest
-                    ON         nv.{{ primary_key_columns }} = bronze_latest.{{ primary_key_columns }}
-                    WHERE      nv.LKHS_cdc_operation != 'D'
-                    AND        bronze_latest.{{ primary_key_columns }} IS NULL
+                    SELECT latest.* EXCLUDE (LKHS_filename,LKHS_date_valid_from,LKHS_date_inserted,LKHS_cdc_operation)
+                    ,      '{{ delete_file }}' AS LKHS_filename
+                    ,      {{ parse_filename_ts("'" ~ delete_file ~ "'") }} AS LKHS_date_valid_from
+                    ,      {{ run_started }} AS LKHS_date_inserted
+                    ,      'D' AS LKHS_cdc_operation
+                    FROM   CTE_SILVER_LATEST latest
+                    WHERE  latest.LKHS_cdc_operation != 'D'
+                    AND    NOT EXISTS (SELECT 1 FROM CTE_BRONZE full_file
+                                       WHERE  full_file.LKHS_filename = '{{ delete_file }}'
+                                       AND    full_file.{{ primary_key_columns }} = latest.{{ primary_key_columns }})
                     )
 {%- endif %}
--- Branches are combined by column name: after a new source column the existing Silver
--- rows have it at the end, the rebuilt rows in its Bronze position.
+-- Branches are combined by column name: after a new source column the Silver rows have it at
+-- the end, the rows from Bronze in their Bronze position.
 ,CTE_ALL_ROWS AS (
 SELECT * FROM CTE_CHANGES
-{%- if is_rebuild %}
-UNION ALL BY NAME
-SELECT * FROM CTE_CARRIED_DELETES
+{%- if delete_file %}
 UNION ALL BY NAME
 SELECT * FROM CTE_NEW_DELETES
 {%- endif %}
 )
+{%- if delete_file %}
+-- The full file's deletes and the live keys they are taken from
+,CTE_DELETE_GUARD AS (
+                     SELECT '{{ delete_file }}' AS LKHS_filename
+                     ,      (SELECT COUNT(*) FROM CTE_NEW_DELETES) AS LKHS_deletes
+                     ,      (SELECT COUNT(*) FROM CTE_SILVER_LATEST WHERE LKHS_cdc_operation != 'D') AS LKHS_keys_before
+                     )
+{%- endif %}
 SELECT CTE_ALL_ROWS.*
 FROM   CTE_ALL_ROWS
-WHERE  (CTE_ALL_ROWS.LKHS_filename >= (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file)
-        OR (SELECT LKHS_filename_previous FROM {{ this.database }}.{{ this.schema }}.{{ this.name}}_last_file) IS NULL
-       )
 {% if is_incremental() %}
-AND NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+WHERE NOT EXISTS (SELECT {{ primary_key_columns }} FROM {{ this }} WHERE {{ primary_key_columns }} = CTE_ALL_ROWS.{{ primary_key_columns }} AND LKHS_date_valid_from = CTE_ALL_ROWS.LKHS_date_valid_from)
+{%- if delete_file %}
+AND   {{ silver_delete_guard() }}
+{%- endif %}
 {%- endif -%}
 {%- endmacro -%}

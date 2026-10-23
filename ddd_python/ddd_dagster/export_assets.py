@@ -44,8 +44,6 @@ from ddd_python.ddd_dlt.export_silver import export_single_silver_table
 from ddd_python.ddd_utils import configuration_variables
 from ddd_python.ddd_utils.path_utils import open_export_connection
 
-_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
-
 # All Silver table names (DDD + Rfam) — used to build barrier deps.
 _ALL_SILVER_TABLES: list[str] = (
     configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER
@@ -62,8 +60,9 @@ _ALL_SILVER_TABLES: list[str] = (
     name="barrier_dbt_gold_complete",
     key_prefix=["export"],
     group_name="export_silver",
-    deps=[_STOP_METABASE_KEY]
-    + [AssetKey(["gold", name]) for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD],
+    deps=[
+        AssetKey(["gold", name]) for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
+    ],
     description=(
         "Ordering barrier: depends on every dbt Gold model.  "
         "Silver exports depend on this asset so that dbt Gold completes "
@@ -87,7 +86,6 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
         key_prefix=["export", "silver"],
         group_name="export_silver",
         deps=[
-            _STOP_METABASE_KEY,
             AssetKey(["silver", table_name]),
             AssetKey(["export", "barrier_dbt_gold_complete"]),
         ],
@@ -143,8 +141,7 @@ def _make_export_silver_asset(table_name: str) -> AssetsDefinition:
     name="barrier_all_silver_exported",
     key_prefix=["export"],
     group_name="export_silver",
-    deps=[_STOP_METABASE_KEY]
-    + [AssetKey(["export", "silver", f"export_{name}"]) for name in _ALL_SILVER_TABLES],
+    deps=[AssetKey(["export", "silver", f"export_{name}"]) for name in _ALL_SILVER_TABLES],
     description=(
         "Ordering barrier: depends on every Silver export asset.  "
         "Gold exports depend on this asset so that all Silver exports "
@@ -168,7 +165,6 @@ def _make_export_gold_asset(table_name: str) -> AssetsDefinition:
         key_prefix=["export", "gold"],
         group_name="export_gold",
         deps=[
-            _STOP_METABASE_KEY,
             AssetKey(["gold", table_name]),
             AssetKey(["export", "barrier_all_silver_exported"]),
         ],
@@ -237,8 +233,7 @@ export_gold_assets: list[AssetsDefinition] = [
     name="barrier_all_gold_exported",
     key_prefix=["export"],
     group_name="export_gold",
-    deps=[_STOP_METABASE_KEY]
-    + [
+    deps=[
         AssetKey(["export", "gold", f"export_{name}"])
         for name in configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD
     ],

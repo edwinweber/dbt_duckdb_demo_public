@@ -24,28 +24,20 @@ up the completed 06:00 run, including its final status and any step failures.
 ## The 06:00 Full Pipeline
 
 `full_pipeline_job` selects every ingestion group, the Bronze/Silver/Gold dbt
-assets, both export groups and the data-engineering models, wrapped by
-`_with_metabase_control()` in `stop_metabase_asset` / `start_metabase_asset`.
-It uses `in_process_executor`, so **every step runs sequentially in one
-process**, because DuckDB allows only one writer: no two assets in this job
-compete for the `.duckdb` file.
+assets, both export groups and the data-engineering models. It uses
+`multiprocess_executor` with `FULL_PIPELINE_MAX_CONCURRENT` (2) parallel steps.
+The order (ingestion → Bronze → Silver → Gold → exports → data engineering) comes
+from the asset dependencies and the export barriers; only independent steps run
+side by side, mainly the extraction steps. Each dbt step is a separate
+`dbt build` with `threads: 1` and its own quack connection, and in Docker
+`duckdb_server` is the sole owner of the `.duckdb` file, so no stop/start cycle is
+needed. A test run (2026-10-21) completed 67 of 67 steps in 256 s with no retries;
+running the DDD and Rfam Silver jobs at the same time also worked.
 
 dbt seeds are **not** part of this job; they change rarely and are loaded with
 `dbt_seeds_job`.
 
-### Step 1 — Stop Metabase
-
-**Asset:** `stop_metabase_asset`
-([`metabase_control_assets.py`](../ddd_python/ddd_dagster/metabase_control_assets.py))
-
-Metabase keeps a read connection open on the `.duckdb` file, which blocks dbt's
-write lock. The asset runs `scripts/stop_metabase_and_wait.sh`, which does
-`docker stop ddd-metabase` (container name overridable via
-`METABASE_CONTAINER_NAME`) and then sleeps **120 seconds** so file locks are
-released. A non-zero exit fails the asset and the run. Outside Docker, where the
-script is absent, the asset logs a warning and does nothing.
-
-### Step 2 — Extraction (25 assets)
+### Step 1 — Extraction (25 assets)
 
 **Assets:** `ingestion/DDD/<entity>` (18) and `ingestion/RFAM/<table>` (7), in
 the groups `ingestion_DDD_incremental`, `ingestion_DDD_full_extract`,
@@ -90,36 +82,37 @@ scripts (`ThreadPoolExecutor(max_workers=4)`).
 
 Secrets in `parameters` are redacted by `_scrub_secrets` before the record is written.
 
-### Step 3 — dbt: Bronze, Silver, Gold
+### Step 2 — dbt: Bronze, Silver, Gold
 
 **Assets:** the dbt multi-assets `dbt_bronze_assets`, `dbt_silver_assets` and
 `dbt_gold_assets` ([`dbt_assets.py`](../ddd_python/ddd_dagster/dbt_assets.py)).
-Each declares `stop_metabase_asset` as an input, so no dbt model can start while
-Metabase is up. Dagster runs `dbt build` (models **and** their tests) through
+Dagster runs `dbt build` (models **and** their tests) through
 `DbtCliResource`, with dbt's own logs under `DBT_LOGS_DIRECTORY`.
 
-- **Bronze (views).** `read_json_auto()` over the NDJSON files of each entity,
-  plus a `_latest` view over the newest file.
+- **Bronze (views).** `read_json_auto()` over the NDJSON files of each entity.
 - **Silver (incremental tables).** Per entity:
-  - the pre-hook records which Bronze files are already processed (`<model>_last_file`);
-  - the model hashes every business column (SHA-256) and compares consecutive
-    files: new key → `I`, changed hash → `U`, a key that comes back after a
-    `D` → `I`, and for full-extract tables a key missing from the next snapshot
-    → `D`;
-  - the post-hook rebuilds `<model>_last_file` as the new watermark;
+  - the model reads only the Bronze files newer than its bookmark
+    (`<model>_last_file`) and compares them with Silver's latest version of each
+    key, hashing every business column (SHA-256): new key → `I`, changed hash →
+    `U`, a key that comes back after a `D` → `I`, and for full-extract tables a
+    key missing from a new snapshot → `D`;
+  - the post-hooks move the bookmark to the newest file of the run and log the
+    files as processed in `<model>_files`;
   - a `NOT EXISTS (pk, LKHS_date_valid_from)` guard makes reruns idempotent;
+  - the run stops when a file would delete too many keys (the delete guard) or
+    when a late file is found (runbook §7);
   - a `_cv` view exposes the current version of every key.
 
   The job passes `full_refresh: false`. Deletes in date-filtered incremental
-  entities are only detected by a `--full-refresh`
-  ([dbt_transformations.md](dbt_transformations.md#34-deletes-of-incremental-entities---full-refresh-only)), and only after a full extraction.
+  entities are only detected when a `_full` extraction file is processed on its own
+  ([dbt_transformations.md](dbt_transformations.md#34-deletes-of-incremental-entities-_full-files)); run a full extraction with `--date_to_load_from 1900-01-01` to find them.
 - **Gold (views).** Handcrafted star schema (`actor`, `case`, `meeting`, `vote`,
   `individual_votes`, the `date`/`time` dimensions, …) plus generated `_cv` views.
 
 With `SILVER_STORAGE_FORMAT=ducklake` the Silver tables are written to the
 attached `ducklake_catalog` instead of the main file; everything else is the same.
 
-### Step 4 — Delta Lake export
+### Step 3 — Delta Lake export
 
 **Assets:** `export/silver/<table>` and `export/gold/<table>`
 ([`export_assets.py`](../ddd_python/ddd_dagster/export_assets.py)), ordered by
@@ -138,13 +131,12 @@ or `onelake` → `abfss://…`).
 The export opens its own read-only DuckDB connection. Each table is its own
 asset, so a failed table shows up as one failed step rather than hiding the others.
 
-### Step 5 — Observability layer
+### Step 4 — Observability layer
 
 **Asset:** `dbt_data_engineering_assets` (depends on
 `export/barrier_all_gold_exported`). Builds the `data_engineering` models from
 Dagster's SQLite run storage (`$DAGSTER_HOME/history/runs.db` and
-`history/runs/index.db`) and from the step-failure NDJSON exported by the
-failure sensor:
+`history/runs/index.db`):
 
 | Model | Grain |
 | --- | --- |
@@ -152,14 +144,7 @@ failure sensor:
 | `dagster_job`, `dagster_asset` | dimensions: one row per job / per asset key |
 | `dagster_run` | fact: one row per run, with rows processed and assets materialized |
 | `dagster_asset_materialization` | fact: one row per materialization, with step timing |
-| `dagster_step_failures_raw`, `dagster_step_failure` | fact: one row per failed asset per run |
-
-### Step 6 — Start Metabase
-
-**Asset:** `start_metabase_asset` runs `scripts/start_metabase_and_wait.sh`:
-`docker start ddd-metabase`, then a fixed **120-second** wait for Metabase to
-initialise. It only runs when every upstream step succeeded; see the failure
-sensor below for the other case.
+| `dagster_step_failures_raw`, `dagster_step_failure` | fact: one row per failed asset per run — read directly from `$DAGSTER_HOME/history/runs/*.db` via `sqlite_scan` |
 
 ---
 
@@ -171,8 +156,6 @@ Two sensors in [`sensors.py`](../ddd_python/ddd_dagster/sensors.py) watch
 | | `danish_parliament_run_success_sensor` | `danish_parliament_run_failure_sensor` |
 | --- | --- | --- |
 | Run summary | appends to `<DLT_PIPELINE_RUN_LOG_DIR>/DDD/<job_name>_run_log.ndjson`: times, duration, per-step status, tags | same |
-| Metabase | — | restarts it (`docker start`, no wait) if the failed run had stopped it |
-| Step failures | — | writes the run's `STEP_FAILURE` events to `<DLT_PIPELINE_RUN_LOG_DIR>/dagster/step_failures/<run_id>.ndjson` |
 | ntfy.sh | `Dagster run SUCCEEDED - <job>`, priority `default` | `Dagster run FAILED - <job>`, priority `high` |
 
 Alerts are opt-in: nothing is sent when `NTFY_TOPIC` is unset. A failed log

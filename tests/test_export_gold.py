@@ -186,3 +186,30 @@ def test_gold_export_ducklake_mode_resolves_silver_refs(tmp_path):
 
     assert rows == 2
     assert DeltaTable(path).to_pyarrow_table().num_rows == 2
+
+
+# ── History pruning ───────────────────────────────────────────────────────────
+
+
+def test_prune_history_keeps_seven_days():
+    """Prune sets 7-day retention, vacuums with enforcement and cleans the log."""
+    with patch.object(gold_mod, "DeltaTable") as mock_dt:
+        gold_mod._prune_history("/some/path/", {}, "actor")
+
+    dt = mock_dt.return_value
+    dt.alter.set_table_properties.assert_called_once_with(
+        {
+            "delta.logRetentionDuration": "interval 7 days",
+            "delta.deletedFileRetentionDuration": "interval 7 days",
+        }
+    )
+    dt.vacuum.assert_called_once_with(
+        retention_hours=168, dry_run=False, enforce_retention_duration=True, full=True
+    )
+    dt.cleanup_metadata.assert_called_once()
+
+
+def test_prune_history_failure_does_not_fail_export():
+    """A prune error is logged, not raised."""
+    with patch.object(gold_mod, "DeltaTable", side_effect=RuntimeError("boom")):
+        gold_mod._prune_history("/some/path/", {}, "actor")

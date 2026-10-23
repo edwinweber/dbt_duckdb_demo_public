@@ -16,6 +16,5 @@ _RETRY_POLICY = RetryPolicy(
     backoff=Backoff.EXPONENTIAL,
 )
 
-STOP_METABASE_ASSET_KEY = AssetKey(["stop_metabase_asset"])
-START_METABASE_ASSET_KEY = AssetKey(["start_metabase_asset"])
 DUCKLAKE_CLEANUP_ASSET_KEY = AssetKey(["ducklake_cleanup_asset"])
+BRONZE_ARCHIVE_ASSET_KEY = AssetKey(["bronze_archive_asset"])

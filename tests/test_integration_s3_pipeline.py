@@ -1,15 +1,15 @@
-"""S3/MinIO integration tests for the Bronze → Silver → Delta Lake pipeline.
+"""S3/RustFS integration tests for the Bronze → Silver → Delta Lake pipeline.
 
 Exercises code paths that actually talk to S3-compatible storage:
-1. DuckDB httpfs reading NDJSON from MinIO via ``read_json_auto()`` + ``read_text()``
+1. DuckDB httpfs reading NDJSON from RustFS via ``read_json_auto()`` + ``read_text()``
 2. Full-extraction CDC SQL over S3-hosted Bronze files
-3. ``write_deltalake()`` writing a Delta table to MinIO
-4. ``DeltaTable()`` reading the Delta table back from MinIO
+3. ``write_deltalake()`` writing a Delta table to RustFS
+4. ``DeltaTable()`` reading the Delta table back from RustFS
 5. Incremental dedup: second export of the same data appends 0 rows
 
 All tests are skipped when ``S3_TEST_ENDPOINT`` is not set, so the standard
 ``pytest tests/`` run (which does not set that var) is unaffected.
-In CI the ``test-s3`` job starts a MinIO container and sets the env var.
+In CI the ``test-s3`` job starts a RustFS container and sets the env var.
 """
 
 import json
@@ -37,8 +37,8 @@ pytestmark = [
 ]
 
 _ENDPOINT = os.getenv("S3_TEST_ENDPOINT", "http://localhost:9000")
-_KEY = os.getenv("S3_TEST_ACCESS_KEY_ID", "minioadmin")
-_SECRET = os.getenv("S3_TEST_SECRET_ACCESS_KEY", "minioadmin")
+_KEY = os.getenv("S3_TEST_ACCESS_KEY_ID", "rustfsadmin")
+_SECRET = os.getenv("S3_TEST_SECRET_ACCESS_KEY", "rustfsadmin")
 _REGION = os.getenv("S3_TEST_REGION", "us-east-1")
 
 _BRONZE_BUCKET = "test-ddd-bronze"
@@ -63,12 +63,12 @@ def _make_s3_client() -> boto3.client:
 
 @pytest.fixture(scope="module")
 def s3_client():
-    """Boto3 S3 client pointed at the MinIO test instance."""
+    """Boto3 S3 client pointed at the RustFS test instance."""
     return _make_s3_client()
 
 
 @pytest.fixture(scope="module", autouse=True)
-def minio_buckets(s3_client):
+def rustfs_buckets(s3_client):
     """Create test buckets before any test in the module; delete all objects and buckets after."""
     for bucket in (_BRONZE_BUCKET, _DELTA_BUCKET):
         try:
@@ -89,8 +89,8 @@ def minio_buckets(s3_client):
 
 
 @pytest.fixture(scope="module")
-def bronze_ndjson_in_s3(s3_client, minio_buckets):
-    """Upload two-file NDJSON fixture to the MinIO Bronze bucket.
+def bronze_ndjson_in_s3(s3_client, rustfs_buckets):
+    """Upload two-file NDJSON fixture to the RustFS Bronze bucket.
 
     File 1 (2024-01-01): rows 1, 2
     File 2 (2024-02-01): row 1 changed (price), row 2 same, row 3 new
@@ -121,8 +121,8 @@ def bronze_ndjson_in_s3(s3_client, minio_buckets):
 
 
 @pytest.fixture()
-def duckdb_with_s3(minio_buckets):
-    """Fresh in-memory DuckDB connection with httpfs loaded and a MinIO S3 secret configured.
+def duckdb_with_s3(rustfs_buckets):
+    """Fresh in-memory DuckDB connection with httpfs loaded and a RustFS S3 secret configured.
 
     Function-scoped so each test gets an isolated in-memory database.
     """
@@ -131,7 +131,7 @@ def duckdb_with_s3(minio_buckets):
     # DuckDB ENDPOINT takes host:port only — strip the protocol prefix.
     endpoint_host = _ENDPOINT.split("://", 1)[-1]
     conn.execute(
-        f"CREATE OR REPLACE SECRET minio_test ("
+        f"CREATE OR REPLACE SECRET rustfs_test ("
         f"TYPE s3, KEY_ID '{_KEY}', SECRET '{_SECRET}', "
         f"ENDPOINT '{endpoint_host}', URL_STYLE 'path', USE_SSL false, REGION '{_REGION}')"
     )
@@ -140,7 +140,7 @@ def duckdb_with_s3(minio_buckets):
 
 
 def _delta_storage_opts() -> dict[str, str]:
-    """Storage options for ``write_deltalake`` / ``DeltaTable`` against MinIO."""
+    """Storage options for ``write_deltalake`` / ``DeltaTable`` against RustFS."""
     return {
         "AWS_ACCESS_KEY_ID": _KEY,
         "AWS_SECRET_ACCESS_KEY": _SECRET,
@@ -162,7 +162,7 @@ def _run_cdc_sql_from_s3(conn: duckdb.DuckDBPyConnection, glob_path: str) -> Non
     conn.execute(f"""
         CREATE OR REPLACE VIEW main_bronze.bronze_item AS
         SELECT DISTINCT
-               COLUMNS(c -> c != 'filename' AND NOT starts_with(c, '_dlt_'))
+               COLUMNS(lambda c: c != 'filename' AND NOT starts_with(c, '_dlt_'))
         ,      SUBSTRING(filename,
                    LENGTH(filename)
                    - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
@@ -177,7 +177,6 @@ def _run_cdc_sql_from_s3(conn: duckdb.DuckDBPyConnection, glob_path: str) -> Non
                    COALESCE(src.name::VARCHAR, '<NULL>'), ']##[',
                    COALESCE(src.price::VARCHAR, '<NULL>'), ']##['
                )) AS LKHS_hash_value
-        ,      CAST(MIN(src.updated) OVER (PARTITION BY src.id) AS DATETIME) AS LKHS_date_inserted_src
         FROM   main_bronze.bronze_item src
     )
     ,CTE_FILES AS (
@@ -209,7 +208,7 @@ def _run_cdc_sql_from_s3(conn: duckdb.DuckDBPyConnection, glob_path: str) -> Non
     )
     SELECT  b.id, b.name, b.price, b.updated
     ,       b.LKHS_filename, b.LKHS_source_system_code
-    ,       b.LKHS_hash_value, b.LKHS_date_inserted_src
+    ,       b.LKHS_hash_value
     ,       b.LKHS_date_valid_from
     ,       CURRENT_TIMESTAMP AS LKHS_date_inserted
     ,       CASE
@@ -234,7 +233,7 @@ def _run_cdc_sql_from_s3(conn: duckdb.DuckDBPyConnection, glob_path: str) -> Non
 
 
 def test_s3_duckdb_reads_json_from_s3(bronze_ndjson_in_s3, duckdb_with_s3):
-    """DuckDB httpfs must read NDJSON files from MinIO via read_json_auto."""
+    """DuckDB httpfs must read NDJSON files from RustFS via read_json_auto."""
     count = duckdb_with_s3.execute(
         f"SELECT COUNT(*) FROM read_json_auto('{bronze_ndjson_in_s3}', union_by_name=true)"
     ).fetchone()[0]
@@ -243,7 +242,7 @@ def test_s3_duckdb_reads_json_from_s3(bronze_ndjson_in_s3, duckdb_with_s3):
 
 
 def test_s3_write_deltalake_and_read_back(duckdb_with_s3):
-    """write_deltalake() must write to MinIO and DeltaTable() must read the result back."""
+    """write_deltalake() must write to RustFS and DeltaTable() must read the result back."""
     arrow_table = duckdb_with_s3.execute(
         "SELECT 1 AS id, 'Alice' AS name UNION ALL SELECT 2, 'Bob'"
     ).to_arrow_table()

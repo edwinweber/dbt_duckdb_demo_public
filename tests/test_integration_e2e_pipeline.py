@@ -66,7 +66,7 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
     conn.execute(f"""
         CREATE OR REPLACE VIEW main_bronze.bronze_item AS
         SELECT DISTINCT
-               COLUMNS(c -> c != 'filename' AND NOT starts_with(c, '_dlt_'))
+               COLUMNS(lambda c: c != 'filename' AND NOT starts_with(c, '_dlt_'))
         ,      SUBSTRING(filename,
                    LENGTH(filename)
                    - POSITION('/' IN REVERSE(filename)) + 2) AS LKHS_filename
@@ -82,7 +82,6 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
                    COALESCE(src.name::VARCHAR, '<NULL>'), ']##[',
                    COALESCE(src.price::VARCHAR, '<NULL>'), ']##['
                )) AS LKHS_hash_value
-        ,      CAST(MIN(src.updated) OVER (PARTITION BY src.id) AS DATETIME) AS LKHS_date_inserted_src
         FROM   main_bronze.bronze_item src
     )
     ,CTE_FILES AS (
@@ -109,7 +108,7 @@ def _run_cdc_sql(conn: duckdb.DuckDBPyConnection, source_dir: str) -> None:
     )
     SELECT  b.id, b.name, b.price, b.updated
     ,       b.LKHS_filename, b.LKHS_source_system_code
-    ,       b.LKHS_hash_value, b.LKHS_date_inserted_src
+    ,       b.LKHS_hash_value
     ,       b.LKHS_date_valid_from
     ,       CURRENT_TIMESTAMP AS LKHS_date_inserted
     ,       CASE

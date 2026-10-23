@@ -1,0 +1,58 @@
+# docker-compose.rustfs.yml — Override file for local S3-compatible storage (RustFS)
+#
+# This file provides a RustFS service for local development with S3-compatible storage.
+# RustFS is open source (Apache 2.0) and replaces MinIO, whose community edition is no
+# longer maintained. It is used with the main docker-compose.yml via compose file override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.rustfs.yml up -d rustfs
+#
+# After starting RustFS, create the required S3 buckets using the RustFS console
+# or an S3 client (aws CLI, mc). Without these buckets, extraction will fail.
+#
+# RustFS Console (bucket/object inspection):
+#   http://localhost:9001
+#   Login with S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY from .env
+#
+# S3 API (for dlt, duckdb, etc.):
+#   http://localhost:9000
+#
+# Create buckets via the RustFS Console:
+#   1. Open http://localhost:9001
+#   2. Create buckets matching your .env: S3_BUCKET_BRONZE, S3_BUCKET_DUCKLAKE
+#
+# Or via the aws CLI:
+#   export AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+#   aws --endpoint-url http://localhost:9000 s3 mb s3://ddd-bronze
+#   aws --endpoint-url http://localhost:9000 s3 mb s3://ddd-ducklake (if SILVER_STORAGE_FORMAT=ducklake)
+
+services:
+  # RustFS runs as UID 10001; the bind-mounted data directory must belong to it.
+  rustfs_perms:
+    image: alpine:3
+    user: root
+    command: chown -R 10001:10001 /fix_path
+    volumes:
+      - /data/rustfs:/fix_path
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    command: /data
+    depends_on:
+      rustfs_perms:
+        condition: service_completed_successfully
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: "${S3_ACCESS_KEY_ID}"
+      RUSTFS_SECRET_KEY: "${S3_SECRET_ACCESS_KEY}"
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - /data/rustfs:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

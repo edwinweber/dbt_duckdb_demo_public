@@ -13,6 +13,7 @@ Used by:
 
 import contextlib
 import os
+from datetime import datetime
 
 import duckdb
 from ddd_python.ddd_utils import get_variables_from_env
@@ -63,17 +64,66 @@ def _configure_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def open_export_connection() -> duckdb.DuckDBPyConnection:
-    """Open the read-only DuckDB connection used by the Silver/Gold Delta exports.
+def _open_quack_connection(*, connect: bool) -> duckdb.DuckDBPyConnection:
+    """Open an in-memory DuckDB connection that attaches the quack RPC server.
 
-    Always opens the main DuckDB file read-only (it holds the Gold views and, in
-    native ``duckdb`` mode, the Silver tables).  In DuckLake mode it additionally
-    attaches the DuckLake catalog read-only as ``ducklake_catalog`` so that
-    ``ducklake_catalog.main_silver.*`` tables — and the Gold views that reference
-    them — resolve.  When ``DUCKLAKE_DATA_PATH`` starts with ``s3://``, an S3
-    secret is created on the connection before the ATTACH so DuckLake can reach
-    the Parquet data files on S3.
+    In Docker the Dagster container does not mount the database files; everything
+    that used to open them goes through the ``duckdb_server`` container instead.
+
+    ``connect=False`` (ATTACH only) keeps the connection local: tables on the
+    server are addressed as ``<alias>.<catalog>.<schema>.<table>`` (for DuckLake:
+    ``<alias>.ducklake_catalog.main_silver.<table>``), and Arrow output works.
+    The Delta exports use it, so ``delta_scan`` runs next to the Delta files.
+
+    ``connect=True`` also runs ``CONNECT``: every statement then executes as a
+    session on the server with the server's own names and extensions, which is what
+    DuckLake maintenance CALLs need. DuckDB 2.0 does not allow Arrow output
+    (``to_arrow_table``) in this mode.
+
+    Security note: the token is SQL-escaped with ``replace("'", "''")`` because
+    DuckDB's ATTACH … OPTIONS does not accept bound parameters.
     """
+    host = get_variables_from_env.QUACK_SERVER_HOST
+    port = get_variables_from_env.QUACK_SERVER_PORT
+    token = get_variables_from_env.QUACK_SERVER_TOKEN
+    db_name = get_variables_from_env.DUCKDB_DATABASE or "danish_democracy_data"
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL quack; LOAD quack;")
+    token_safe = token.replace("'", "''")
+    conn.execute(
+        f"ATTACH 'quack:{host}:{port}' AS {db_name} (TOKEN '{token_safe}', DISABLE_SSL true)"
+    )
+    if connect:
+        conn.execute(f"CONNECT {db_name}")
+    return conn
+
+
+def open_server_session() -> duckdb.DuckDBPyConnection:
+    """Connection whose statements run on the DuckDB server (``CONNECT`` mode).
+
+    Used for DuckLake maintenance (``ducklake_expire_snapshots`` and friends).
+    Without a quack server (CI, local runs) this is :func:`open_export_connection`.
+    """
+    if get_variables_from_env.QUACK_SERVER_HOST:
+        return _open_quack_connection(connect=True)
+    return open_export_connection()
+
+
+def open_export_connection() -> duckdb.DuckDBPyConnection:
+    """Open the DuckDB connection used by the Silver/Gold Delta exports.
+
+    When ``QUACK_SERVER_HOST`` is set (Docker deployment) this returns a quack
+    client attached to the ``duckdb_server`` container (ATTACH only, see
+    :func:`_open_quack_connection`); no database files need to be locally mounted.
+
+    Otherwise (CI, local runs) this opens the main DuckDB file read-only.  In
+    DuckLake mode it additionally attaches the DuckLake catalog read-only as
+    ``ducklake_catalog``.  When ``DUCKLAKE_DATA_PATH`` starts with ``s3://``,
+    an S3 secret is created before the ATTACH.
+    """
+    if get_variables_from_env.QUACK_SERVER_HOST:
+        return _open_quack_connection(connect=False)
+
     db_path = get_variables_from_env.DUCKDB_DATABASE_LOCATION
     connection = duckdb.connect(db_path, read_only=True)
     # S3 secret is needed when:
@@ -103,6 +153,15 @@ def open_export_connection() -> duckdb.DuckDBPyConnection:
         # Not DuckLake, but delta_scan needs S3 access for the export target.
         _configure_s3_secret(connection)
     return connection
+
+
+def build_bronze_file_name(entity_name: str, timestamp: datetime, full: bool = False) -> str:
+    """Name of a Bronze file: ``<entity>_<YYYYMMDD_HHMMSS>.json``.
+
+    ``full`` marks a full extraction of an incremental entity with a ``_full`` suffix
+    before the extension; Silver only deletes keys that are missing from such a file.
+    """
+    return f"{entity_name}_{timestamp:%Y%m%d_%H%M%S}{'_full' if full else ''}.json"
 
 
 def build_bronze_destination_path(source_system_code: str, entity_name: str) -> str:

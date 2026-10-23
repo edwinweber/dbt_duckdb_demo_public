@@ -25,7 +25,7 @@ def init_s3_secret(con: duckdb.DuckDBPyConnection) -> None:
     S3-backed Bronze files, DuckLake Parquet data, or Delta Lake export
     targets without extra setup.
     KEY_ID, SECRET, and REGION are always set; ENDPOINT, URL_STYLE, and
-    USE_SSL are only added when S3_ENDPOINT is non-empty (MinIO).  Omitting
+    USE_SSL are only added when S3_ENDPOINT is non-empty (RustFS).  Omitting
     them lets DuckDB fall back to AWS defaults for real AWS S3.
     This statement is intentionally NOT logged to prevent credentials appearing
     in log output.
@@ -79,6 +79,40 @@ def init_s3_secret(con: duckdb.DuckDBPyConnection) -> None:
     logger.info("S3 secret created: %s", result)
 
 
+def init_secrets_on_connection(con: duckdb.DuckDBPyConnection) -> None:
+    """Create persistent S3 and/or Azure secrets on an already-open connection.
+
+    Called by the quack server before ``quack_serve`` so that clients inherit
+    the secrets via CONNECT mode.  Also called by :func:`init_duckdb` for
+    standalone (non-quack) setups.
+    """
+    if get_variables_from_env.STORAGE_TARGET == "onelake":
+        tenant_id = get_variables_from_env.AZURE_TENANT_ID
+        client_id = get_variables_from_env.AZURE_CLIENT_ID
+        client_secret = get_variables_from_env.AZURE_CLIENT_SECRET
+
+        secret_sql = (
+            "CREATE OR REPLACE PERSISTENT SECRET azure_sp ("
+            "    TYPE azure,"
+            "    PROVIDER service_principal,"
+            f"    TENANT_ID '{tenant_id}',"
+            f"    CLIENT_ID '{client_id}',"
+            f"    CLIENT_SECRET '{client_secret}',"
+            "    ACCOUNT_NAME 'onelake'"
+            ");"
+        )
+        con.execute(secret_sql)
+
+        result = con.execute(
+            "SELECT name, type, provider FROM duckdb_secrets() WHERE name = 'azure_sp'"
+        ).fetchall()
+        logger.info("Azure secret created: %s", result)
+    else:
+        logger.info("STORAGE_TARGET is not 'onelake' — skipping Azure secret creation.")
+
+    init_s3_secret(con)
+
+
 def init_duckdb() -> None:
     db_path = get_variables_from_env.DUCKDB_DATABASE_LOCATION
 
@@ -97,36 +131,7 @@ def init_duckdb() -> None:
         # Set Azure transport to curl (required for OneLake / ADLS Gen2)
         con.execute("SET azure_transport_option_type = 'curl';")
 
-        if get_variables_from_env.STORAGE_TARGET == "onelake":
-            # Read credentials from environment
-            tenant_id = get_variables_from_env.AZURE_TENANT_ID
-            client_id = get_variables_from_env.AZURE_CLIENT_ID
-            client_secret = get_variables_from_env.AZURE_CLIENT_SECRET
-
-            # DuckDB's CREATE SECRET DDL does not support bound parameters, so
-            # values are interpolated here.  This statement is intentionally NOT
-            # logged to prevent credentials appearing in log output.
-            secret_sql = (
-                "CREATE OR REPLACE PERSISTENT SECRET azure_sp ("
-                "    TYPE azure,"
-                "    PROVIDER service_principal,"
-                f"    TENANT_ID '{tenant_id}',"
-                f"    CLIENT_ID '{client_id}',"
-                f"    CLIENT_SECRET '{client_secret}',"
-                "    ACCOUNT_NAME 'onelake'"
-                ");"
-            )
-            con.execute(secret_sql)
-
-            # Verify — only surface the metadata, never the secret values
-            result = con.execute(
-                "SELECT name, type, provider FROM duckdb_secrets() WHERE name = 'azure_sp'"
-            ).fetchall()
-            logger.info("Secret created: %s", result)
-        else:
-            logger.info("STORAGE_TARGET is not 'onelake' — skipping Azure secret creation.")
-
-        init_s3_secret(con)
+        init_secrets_on_connection(con)
 
     logger.info("Done. Persistent secrets created, extensions installed.")
 

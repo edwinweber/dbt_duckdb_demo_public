@@ -1,2 +1,0 @@
-{{ config(tags=['ddd']) }}
-{{ generate_model_bronze_latest('afstemningstype','DDD','danish_parliament') }}

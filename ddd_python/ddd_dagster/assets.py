@@ -23,11 +23,15 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
-from ddd_python.ddd_utils.string_utils import normalize_danish_name, resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path, build_bronze_file_name
+from ddd_python.ddd_utils.string_utils import (
+    is_full_extract,
+    normalize_danish_name,
+    resolve_date_to_load_from,
+)
 
 
 class ExtractionConfig(Config):
@@ -101,7 +105,6 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_incremental",
-        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{api_resource}** from the Danish "
@@ -139,7 +142,7 @@ def _make_incremental_asset(api_resource: str) -> AssetsDefinition:
         )
 
         ts = datetime.now(UTC)
-        destination_file = f"{base}_{ts:%Y%m%d_%H%M%S}.json"
+        destination_file = build_bronze_file_name(base, ts, full=is_full_extract(date_from))
         api_filter = f"$filter=opdateringsdato ge DateTime'{date_from}'&$orderby=id"
 
         result = dlt_onelake.execute_pipeline(
@@ -199,7 +202,6 @@ def _make_full_extract_asset(api_resource: str) -> AssetsDefinition:
         name=base,
         key_prefix=["ingestion", "DDD"],
         group_name="ingestion_DDD_full_extract",
-        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{api_resource}** from the Danish Parliament "

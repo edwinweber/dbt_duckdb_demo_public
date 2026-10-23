@@ -1,9 +1,7 @@
 FROM python:3.13
 
 ARG DOCKER_COMPOSE_VERSION=v2.39.4
-ARG DUCKDB_VERSION=1.5.6
-ARG DBT_OSS_VERSION=2.0.5
-ARG DBT_OSS_SHA256=da45bb51a200617b6390ae6804158b1de4a64070d1bd8caeb4f71a282bea899a
+ARG DUCKDB_VERSION=2.0.0
 
 LABEL maintainer="Edwin" \
       version="1.0.0" \
@@ -20,22 +18,11 @@ RUN apt-get update && \
 
 
 # Install DuckDB CLI (SQLite extension is included in the main distribution)
-RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip && \
-    unzip /tmp/duckdb.zip -d /usr/local/bin && \
+# (Since 2.0 the release asset is a tar.gz named duckdb-cli-linux-amd64.)
+RUN curl -fsSL https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz -o /tmp/duckdb.tar.gz && \
+    tar -xzf /tmp/duckdb.tar.gz -C /usr/local/bin duckdb && \
     chmod +x /usr/local/bin/duckdb && \
-    rm /tmp/duckdb.zip
-
-# Install dbt-oss standalone binary (replaces dbt-core Python package).
-# The binary is a self-contained executable — no Python dbt package is installed.
-# dagster-dbt uses CLI mode (DbtCliResource) automatically when no dbt Python
-# package is importable; see scripts/install_dbt_oss.sh for the install logic.
-RUN TARBALL="dbt-core-${DBT_OSS_VERSION}-x86_64-unknown-linux-gnu.tar.gz" && \
-    curl -fsSL "https://github.com/dbt-labs/dbt-core/releases/download/v${DBT_OSS_VERSION}/${TARBALL}" \
-        -o /tmp/dbt.tar.gz && \
-    echo "${DBT_OSS_SHA256}  /tmp/dbt.tar.gz" | sha256sum --check --quiet && \
-    tar xzf /tmp/dbt.tar.gz -C /tmp && \
-    install -m 0755 "$(find /tmp -maxdepth 2 -name dbt -type f | head -1)" /usr/local/bin/dbt && \
-    rm -rf /tmp/dbt.tar.gz /tmp/dbt-core-*
+    rm /tmp/duckdb.tar.gz
 
 # Create the non-root user.  UID/GID 1000 matches the host-side ownership
 # documented in the one-time host setup commands in docker-compose.yml.
@@ -60,8 +47,14 @@ RUN DUCKDB_DATABASE_LOCATION=${DBT_PARSE_DB} \
     STORAGE_TARGET=local \
     DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
     RFAM_DATA_SOURCE=/data/local/Files/Bronze/RFAM \
-    sh -c 'cd dbt && dbt deps && dbt parse' && \
+    sh -c 'cd dbt && dbt deps && \
+        for attempt in 1 2 3; do \
+            dbt parse && exit 0; \
+            echo "dbt parse failed (attempt $attempt of 3)"; \
+        done; exit 1' && \
     rm -f ${DBT_PARSE_DB}
+# The retry covers an intermittent dbt-core 1.12 parse error ("'should_store_failures' is
+# undefined") that appears in about 1 of 40 clean parses and disappears on the next run.
 
 # Make the entrypoint executable before dropping privileges.
 RUN chmod +x docker/docker-entrypoint.sh

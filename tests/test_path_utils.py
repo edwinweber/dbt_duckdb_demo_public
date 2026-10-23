@@ -1,14 +1,17 @@
 """Unit tests for ddd_utils.path_utils."""
 
 import os
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import ddd_python.ddd_dlt.dlt_pipeline_execution_functions as _dpef
 from ddd_python.ddd_utils.path_utils import (
     _configure_s3_secret,
     build_bronze_destination_path,
+    build_bronze_file_name,
     build_delta_export_path,
     open_export_connection,
+    open_server_session,
 )
 
 # Patch targets
@@ -132,7 +135,7 @@ class TestConfigureS3Secret:
         defaults = dict(
             S3_ACCESS_KEY_ID="mykey",
             S3_SECRET_ACCESS_KEY="mysecret",
-            S3_ENDPOINT="http://minio:9000",
+            S3_ENDPOINT="http://rustfs:9000",
             S3_URL_STYLE="path",
             S3_USE_SSL="false",
             S3_REGION="us-east-1",
@@ -150,7 +153,7 @@ class TestConfigureS3Secret:
         assert "mykey" in sql
         assert "mysecret" in sql
         # Protocol prefix stripped — DuckDB ENDPOINT takes host:port only
-        assert "minio:9000" in sql
+        assert "rustfs:9000" in sql
 
     def test_use_ssl_true_string_renders_as_true(self):
         mock_conn = MagicMock()
@@ -199,13 +202,13 @@ class TestConfigureS3Secret:
         assert "REGION 'us-east-1'" in sql
 
     def test_nonempty_endpoint_includes_endpoint_url_style_use_ssl(self):
-        # MinIO: S3_ENDPOINT set — all three extra fields must appear.
+        # RustFS: S3_ENDPOINT set — all three extra fields must appear.
         mock_conn = MagicMock()
         with patch("ddd_python.ddd_utils.path_utils.get_variables_from_env", self._make_gve_mock()):
             _configure_s3_secret(mock_conn)
         sql = mock_conn.execute.call_args[0][0]
         # Protocol prefix stripped — DuckDB ENDPOINT takes host:port only
-        assert "ENDPOINT 'minio:9000'" in sql
+        assert "ENDPOINT 'rustfs:9000'" in sql
         assert "URL_STYLE 'path'" in sql
         assert "USE_SSL false" in sql
 
@@ -213,6 +216,102 @@ class TestConfigureS3Secret:
 # ---------------------------------------------------------------------------
 # open_export_connection — S3 secret creation before DuckLake ATTACH
 # ---------------------------------------------------------------------------
+
+
+class TestOpenExportConnectionQuack:
+    """When QUACK_SERVER_HOST is set, open_export_connection uses _open_quack_connection."""
+
+    def test_quack_path_taken_when_host_is_set(self):
+        env = MagicMock(
+            QUACK_SERVER_HOST="duckdb_server",
+            QUACK_SERVER_PORT=9494,
+            QUACK_SERVER_TOKEN="mytoken",
+            DUCKDB_DATABASE="danish_democracy_data",
+        )
+        mock_conn = MagicMock()
+        with (
+            patch("ddd_python.ddd_utils.path_utils.get_variables_from_env", env),
+            patch("ddd_python.ddd_utils.path_utils.duckdb") as mock_duckdb,
+        ):
+            mock_duckdb.connect.return_value = mock_conn
+            result = open_export_connection()
+        mock_duckdb.connect.assert_called_once_with(":memory:")
+        assert result is mock_conn
+
+    def test_quack_token_sql_escaped(self):
+        env = MagicMock(
+            QUACK_SERVER_HOST="duckdb_server",
+            QUACK_SERVER_PORT=9494,
+            QUACK_SERVER_TOKEN="it's'tricky",
+            DUCKDB_DATABASE="danish_democracy_data",
+        )
+        mock_conn = MagicMock()
+        execute_calls: list[str] = []
+        mock_conn.execute.side_effect = lambda sql, *a, **kw: execute_calls.append(sql)
+        with (
+            patch("ddd_python.ddd_utils.path_utils.get_variables_from_env", env),
+            patch("ddd_python.ddd_utils.path_utils.duckdb") as mock_duckdb,
+        ):
+            mock_duckdb.connect.return_value = mock_conn
+            open_export_connection()
+        attach_call = next(c for c in execute_calls if "ATTACH" in c)
+        # Token apostrophes must be SQL-escaped
+        assert "it''s''tricky" in attach_call
+
+    def _quack_env(self):
+        return MagicMock(
+            QUACK_SERVER_HOST="duckdb_server",
+            QUACK_SERVER_PORT=9494,
+            QUACK_SERVER_TOKEN="mytoken",
+            DUCKDB_DATABASE="danish_democracy_data",
+        )
+
+    def _run(self, opener):
+        execute_calls: list[str] = []
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = lambda sql, *a, **kw: execute_calls.append(sql)
+        with (
+            patch("ddd_python.ddd_utils.path_utils.get_variables_from_env", self._quack_env()),
+            patch("ddd_python.ddd_utils.path_utils.duckdb") as mock_duckdb,
+        ):
+            mock_duckdb.connect.return_value = mock_conn
+            opener()
+        return execute_calls
+
+    def test_export_connection_is_attach_only(self):
+        """Arrow output (to_arrow_table) is not available after CONNECT in DuckDB 2.0."""
+        calls = self._run(open_export_connection)
+        assert any("ATTACH" in c for c in calls)
+        assert not any(c.startswith("CONNECT") for c in calls)
+
+    def test_server_session_connects(self):
+        """DuckLake maintenance CALLs must run on the server, so the session runs CONNECT."""
+        calls = self._run(open_server_session)
+        assert any("ATTACH" in c for c in calls)
+        assert "CONNECT danish_democracy_data" in calls
+
+    def test_direct_path_taken_when_quack_host_empty(self, tmp_path):
+        db_file = tmp_path / "test.duckdb"
+        import duckdb as real_duckdb
+
+        real_duckdb.connect(str(db_file)).close()
+
+        env = MagicMock(
+            QUACK_SERVER_HOST="",
+            DUCKDB_DATABASE_LOCATION=str(db_file),
+            SILVER_STORAGE_FORMAT="duckdb",
+            STORAGE_TARGET="local",
+        )
+        with (
+            patch("ddd_python.ddd_utils.path_utils.get_variables_from_env", env),
+            patch("ddd_python.ddd_utils.path_utils.silver_storage_is_ducklake", return_value=False),
+            patch("ddd_python.ddd_utils.path_utils.duckdb") as mock_duckdb,
+        ):
+            mock_conn = MagicMock()
+            mock_duckdb.connect.return_value = mock_conn
+            open_export_connection()
+        # direct file connect — not :memory:
+        mock_duckdb.connect.assert_called_once_with(str(db_file), read_only=True)
 
 
 class TestOpenExportConnectionS3:
@@ -230,6 +329,7 @@ class TestOpenExportConnectionS3:
         mock_conn.execute.side_effect = lambda sql, *a, **kw: execute_calls.append(sql.strip())
 
         env = MagicMock(
+            QUACK_SERVER_HOST="",
             DUCKDB_DATABASE_LOCATION=str(db_file),
             SILVER_STORAGE_FORMAT="ducklake",
             DUCKLAKE_CATALOG_LOCATION="/data/duckdb/catalog.ducklake",
@@ -261,6 +361,7 @@ class TestOpenExportConnectionS3:
 
         mock_conn = MagicMock()
         env = MagicMock(
+            QUACK_SERVER_HOST="",
             DUCKDB_DATABASE_LOCATION=str(db_file),
             SILVER_STORAGE_FORMAT="duckdb",
             STORAGE_TARGET="local",
@@ -288,6 +389,7 @@ class TestOpenExportConnectionS3:
 
         mock_conn = MagicMock()
         env = MagicMock(
+            QUACK_SERVER_HOST="",
             DUCKDB_DATABASE_LOCATION=str(db_file),
             STORAGE_TARGET="s3",
         )
@@ -363,18 +465,18 @@ class TestBuildDeltaExportPathS3:
             _, opts = build_delta_export_path("silver", "silver_ddd_aktoer")
         assert "AWS_ENDPOINT_URL" not in opts
 
-    def test_storage_options_endpoint_url_present_for_minio(self):
-        with patch(_ENV, self._make_env(S3_ENDPOINT="http://minio:9000")):
+    def test_storage_options_endpoint_url_present_for_rustfs(self):
+        with patch(_ENV, self._make_env(S3_ENDPOINT="http://rustfs:9000")):
             _, opts = build_delta_export_path("silver", "silver_ddd_aktoer")
-        assert opts["AWS_ENDPOINT_URL"] == "http://minio:9000"
+        assert opts["AWS_ENDPOINT_URL"] == "http://rustfs:9000"
 
-    def test_storage_options_addressing_style_set_for_minio(self):
-        with patch(_ENV, self._make_env(S3_ENDPOINT="http://minio:9000", S3_URL_STYLE="path")):
+    def test_storage_options_addressing_style_set_for_rustfs(self):
+        with patch(_ENV, self._make_env(S3_ENDPOINT="http://rustfs:9000", S3_URL_STYLE="path")):
             _, opts = build_delta_export_path("silver", "silver_ddd_aktoer")
         assert opts["AWS_S3_ADDRESSING_STYLE"] == "path"
 
     def test_storage_options_allow_http_true_when_ssl_false(self):
-        with patch(_ENV, self._make_env(S3_ENDPOINT="http://minio:9000", S3_USE_SSL="false")):
+        with patch(_ENV, self._make_env(S3_ENDPOINT="http://rustfs:9000", S3_USE_SSL="false")):
             _, opts = build_delta_export_path("silver", "silver_ddd_aktoer")
         assert opts["AWS_ALLOW_HTTP"] == "true"
 
@@ -450,3 +552,16 @@ class TestBuildLogDir:
     def test_custom_log_directory_with_pipeline_name(self):
         with self._env_patch("/var/log/ddd"):
             assert self._build_log_dir("RFAM", "family") == "/var/log/ddd/RFAM/family"
+
+
+class TestBuildBronzeFileName:
+    _TS = datetime(2026, 3, 4, 5, 6, 7)
+
+    def test_plain_file(self):
+        assert build_bronze_file_name("aktoer", self._TS) == "aktoer_20260304_050607.json"
+
+    def test_full_extraction_gets_the_suffix_before_the_extension(self):
+        assert (
+            build_bronze_file_name("aktoer", self._TS, full=True)
+            == "aktoer_20260304_050607_full.json"
+        )

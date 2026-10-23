@@ -29,6 +29,21 @@ def test_duckdb_mode_excludes_ducklake_target():
     assert "ducklake" not in _names(include_ducklake=False)
 
 
+def test_duckdb_target_stops_quack_server():
+    """With DuckDB 2.0 the quack server is the sole DB owner — it must be stopped for backup."""
+    target = next(t for t in _build_backup_targets(False) if t.name == "duckdb")
+    assert "ddd-duckdb-server" in target.containers
+    assert "ddd-dagster" not in target.containers
+    assert "ddd-metabase" not in target.containers
+
+
+def test_ducklake_target_stops_quack_server():
+    target = next(t for t in _build_backup_targets(True) if t.name == "ducklake")
+    assert "ddd-duckdb-server" in target.containers
+    assert "ddd-dagster" not in target.containers
+    assert "ddd-metabase" not in target.containers
+
+
 def test_ducklake_target_points_at_data_path():
     target = next(t for t in _build_backup_targets(True) if t.name == "ducklake")
     # Source is the DuckLake data directory (DUCKLAKE_DATA_PATH), not the catalog.

@@ -10,11 +10,14 @@ Usage::
 
     python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
     python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile --models_to_select silver
+    python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile --models_to_select silver_ddd_sag \
+        --no_silver_delete_guard        # a source really deleted many rows
 """
 
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -82,7 +85,22 @@ def _check_for_test_failures(log_path: str) -> None:
         )
 
 
-def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> None:
+def silver_vars(delete_guard: bool = True, skip_late_files: bool = False) -> list[str]:
+    """``--vars`` for the Silver switches, or nothing when both keep their default."""
+    switches: dict[str, bool] = {}
+    if not delete_guard:
+        switches["silver_delete_guard"] = False
+    if skip_late_files:
+        switches["silver_skip_late_files"] = True
+    return ["--vars", json.dumps(switches)] if switches else []
+
+
+def run_dbt_build(
+    log_file_local: str,
+    models_to_select: str | None = None,
+    delete_guard: bool = True,
+    skip_late_files: bool = False,
+) -> None:
     """Run ``dbt build`` and capture output to *log_file_local*.
 
     After the subprocess completes (including exit code 0), the JSON log is
@@ -95,10 +113,12 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> N
         RuntimeError: If dbt exits with a non-zero return code, times out, or
             the log contains test failures / errors after a nominally-successful run.
     """
-    dbt_command = ["dbt", "build", "--log-format", "json", "--no-use-colors"]
+    dbt_executable = os.getenv("DBT_EXECUTABLE", "dbt")
+    dbt_command = [dbt_executable, "build", "--log-format", "json", "--no-use-colors"]
 
     if models_to_select:
         dbt_command.extend(["--select", models_to_select])
+    dbt_command.extend(silver_vars(delete_guard, skip_late_files))
 
     with open(log_file_local, "w") as log_output:
         try:
@@ -118,7 +138,9 @@ def run_dbt_build(log_file_local: str, models_to_select: str | None = None) -> N
     _check_for_test_failures(log_file_local)
 
 
-def main(models_to_select: str | None = None) -> None:
+def main(
+    models_to_select: str | None = None, delete_guard: bool = True, skip_late_files: bool = False
+) -> None:
     log_dir = get_variables_from_env.DBT_LOGS_DIRECTORY
     if log_dir is None:
         raise OSError("DBT_LOGS_DIRECTORY must be set")
@@ -127,7 +149,7 @@ def main(models_to_select: str | None = None) -> None:
     log_file_name = _generate_log_filename()
     log_file_local = str(Path(log_dir) / log_file_name)
 
-    run_dbt_build(log_file_local, models_to_select)
+    run_dbt_build(log_file_local, models_to_select, delete_guard, skip_late_files)
     logger.info("dbt build logs saved locally at: %s", log_file_local)
 
 
@@ -140,10 +162,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--models_to_select", required=False, help="The dbt-models to build, separated by spaces"
     )
+    parser.add_argument(
+        "--no_silver_delete_guard",
+        action="store_true",
+        help="Turn the Silver delete guard off for this run (a source really deleted many rows).",
+    )
+    parser.add_argument(
+        "--skip_late_files",
+        action="store_true",
+        help="Log late Bronze files as skipped instead of stopping the Silver run.",
+    )
     args = parser.parse_args()
 
     try:
-        main(args.models_to_select)
+        main(args.models_to_select, not args.no_silver_delete_guard, args.skip_late_files)
     except RuntimeError as exc:
         logger.error("%s", exc)
         sys.exit(1)

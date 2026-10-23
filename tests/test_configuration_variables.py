@@ -83,13 +83,6 @@ def test_rfam_primary_keys_cover_all_tables():
     )
 
 
-def test_rfam_date_columns_cover_all_tables():
-    """Every Rfam table must have a date column entry (may be empty string)."""
-    assert set(cv.RFAM_TABLE_DATE_COLUMNS.keys()) == set(cv.RFAM_TABLE_NAMES), (
-        f"Missing date col: {set(cv.RFAM_TABLE_NAMES) - set(cv.RFAM_TABLE_DATE_COLUMNS.keys())}"
-    )
-
-
 def test_rfam_queries_cover_all_tables():
     """Every Rfam table must have a SQL query defined."""
     assert set(cv.RFAM_TABLE_QUERIES.keys()) == set(cv.RFAM_TABLE_NAMES), (

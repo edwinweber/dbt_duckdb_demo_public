@@ -57,9 +57,12 @@ End-to-end pipeline
 Executor
 --------
 Extraction and export jobs use ``multiprocess_executor`` (``max_concurrent=4``).
-dbt jobs use ``in_process_executor`` (DuckDB single-writer constraint).
-``full_pipeline_job`` uses ``in_process_executor`` to enforce strict sequential
-ordering: ingestion → Bronze → Silver → Gold → export Silver → export Gold.
+dbt jobs use ``in_process_executor`` (one dbt run at a time).
+``full_pipeline_job`` uses ``multiprocess_executor`` with
+``FULL_PIPELINE_MAX_CONCURRENT`` (2) parallel steps. The order ingestion → Bronze →
+Silver → Gold → export Silver → export Gold comes from the asset dependencies and the
+export barriers; only independent steps run side by side. DuckDB is behind the
+``duckdb_server`` (quack), so parallel steps are separate clients of one writer.
 """
 
 from dagster import (
@@ -70,11 +73,7 @@ from dagster import (
 )
 from dagster_dbt import build_dbt_asset_selection
 
-from ddd_python.ddd_dagster._constants import (
-    DUCKLAKE_CLEANUP_ASSET_KEY,
-    START_METABASE_ASSET_KEY,
-    STOP_METABASE_ASSET_KEY,
-)
+from ddd_python.ddd_dagster._constants import BRONZE_ARCHIVE_ASSET_KEY, DUCKLAKE_CLEANUP_ASSET_KEY
 from ddd_python.ddd_utils import configuration_variables
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
@@ -98,14 +97,6 @@ _RFAM_INCREMENTAL_CONFIG = {
 }
 
 _DBT_SILVER_DEFAULT_CONFIG = {"ops": {"dbt_silver_assets": {"config": {"full_refresh": False}}}}
-
-
-def _with_metabase_control(selection: AssetSelection) -> AssetSelection:
-    return (
-        AssetSelection.assets(STOP_METABASE_ASSET_KEY)
-        | selection
-        | AssetSelection.assets(START_METABASE_ASSET_KEY)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +223,6 @@ def _seeds_selection():
     return build_dbt_asset_selection([dbt_seeds_assets])
 
 
-def _dbt_select_with_latest(model_names: list[str]) -> str:
-    """Build a dbt select string for a list of models and their ``_latest`` views."""
-    all_names = model_names + [f"{m}_latest" for m in model_names]
-    return " ".join(all_names)
-
-
 def _dbt_select_with_cv(model_names: list[str]) -> str:
     """Build a dbt select string for a list of models and their ``_cv`` views."""
     all_names = model_names + [f"{m}_cv" for m in model_names]
@@ -248,7 +233,7 @@ def _bronze_ddd_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
     from ddd_python.ddd_utils import configuration_variables
 
-    select = _dbt_select_with_latest(configuration_variables.DANISH_DEMOCRACY_MODELS_BRONZE)
+    select = " ".join(configuration_variables.DANISH_DEMOCRACY_MODELS_BRONZE)
     return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
 
 
@@ -256,7 +241,7 @@ def _bronze_rfam_selection():
     from ddd_python.ddd_dagster.dbt_assets import dbt_bronze_assets
     from ddd_python.ddd_utils import configuration_variables
 
-    select = _dbt_select_with_latest(configuration_variables.RFAM_MODELS_BRONZE)
+    select = " ".join(configuration_variables.RFAM_MODELS_BRONZE)
     return build_dbt_asset_selection([dbt_bronze_assets], dbt_select=select)
 
 
@@ -298,7 +283,7 @@ def _data_engineering_selection():
 
 dbt_seeds_job = define_asset_job(
     name="dbt_seeds_job",
-    selection=_with_metabase_control(_seeds_selection()),
+    selection=_seeds_selection(),
     executor_def=in_process_executor,
     description=(
         "Loads all dbt seeds (static CSV reference data) into local DuckDB "
@@ -314,7 +299,7 @@ dbt_seeds_job = define_asset_job(
 
 dbt_bronze_job = define_asset_job(
     name="dbt_bronze_job",
-    selection=_with_metabase_control(_bronze_selection()),
+    selection=_bronze_selection(),
     executor_def=in_process_executor,
     description=(
         "Runs all dbt Bronze models for all source systems (DDD + RFAM).  "
@@ -331,7 +316,7 @@ dbt_bronze_job = define_asset_job(
 
 dbt_bronze_ddd_job = define_asset_job(
     name="dbt_bronze_ddd_job",
-    selection=_with_metabase_control(_bronze_ddd_selection()),
+    selection=_bronze_ddd_selection(),
     executor_def=in_process_executor,
     description=(
         "Runs dbt Bronze models for the DDD (Danish Parliament) source system "
@@ -346,7 +331,7 @@ dbt_bronze_ddd_job = define_asset_job(
 
 dbt_bronze_rfam_job = define_asset_job(
     name="dbt_bronze_rfam_job",
-    selection=_with_metabase_control(_bronze_rfam_selection()),
+    selection=_bronze_rfam_selection(),
     executor_def=in_process_executor,
     description=(
         "Runs dbt Bronze models for the RFAM source system only.  Selects ``bronze_rfam_*`` models."
@@ -360,12 +345,13 @@ dbt_bronze_rfam_job = define_asset_job(
 
 dbt_silver_job = define_asset_job(
     name="dbt_silver_job",
-    selection=_with_metabase_control(_silver_selection()),
+    selection=_silver_selection(),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs all dbt Silver models for all source systems (DDD + RFAM).  "
-        "Set ``full_refresh: true`` in the Launchpad to rebuild all tables from scratch.  "
+        "Launchpad config: ``delete_guard: false`` for real mass deletes, "
+        "``skip_late_files: true`` to skip late Bronze files.  "
         "Use ``dbt_silver_ddd_job`` or ``dbt_silver_rfam_job`` to run a "
         "single source system."
     ),
@@ -378,13 +364,13 @@ dbt_silver_job = define_asset_job(
 
 dbt_silver_ddd_job = define_asset_job(
     name="dbt_silver_ddd_job",
-    selection=_with_metabase_control(_silver_ddd_selection()),
+    selection=_silver_ddd_selection(),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs dbt Silver models for the DDD (Danish Parliament) source system "
         "only.  Selects ``silver_ddd_*`` models.  "
-        "Set ``full_refresh: true`` in the Launchpad to rebuild from scratch."
+        "Launchpad config as for ``dbt_silver_job``."
     ),
     tags={
         "team": "data-engineering",
@@ -395,13 +381,13 @@ dbt_silver_ddd_job = define_asset_job(
 
 dbt_silver_rfam_job = define_asset_job(
     name="dbt_silver_rfam_job",
-    selection=_with_metabase_control(_silver_rfam_selection()),
+    selection=_silver_rfam_selection(),
     executor_def=in_process_executor,
     config=_DBT_SILVER_DEFAULT_CONFIG,
     description=(
         "Runs dbt Silver models for the RFAM source system only.  "
         "Selects ``silver_rfam_*`` models.  "
-        "Set ``full_refresh: true`` in the Launchpad to rebuild from scratch."
+        "Launchpad config as for ``dbt_silver_job``."
     ),
     tags={
         "team": "data-engineering",
@@ -412,7 +398,7 @@ dbt_silver_rfam_job = define_asset_job(
 
 dbt_gold_job = define_asset_job(
     name="dbt_gold_job",
-    selection=_with_metabase_control(_gold_selection()),
+    selection=_gold_selection(),
     executor_def=in_process_executor,
     description=(
         "Runs all dbt Gold models (dimensional views and the individual_votes "
@@ -429,7 +415,7 @@ dbt_gold_job = define_asset_job(
 
 dbt_data_engineering_job = define_asset_job(
     name="dbt_data_engineering_job",
-    selection=_with_metabase_control(_data_engineering_selection()),
+    selection=_data_engineering_selection(),
     executor_def=in_process_executor,
     description=(
         "Refreshes the Data Engineering observability layer in DuckDB.  "
@@ -453,7 +439,7 @@ dbt_data_engineering_job = define_asset_job(
 
 export_silver_job = define_asset_job(
     name="export_silver_job",
-    selection=_with_metabase_control(AssetSelection.groups("export_silver")),
+    selection=AssetSelection.groups("export_silver"),
     executor_def=_concurrent_executor,
     description=(
         "Exports all Silver tables from DuckDB as Delta Lake tables to "
@@ -470,7 +456,7 @@ export_silver_job = define_asset_job(
 
 export_gold_job = define_asset_job(
     name="export_gold_job",
-    selection=_with_metabase_control(AssetSelection.groups("export_gold")),
+    selection=AssetSelection.groups("export_gold"),
     executor_def=_concurrent_executor,
     description=(
         "Exports all Gold tables from DuckDB as Delta Lake tables to "
@@ -507,9 +493,25 @@ def _full_pipeline_selection():
     )
 
 
+bronze_archive_job = define_asset_job(
+    name="bronze_archive_job",
+    selection=AssetSelection.assets(BRONZE_ARCHIVE_ASSET_KEY),
+    executor_def=in_process_executor,
+    description=(
+        "Moves processed Bronze files to BRONZE_ARCHIVE_DIR, keeping the newest processed file "
+        "of every entity and every file younger than keep_days. On demand, not scheduled: "
+        "Silver only reads files newer than its bookmark, so archiving changes no result."
+    ),
+    tags={
+        "team": "data-engineering",
+        "layer": "maintenance",
+    },
+)
+
+
 ducklake_cleanup_job = define_asset_job(
     name="ducklake_cleanup_job",
-    selection=_with_metabase_control(AssetSelection.assets(DUCKLAKE_CLEANUP_ASSET_KEY)),
+    selection=AssetSelection.assets(DUCKLAKE_CLEANUP_ASSET_KEY),
     executor_def=in_process_executor,
     description=(
         "Vacuums the DuckLake catalog: expires snapshots older than 31 days, deletes orphaned "
@@ -525,10 +527,14 @@ ducklake_cleanup_job = define_asset_job(
 )
 
 
+_full_pipeline_executor = multiprocess_executor.configured(
+    {"max_concurrent": configuration_variables.FULL_PIPELINE_MAX_CONCURRENT}
+)
+
 full_pipeline_job = define_asset_job(
     name="full_pipeline_job",
-    selection=_with_metabase_control(_full_pipeline_selection()),
-    executor_def=in_process_executor,
+    selection=_full_pipeline_selection(),
+    executor_def=_full_pipeline_executor,
     config={
         "ops": {
             **_DDD_INCREMENTAL_CONFIG["ops"],
@@ -540,10 +546,10 @@ full_pipeline_job = define_asset_job(
         "End-to-end pipeline: extracts all 18 Danish Parliament resources and "
         "all 7 Rfam tables via dlt, runs dbt Bronze → Silver → Gold, exports "
         "Silver and Gold as Delta Lake (local, S3 or OneLake), then refreshes the Data "
-        "Engineering observability layer.  All steps run sequentially "
-        "(in_process_executor) to respect DuckDB's single-writer constraint: "
+        "Engineering observability layer.  Asset dependencies keep the order "
         "ingestion → Bronze → Silver → Gold → export Silver → export Gold → "
-        "data_engineering."
+        "data_engineering; independent steps run side by side (at most "
+        f"{configuration_variables.FULL_PIPELINE_MAX_CONCURRENT} at a time)."
     ),
     tags={
         "team": "data-engineering",

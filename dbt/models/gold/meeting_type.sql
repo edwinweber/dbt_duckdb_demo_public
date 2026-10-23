@@ -19,7 +19,6 @@ SELECT  CTE_SRC.LKHS_meeting_type_id
             WHEN 'Udvalgsmøde' THEN 'Committee meeting'
             ELSE CONCAT(CTE_SRC.type,' (not translated yet!)')
         END                                   AS meeting_type_english
-,       CTE_SRC.LKHS_date_inserted_src
 --      Make the first row_version valid from 1900-01-01.
 ,       CASE
             WHEN CTE_SRC.LKHS_row_version = 1
@@ -38,7 +37,6 @@ SELECT 0                              AS LKHS_meeting_type_id
 ,      'Unknown'                      AS meeting_type_bk
 ,      'Ukendt'                       AS meeting_type_danish
 ,      'Unknown'                      AS meeting_type_english
-,      CAST('1900-01-01' AS DATETIME) AS LKHS_date_inserted_src
 ,      CAST('1900-01-01' AS DATETIME) AS LKHS_date_valid_from
 ,      CAST('9999-12-31' AS DATETIME) AS LKHS_date_valid_to
 ,      1                              AS LKHS_row_version

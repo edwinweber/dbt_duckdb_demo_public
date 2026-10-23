@@ -6,6 +6,11 @@ extraction, transformation, and export layers.
 
 from datetime import datetime, timedelta
 
+# An incremental extraction that starts on or before this date reads the whole source, so its
+# Bronze file is a full extraction and is named ``<entity>_<timestamp>_full.json``.  Silver
+# derives the deletes of incremental entities from those files only.
+FULL_EXTRACT_DATE = "1900-01-01"
+
 
 def normalize_danish_name(name: str) -> str:
     """Convert a Danish entity name to a portable, ASCII-only identifier.
@@ -63,3 +68,8 @@ def resolve_date_to_load_from(
             f"date_to_load_from '{date_to_load_from}' must be in 'YYYY-MM-DD' format."
         ) from None
     return date_to_load_from
+
+
+def is_full_extract(date_to_load_from: str) -> bool:
+    """True when an incremental extraction from this ``YYYY-MM-DD`` date is a full extraction."""
+    return date_to_load_from <= FULL_EXTRACT_DATE

@@ -1,6 +1,6 @@
 """Canonical source of truth for all pipeline entity lists and configuration.
 
-All entity names, primary keys, date columns, model names, and SQL query
+All entity names, primary keys, model names, and SQL query
 templates are defined here. Adding a new entity means updating only this file;
 the rest of the codebase (dbt model generation, Dagster assets, dlt pipelines)
 derives its configuration from these lists.
@@ -16,6 +16,9 @@ from ddd_python.ddd_utils.string_utils import normalize_danish_name
 # in dlt_pipeline_execution_functions.py and by the multiprocess_executor in
 # ddd_dagster/jobs.py.  Defined here, in the bottom layer, so both can import it.
 MAX_CONCURRENT_WORKERS: int = 4
+# Steps the full pipeline job runs at the same time. Every dbt step is a separate
+# `dbt build` (threads: 1) with its own quack connection to the DuckDB server.
+FULL_PIPELINE_MAX_CONCURRENT: int = 2
 
 # All 18 API entity names to retrieve data from.
 DANISH_DEMOCRACY_FILE_NAMES = [
@@ -143,19 +146,6 @@ RFAM_TABLE_PRIMARY_KEYS: dict[str, str] = {
     "dead_family": "rfam_acc",
 }
 
-# Source date column per Rfam table.  Incremental tables must have one
-# (`updated`); full-extract tables may have one (`clan`) or an empty string,
-# which tells the Silver macro to derive LKHS_date_inserted_src from the filename.
-RFAM_TABLE_DATE_COLUMNS: dict[str, str] = {
-    "family": "updated",
-    "genome": "updated",
-    "clan": "updated",
-    "clan_membership": "",
-    "author": "",
-    "literature_reference": "",
-    "dead_family": "",
-}
-
 # Combined mapping of Silver model name → primary key column.
 # Used by the Silver Delta Lake export to build the correct LEFT JOIN for
 # incremental appends (each source system may have different PK columns).
@@ -190,13 +180,3 @@ if set(DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS) != _expected_dd_pk_keys:
     )
 if set(RFAM_TABLE_PRIMARY_KEYS) != set(RFAM_TABLE_NAMES):
     raise ValueError("RFAM_TABLE_PRIMARY_KEYS keys must match RFAM_TABLE_NAMES")
-# RFAM_TABLE_DATE_COLUMNS covers ALL tables (empty string for full-extract ones
-# that lack a date column or are extracted in full by design).
-if set(RFAM_TABLE_DATE_COLUMNS) != set(RFAM_TABLE_NAMES):
-    raise ValueError("RFAM_TABLE_DATE_COLUMNS keys must match RFAM_TABLE_NAMES")
-# Every incremental table must have a non-empty date column entry.
-if not all(RFAM_TABLE_DATE_COLUMNS.get(t) for t in RFAM_TABLE_NAMES_INCREMENTAL):
-    raise ValueError(
-        "Every table in RFAM_TABLE_NAMES_INCREMENTAL must have "
-        "a non-empty entry in RFAM_TABLE_DATE_COLUMNS"
-    )

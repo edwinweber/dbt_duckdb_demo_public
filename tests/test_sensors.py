@@ -1,4 +1,4 @@
-"""Unit tests for the run-status sensor helpers (ntfy.sh alerts, run summaries, step-failure export)."""
+"""Unit tests for the run-status sensor helpers (ntfy.sh alerts, run summaries)."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -94,47 +94,4 @@ class TestBuildAndWriteRunSummary:
         resource = MagicMock()
         resource.write_job_run_log.side_effect = OSError("disk full")
         sensors._build_and_write_run_summary(ctx, "success", resource)
-        ctx.log.warning.assert_called_once()
-
-
-class TestWriteStepFailures:
-    @staticmethod
-    def _record(step_key, ts, cls_name, message):
-        event = SimpleNamespace(
-            step_key=step_key,
-            event_specific_data=SimpleNamespace(
-                error=SimpleNamespace(cls_name=cls_name, message=message)
-            ),
-        )
-        return SimpleNamespace(dagster_event=event, timestamp=ts)
-
-    def _ctx(self, records):
-        ctx = MagicMock()
-        ctx.dagster_run.run_id = "run-1"
-        ctx.instance.all_logs.return_value = records
-        return ctx
-
-    def test_writes_one_file_per_run(self, monkeypatch, tmp_path):
-        import json
-
-        monkeypatch.setattr(sensors.dpef, "build_log_dir", lambda s, p=None: f"{tmp_path}/{s}/{p}")
-        ctx = self._ctx([self._record("dbt_silver_assets", 1_700_000_000.0, "Boom", "bad æ")])
-        sensors._write_step_failures(ctx)
-        lines = (tmp_path / "dagster/step_failures/run-1.ndjson").read_text().splitlines()
-        row = json.loads(lines[0])
-        assert row["run_id"] == "run-1"
-        assert row["step_key"] == "dbt_silver_assets"
-        assert row["error_class"] == "Boom"
-        assert row["error_message"] == "bad æ"
-        assert row["failed_at"].startswith("2023-11-14")
-
-    def test_no_events_writes_nothing(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(sensors.dpef, "build_log_dir", lambda s, p=None: f"{tmp_path}/{s}/{p}")
-        sensors._write_step_failures(self._ctx([]))
-        assert not (tmp_path / "dagster").exists()
-
-    def test_write_failure_is_logged_not_raised(self, monkeypatch):
-        ctx = self._ctx([])
-        ctx.instance.all_logs.side_effect = OSError("locked")
-        sensors._write_step_failures(ctx)
         ctx.log.warning.assert_called_once()

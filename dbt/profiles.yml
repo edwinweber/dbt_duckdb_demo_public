@@ -10,7 +10,7 @@ danish_democracy_data:
   # DuckLake Silver Parquet).  Independent of STORAGE_TARGET; these files are
   # never on OneLake.
   #   local — local disk (default)
-  #   s3    — S3-compatible storage (MinIO locally, AWS S3 in production)
+  #   s3    — S3-compatible storage (RustFS locally, AWS S3 in production)
   #
   # SILVER_STORAGE_FORMAT controls how silver tables are stored inside DuckDB.
   #   duckdb   — native DuckDB tables (default); uses the STORAGE_TARGET target
@@ -19,19 +19,22 @@ danish_democracy_data:
   #              Also set DUCKLAKE_CATALOG_LOCATION to the catalog .db path.
   #
   # Target selection:
+  #   QUACK_SERVER_HOST is set                               → quack
   #   SILVER_STORAGE_FORMAT=ducklake + RAW_STORAGE_TARGET=s3 → local_ducklake_s3
   #   SILVER_STORAGE_FORMAT=ducklake                         → local_ducklake
   #   STORAGE_TARGET=onelake                                 → onelake
   #   STORAGE_TARGET=s3 or (default)                         → local
   target: >-
-    {{ 'local_ducklake_s3'
-       if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake'
-          and env_var('RAW_STORAGE_TARGET', 'local') == 's3'
-       else ('local_ducklake'
+    {{ 'quack'
+       if env_var('QUACK_SERVER_HOST', '') != ''
+       else ('local_ducklake_s3'
              if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake'
-             else ('onelake'
-                   if env_var('STORAGE_TARGET', 'local') == 'onelake'
-                   else 'local')) }}
+                and env_var('RAW_STORAGE_TARGET', 'local') == 's3'
+             else ('local_ducklake'
+                   if env_var('SILVER_STORAGE_FORMAT', 'duckdb') == 'ducklake'
+                   else ('onelake'
+                         if env_var('STORAGE_TARGET', 'local') == 'onelake'
+                         else 'local'))) }}
   outputs:
     local:
       type: duckdb
@@ -96,7 +99,7 @@ danish_democracy_data:
 
     onelake:
       type: duckdb
-      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (parallel threads cause DuckLake commit collisions)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -116,4 +119,24 @@ danish_democracy_data:
           client_secret: "{{ env_var('AZURE_CLIENT_SECRET') }}"
           account_name: 'onelake'
       external_root: 'data/curated'
+
+    quack:
+      # Pure quack client: `:memory:` DuckDB connects to duckdb_server.
+      # All SQL executes server-side via CONNECT (applied by dbt_quack.py).
+      # The dbt-quack wrapper (dbt_quack.py) must be used as DBT_EXECUTABLE when
+      # this target is active; it patches dbt-duckdb to issue CONNECT on every
+      # cursor so that model + test SQL runs on the server.
+      type: duckdb
+      path: ":memory:"
+      threads: 1  # must stay 1: per-thread patch (patch 3) is active but concurrency still avoided
+      database: danish_democracy_data
+      extensions:
+        - httpfs
+        - parquet
+      attach:
+        - path: "quack:{{ env_var('QUACK_SERVER_HOST', 'duckdb_server') }}:{{ env_var('QUACK_SERVER_PORT', '9494') }}"
+          alias: danish_democracy_data
+          options:
+            token: "{{ env_var('QUACK_SERVER_TOKEN') }}"
+            disable_ssl: true
 

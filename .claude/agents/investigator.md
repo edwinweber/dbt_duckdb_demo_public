@@ -19,7 +19,8 @@ You are a diagnostic agent for **Danish Democracy Data (dbt_duckdb_demo)**. When
 - **Dagster** (`ddd_dagster/`): asset materialisation failures, sensor tick errors (ntfy.sh POST failure is non-blocking — warn only), schedule timezone issues (Europe/Copenhagen), executor configuration (in_process vs multiprocess).
 - **Delta Lake export** (`ddd_dlt/export_*.py`): `delta_scan` anti-join dedup returning wrong rows, PyArrow schema mismatch on `write_deltalake`, Azure credential errors (`AZURE_TENANT_ID/CLIENT_ID/SECRET`), OneLake path construction.
 - **DuckLake mode** (`SILVER_STORAGE_FORMAT=ducklake`): catalog file corruption, `_current_temp` directories not cleaned up (run `ducklake_cleanup_job` manually), Silver tables missing from `ducklake_catalog.main_silver` after a failed run.
-- **Metabase** (`docker/Dockerfile.metabase`): DuckDB file lock (must be closed during dbt run), ducklake extension not loaded (check init SQL), JDBC driver version (needs ≥1.5.3 for DuckLake).
+- **Metabase** (`docker/Dockerfile.metabase`): cannot connect to quack server (check `QUACK_SERVER_TOKEN` matches, `duckdb_server` is up), ducklake extension not loaded (check rendered init SQL at `/data/metabase/duckdb-init.sql`), JDBC driver version (needs ≥1.5.3 for DuckLake).
+- **quack server** (`ddd_dlt/duckdb_quack_server.py`): token too short (must be ≥4 chars), `DUCKLAKE_CATALOG_LOCATION` missing in ducklake mode, DuckDB extension not installed server-side.
 - **CI** (`pyproject.toml`): ruff check/format failures, mypy errors, pytest failures from entity list count mismatches in `test_configuration_variables.py`.
 
 ## Diagnostic approach

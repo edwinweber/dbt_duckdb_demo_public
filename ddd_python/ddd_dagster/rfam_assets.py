@@ -24,12 +24,12 @@ from dagster import (
     asset,
 )
 
-from ddd_python.ddd_dagster._constants import _RETRY_POLICY, STOP_METABASE_ASSET_KEY
+from ddd_python.ddd_dagster._constants import _RETRY_POLICY
 from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import build_rfam_sql
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
-from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path, build_bronze_file_name
+from ddd_python.ddd_utils.string_utils import is_full_extract, resolve_date_to_load_from
 
 
 class RfamExtractionConfig(Config):
@@ -63,7 +63,6 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_incremental",
-        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Incremental extraction of **{table_name}** from the Rfam MySQL "
@@ -95,7 +94,7 @@ def _make_incremental_asset(table_name: str) -> AssetsDefinition:
         )
 
         ts = datetime.now(UTC)
-        destination_file = f"{table_name}_{ts:%Y%m%d_%H%M%S}.json"
+        destination_file = build_bronze_file_name(table_name, ts, full=is_full_extract(date_from))
         sql_query, sql_params = build_rfam_sql(
             query_template, is_incremental=True, date_to_load_from=date_from
         )
@@ -145,7 +144,6 @@ def _make_full_extract_asset(table_name: str) -> AssetsDefinition:
         name=table_name,
         key_prefix=["ingestion", "RFAM"],
         group_name="ingestion_RFAM_full_extract",
-        deps=[STOP_METABASE_ASSET_KEY],
         retry_policy=_RETRY_POLICY,
         description=(
             f"Full extraction of **{table_name}** from the Rfam MySQL "

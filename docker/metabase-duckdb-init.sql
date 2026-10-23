@@ -1,50 +1,37 @@
--- Canonical Metabase → DuckDB connection "init script".
+-- Metabase → DuckDB connection "init script" template (DuckDB 2.0 quack client).
 --
--- Paste these statements into the *init SQL* field of the DuckDB database
--- connection in the Metabase admin UI (Admin → Databases → your DuckDB DB).
--- This is the single source of truth; the README and docker-compose.yml both
--- point here so the script can't drift.
+-- This file is a TEMPLATE baked into the Metabase image.  On every container
+-- start, docker-entrypoint.metabase.sh substitutes the token placeholder in the
+-- ATTACH statement below with the value of the QUACK_SERVER_TOKEN environment
+-- variable and writes the result to:
+--     /metabase-data/duckdb-init.sql     (inside the container)
+--     $METABASE_DATA_DIR/duckdb-init.sql (on the host)
 --
--- The ducklake lines attach the DuckLake catalog so the Silver layer is
--- queryable when SILVER_STORAGE_FORMAT=ducklake (Gold views read Silver through
--- ducklake_catalog).  In native mode (SILVER_STORAGE_FORMAT=duckdb) Silver lives
--- in the main DuckDB file and the ducklake lines can be omitted.
+-- One-time Metabase DuckDB connection setup (Admin → Databases → Add database):
+--   Database path:  :memory:
+--   Init SQL:       paste the RENDERED file ($METABASE_DATA_DIR/duckdb-init.sql),
+--                   NOT this template.
 --
--- Why DETACH-then-ATTACH instead of ATTACH IF NOT EXISTS:
---   The pipeline stops/starts Metabase around runs (single-writer DuckDB).  On a
---   pooled JDBC connection that survives a restart, a stale half-attached catalog
---   otherwise raises:
---     Catalog "__ducklake_metadata_ducklake_catalog" does not exist
---   DETACH-then-ATTACH rebuilds a clean attach on every new connection (self-healing).
---   The trade-off: if several pool connections initialise concurrently, one ATTACH
---   may see the name already taken and raise "already exists" — Metabase retries and
---   the pool stabilises within one refresh.  That is less bad than a persistent
---   stale-catalog failure that never auto-recovers.
--- Why READ_ONLY:
---   Metabase never writes Silver, and read-only avoids contending for the
---   DuckLake catalog's own single-writer lock.
+-- Architecture: Metabase connects as a quack client to ddd-duckdb-server, which
+-- is the sole read-write owner of the .duckdb file and (in DuckLake mode) the
+-- DuckLake catalog.  Metabase uses :memory: + ATTACH quack server + USE —
+-- it never mounts any database files directly.
+--
+-- Why USE and not CONNECT: after CONNECT the JDBC metadata calls Metabase's schema
+-- sync relies on (getTables) fail in DuckDB 2.0, so no tables are discovered.
+-- With ATTACH + USE the synced tables and views (main, main_bronze, main_silver,
+-- main_gold, main_data_engineering) are addressed as schema.table, e.g.
+-- main_gold.actor_cv.  DuckLake Silver tables are not synced; query them in SQL
+-- as danish_democracy_data.ducklake_catalog.main_silver.<table>.
+--
+-- Only the TOKEN option below is substituted; keep the placeholder out of these
+-- comments, because the substitution would write the real token into them too.
+-- Never paste this template file into the Metabase UI directly.
 
-INSTALL icu; LOAD icu;
-INSTALL httpfs; LOAD httpfs;
-INSTALL delta; LOAD delta;
-INSTALL sqlite; LOAD sqlite;
-INSTALL ducklake; LOAD ducklake;
-DETACH DATABASE IF EXISTS ducklake_catalog;
-ATTACH 'ducklake:/data/duckdb/ducklake_catalog.ducklake' AS ducklake_catalog (DATA_PATH '/data/ducklake', READ_ONLY);
--- S3 secret — uncomment and fill in when DUCKLAKE_DATA_PATH=s3://... or
--- DANISH_DEMOCRACY_DATA_SOURCE=s3://...  The Metabase container does not have
--- access to the host .env at connection time, so credentials must be substituted
--- here directly (or injected via an environment-variable-aware init mechanism).
---
--- CREATE OR REPLACE SECRET ddd_s3_secret (
---     TYPE s3,
---     KEY_ID '<S3_ACCESS_KEY_ID>',
---     SECRET '<S3_SECRET_ACCESS_KEY>',
---     ENDPOINT '<S3_ENDPOINT>',
---     URL_STYLE '<S3_URL_STYLE>',
---     USE_SSL false,
---     REGION '<S3_REGION>'
--- );
+INSTALL quack; LOAD quack;
+ATTACH 'quack:duckdb_server:9494' AS danish_democracy_data
+    (TOKEN '<QUACK_SERVER_TOKEN>', DISABLE_SSL true);
+USE danish_democracy_data;
 -- Cap threads per connection so concurrent Metabase queries share the CPU pool
 -- rather than all contending for all cores simultaneously.
 SET threads = 4;

@@ -367,3 +367,17 @@ def test_ducklake_mode_reads_silver_from_catalog_and_dedups(tmp_path):
     assert first == 3
     assert second == 0
     assert DeltaTable(path).to_pyarrow_table().num_rows == 3
+
+
+def test_silver_source_database_through_quack_server():
+    """ATTACH-only quack clients address DuckLake below the attached server database."""
+    env = {
+        "SILVER_STORAGE_FORMAT": "ducklake",
+        "DUCKDB_DATABASE": "warehouse",
+        "QUACK_SERVER_HOST": "duckdb_server",
+    }
+    with patch.dict(silver_mod.get_variables_from_env.__dict__, env, clear=False):
+        assert silver_mod._silver_source_database() == "warehouse.ducklake_catalog"
+    env["SILVER_STORAGE_FORMAT"] = "duckdb"
+    with patch.dict(silver_mod.get_variables_from_env.__dict__, env, clear=False):
+        assert silver_mod._silver_source_database() == "warehouse"

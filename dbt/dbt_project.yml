@@ -37,7 +37,7 @@ clean-targets:         # directories to be removed by `dbt clean`
 # so there is no quoting issue with the profiles.yml secret.)
 #
 # ENDPOINT/URL_STYLE/USE_SSL are only emitted when S3_ENDPOINT is non-empty
-# (MinIO). Omitting them lets DuckDB fall back to AWS defaults, which is
+# (RustFS). Omitting them lets DuckDB fall back to AWS defaults, which is
 # correct for real AWS S3.
 on-run-start:
   - >-
@@ -60,6 +60,15 @@ vars:
   bronze_columns_to_exclude_in_silver_hash: "'LKHS_date_inserted','LKHS_filename'"
   hash_null_replacement: "'<NULL>'"
   hash_delimiter: "']##['"
+  # Silver delete guard: a normal run stops when a new file deletes every live key, or more than
+  # silver_delete_guard_min_rows keys that are more than silver_delete_guard_fraction of the live
+  # keys.  Off for one run with real mass deletes: --vars '{silver_delete_guard: false}'.
+  silver_delete_guard: true
+  silver_delete_guard_fraction: 0.1
+  silver_delete_guard_min_rows: 10
+  # A Bronze file older than the processed file that was never processed stops a Silver run;
+  # true logs such late files as skipped and carries on (runbook: late Bronze files).
+  silver_skip_late_files: false
   # Earliest date covered by the gold `date` dimension's spine (bronze_dates.sql).
   # Must stay on or before the earliest real date in the source data (meeting /
   # case / vote dates) or the gold FK relationship tests against `date` will fail

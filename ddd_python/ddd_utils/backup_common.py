@@ -125,9 +125,9 @@ _DUCKLAKE_TARGET = BackupTarget(
     name="ducklake",
     source=_DUCKLAKE_DATA_DIR,
     backup_dir=_DUCKLAKE_BACKUP_DIR,
-    # The pipeline (dagster) writes these files and Metabase reads them; stop
-    # both for a clean snapshot — mirrors the duckdb target.
-    containers=("ddd-dagster", "ddd-metabase"),
+    # duckdb_server is the sole read-write owner of the DuckLake Parquet data;
+    # stop it for a clean, WAL-flushed snapshot.
+    containers=("ddd-duckdb-server",),
     max_archive_age_days=_DUCKLAKE_BACKUP_MAX_AGE_DAYS,
 )
 
@@ -135,9 +135,9 @@ _DUCKDB_TARGET = BackupTarget(
     name="duckdb",
     source=_DUCKDB_DATA_DIR,  # /data/duckdb — the main DB *and* the DuckLake catalog file
     backup_dir=_DUCKDB_BACKUP_DIR,
-    # Both services hold open DuckDB connections; stop both to ensure a
-    # clean, WAL-flushed snapshot before archiving.
-    containers=("ddd-dagster", "ddd-metabase"),
+    # duckdb_server is the sole read-write owner of the .duckdb file; stopping
+    # it is sufficient for a clean, WAL-flushed snapshot.
+    containers=("ddd-duckdb-server",),
     max_archive_age_days=_DUCKDB_BACKUP_MAX_AGE_DAYS,
 )
 

@@ -12,7 +12,7 @@ def _make_gve_s3(**overrides):
         RAW_STORAGE_TARGET="s3",
         S3_ACCESS_KEY_ID="mykey",
         S3_SECRET_ACCESS_KEY="mysecret",
-        S3_ENDPOINT="http://minio:9000",
+        S3_ENDPOINT="http://rustfs:9000",
         S3_URL_STYLE="path",
         S3_USE_SSL="false",
         S3_REGION="us-east-1",
@@ -100,11 +100,11 @@ def test_init_s3_secret_aws_s3_executes_create_secret():
 
 
 # ---------------------------------------------------------------------------
-# init_s3_secret: MinIO — non-empty S3_ENDPOINT
+# init_s3_secret: RustFS — non-empty S3_ENDPOINT
 # ---------------------------------------------------------------------------
 
 
-def test_init_s3_secret_minio_includes_endpoint():
+def test_init_s3_secret_rustfs_includes_endpoint():
     from ddd_python.ddd_dbt.init_duckdb import init_s3_secret
 
     mock_conn = MagicMock()
@@ -114,12 +114,12 @@ def test_init_s3_secret_minio_includes_endpoint():
 
     sql = mock_conn.execute.call_args_list[0][0][0]
     # Protocol prefix stripped — DuckDB ENDPOINT takes host:port only
-    assert "ENDPOINT 'minio:9000'" in sql
+    assert "ENDPOINT 'rustfs:9000'" in sql
     assert "URL_STYLE 'path'" in sql
     assert "USE_SSL false" in sql
 
 
-def test_init_s3_secret_minio_use_ssl_true():
+def test_init_s3_secret_rustfs_use_ssl_true():
     from ddd_python.ddd_dbt.init_duckdb import init_s3_secret
 
     mock_conn = MagicMock()

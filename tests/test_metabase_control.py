@@ -1,54 +1,103 @@
-"""Unit tests for the Metabase stop/start control helpers."""
+"""Tests for the dbt-quack wrapper (ddd_python.ddd_dbt.dbt_quack).
 
-import logging
-import subprocess
-from unittest.mock import MagicMock
+The metabase stop/start control assets were removed in the DuckDB 2.0 quack
+architecture.  This file replaces the old metabase_control tests with tests
+for the dbt_quack module.
+"""
+
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ddd_python.ddd_dagster import metabase_control_assets as mca
+
+class TestDbtQuackPatchGuard:
+    """Patches are only applied when QUACK_SERVER_HOST is set."""
+
+    def test_no_patches_applied_without_quack_host(self, monkeypatch):
+        monkeypatch.delenv("QUACK_SERVER_HOST", raising=False)
+        # Import fresh each time so module-level state doesn't bleed through.
+        for mod in list(sys.modules):
+            if "ddd_python.ddd_dbt.dbt_quack" in mod:
+                del sys.modules[mod]
+        from ddd_python.ddd_dbt import dbt_quack
+
+        # _apply_patches should not be called when QUACK_SERVER_HOST is absent.
+        with (
+            patch.object(dbt_quack, "_apply_patches") as mock_apply,
+            patch("dbt.cli.main.dbtRunner") as mock_runner,
+        ):
+            mock_runner.return_value.invoke.return_value = MagicMock(success=True)
+            with pytest.raises(SystemExit) as exc_info:
+                dbt_quack.main()
+        assert exc_info.value.code == 0
+        mock_apply.assert_not_called()
+
+    def test_patches_applied_with_quack_host(self, monkeypatch):
+        monkeypatch.setenv("QUACK_SERVER_HOST", "duckdb_server")
+        for mod in list(sys.modules):
+            if "ddd_python.ddd_dbt.dbt_quack" in mod:
+                del sys.modules[mod]
+        from ddd_python.ddd_dbt import dbt_quack
+
+        with (
+            patch.object(dbt_quack, "_apply_patches") as mock_apply,
+            patch("dbt.cli.main.dbtRunner") as mock_runner,
+        ):
+            mock_runner.return_value.invoke.return_value = MagicMock(success=True)
+            with pytest.raises(SystemExit) as exc_info:
+                dbt_quack.main()
+        assert exc_info.value.code == 0
+        mock_apply.assert_called_once()
+
+    def test_main_exits_nonzero_on_dbt_failure(self, monkeypatch):
+        monkeypatch.setenv("QUACK_SERVER_HOST", "duckdb_server")
+        for mod in list(sys.modules):
+            if "ddd_python.ddd_dbt.dbt_quack" in mod:
+                del sys.modules[mod]
+        from ddd_python.ddd_dbt import dbt_quack
+
+        with (
+            patch.object(dbt_quack, "_apply_patches"),
+            patch("dbt.cli.main.dbtRunner") as mock_runner,
+        ):
+            mock_runner.return_value.invoke.return_value = MagicMock(success=False)
+            with pytest.raises(SystemExit) as exc_info:
+                dbt_quack.main()
+        assert exc_info.value.code == 1
 
 
-def test_missing_script_is_skipped(tmp_path, monkeypatch):
-    monkeypatch.setattr(mca, "_SCRIPTS_DIR", tmp_path)
-    run = MagicMock()
-    monkeypatch.setattr(mca.subprocess, "run", run)
-    assert mca._run_metabase_script("nope.sh") is False
-    run.assert_not_called()
+class TestDbtQuackWarningWithoutHost:
+    """A warning is emitted when dbt-quack is called without QUACK_SERVER_HOST."""
+
+    def test_warning_emitted_when_no_quack_host(self, monkeypatch):
+        monkeypatch.delenv("QUACK_SERVER_HOST", raising=False)
+        for mod in list(sys.modules):
+            if "ddd_python.ddd_dbt.dbt_quack" in mod:
+                del sys.modules[mod]
+        from ddd_python.ddd_dbt import dbt_quack
+
+        with patch("dbt.cli.main.dbtRunner") as mock_runner:
+            mock_runner.return_value.invoke.return_value = MagicMock(success=True)
+            with (
+                pytest.warns(UserWarning, match="QUACK_SERVER_HOST is not set"),
+                pytest.raises(SystemExit),
+            ):
+                dbt_quack.main()
 
 
-def test_existing_script_is_run_with_args(tmp_path, monkeypatch):
-    (tmp_path / "go.sh").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(mca, "_SCRIPTS_DIR", tmp_path)
-    run = MagicMock()
-    monkeypatch.setattr(mca.subprocess, "run", run)
-    assert mca._run_metabase_script("go.sh", "0") is True
-    run.assert_called_once_with([str(tmp_path / "go.sh"), "0"], check=True)
+class TestDbtQuackSkipPatches:
+    """QUACK_SKIP_PATCHES prevents individual patches from being applied."""
 
+    def test_skip_set_parsed_correctly(self, monkeypatch):
+        monkeypatch.setenv("QUACK_SERVER_HOST", "server")
+        monkeypatch.setenv("QUACK_SKIP_PATCHES", "connect,is_ducklake")
+        for mod in list(sys.modules):
+            if "ddd_python.ddd_dbt.dbt_quack" in mod:
+                del sys.modules[mod]
+        import importlib
 
-def test_script_failure_propagates(tmp_path, monkeypatch):
-    (tmp_path / "go.sh").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(mca, "_SCRIPTS_DIR", tmp_path)
-    monkeypatch.setattr(
-        mca.subprocess, "run", MagicMock(side_effect=subprocess.CalledProcessError(1, "go.sh"))
-    )
-    with pytest.raises(subprocess.CalledProcessError):
-        mca._run_metabase_script("go.sh")
-
-
-def test_restart_after_failure_swallows_errors(monkeypatch, caplog):
-    monkeypatch.setattr(
-        mca,
-        "_run_metabase_script",
-        MagicMock(side_effect=subprocess.CalledProcessError(1, "start")),
-    )
-    with caplog.at_level(logging.WARNING):
-        mca.restart_metabase_after_failure()  # must not raise
-    assert "Could not restart Metabase" in caplog.text
-
-
-def test_restart_after_failure_uses_no_wait_arg(monkeypatch):
-    script = MagicMock(return_value=True)
-    monkeypatch.setattr(mca, "_run_metabase_script", script)
-    mca.restart_metabase_after_failure()
-    assert script.call_args.args == ("start_metabase_and_wait.sh", "0")
+        dbt_quack = importlib.import_module("ddd_python.ddd_dbt.dbt_quack")
+        assert "connect" in dbt_quack._SKIP
+        assert "is_ducklake" in dbt_quack._SKIP
+        assert "per_thread" not in dbt_quack._SKIP

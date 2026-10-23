@@ -120,22 +120,14 @@ def test_silver_ddd_all_models_get_correct_macro(dbt_models_tmpdir: Path):
 # ===========================================================================
 
 
-def test_bronze_ddd_generates_model_and_latest(dbt_models_tmpdir: Path):
-    """DDD Bronze should generate both a main model and a _latest model."""
-    generate_dbt_models_bronze(
-        ["bronze_ddd_aktoer"],
-        ["Aktør"],
-        "DDD",
-        "danish_parliament",
-    )
+def test_bronze_ddd_generates_one_view_per_entity(dbt_models_tmpdir: Path):
+    """DDD Bronze generates one view per entity and no ``_latest`` view."""
+    generate_dbt_models_bronze(["bronze_ddd_aktoer"], "DDD", "danish_parliament")
     bronze_dir = dbt_models_tmpdir / "bronze"
-    assert (bronze_dir / "bronze_ddd_aktoer.sql").exists()
-    assert (bronze_dir / "bronze_ddd_aktoer_latest.sql").exists()
+    assert [p.name for p in bronze_dir.iterdir()] == ["bronze_ddd_aktoer.sql"]
     main_content = (bronze_dir / "bronze_ddd_aktoer.sql").read_text()
     assert "generate_model_bronze" in main_content
     assert "'DDD'" in main_content
-    latest_content = (bronze_dir / "bronze_ddd_aktoer_latest.sql").read_text()
-    assert "generate_model_bronze_latest" in latest_content
 
 
 # ===========================================================================
@@ -180,8 +172,6 @@ def test_silver_rfam_incremental_model_uses_incr_macro(dbt_models_tmpdir: Path):
     generate_dbt_models_silver(
         ["silver_rfam_family"],
         incremental_models=_INCREMENTAL_SILVER_MODELS_RFAM,
-        date_column="updated",
-        date_column_map=cv.RFAM_TABLE_DATE_COLUMNS,
         data_source_env_var="RFAM_DATA_SOURCE",
         bronze_prefix="silver_rfam_",
         primary_key_map=cv.RFAM_TABLE_PRIMARY_KEYS,
@@ -198,8 +188,6 @@ def test_silver_rfam_full_extract_model_uses_full_macro(dbt_models_tmpdir: Path)
     generate_dbt_models_silver(
         ["silver_rfam_clan"],
         incremental_models=_INCREMENTAL_SILVER_MODELS_RFAM,
-        date_column="updated",
-        date_column_map=cv.RFAM_TABLE_DATE_COLUMNS,
         data_source_env_var="RFAM_DATA_SOURCE",
         bronze_prefix="silver_rfam_",
         primary_key_map=cv.RFAM_TABLE_PRIMARY_KEYS,
@@ -216,8 +204,6 @@ def test_silver_rfam_generates_cv_view(dbt_models_tmpdir: Path):
     generate_dbt_models_silver(
         ["silver_rfam_family"],
         incremental_models=_INCREMENTAL_SILVER_MODELS_RFAM,
-        date_column="updated",
-        date_column_map=cv.RFAM_TABLE_DATE_COLUMNS,
         data_source_env_var="RFAM_DATA_SOURCE",
         bronze_prefix="silver_rfam_",
         primary_key_map=cv.RFAM_TABLE_PRIMARY_KEYS,
@@ -234,8 +220,6 @@ def test_silver_rfam_cv_uses_correct_primary_key(dbt_models_tmpdir: Path):
     generate_dbt_models_silver(
         ["silver_rfam_family"],
         incremental_models=_INCREMENTAL_SILVER_MODELS_RFAM,
-        date_column="updated",
-        date_column_map=cv.RFAM_TABLE_DATE_COLUMNS,
         data_source_env_var="RFAM_DATA_SOURCE",
         bronze_prefix="silver_rfam_",
         primary_key_map=cv.RFAM_TABLE_PRIMARY_KEYS,
@@ -250,8 +234,6 @@ def test_silver_rfam_all_models_get_correct_macro(dbt_models_tmpdir: Path):
     generate_dbt_models_silver(
         cv.RFAM_MODELS_SILVER,
         incremental_models=_INCREMENTAL_SILVER_MODELS_RFAM,
-        date_column="updated",
-        date_column_map=cv.RFAM_TABLE_DATE_COLUMNS,
         data_source_env_var="RFAM_DATA_SOURCE",
         bronze_prefix="silver_rfam_",
         primary_key_map=cv.RFAM_TABLE_PRIMARY_KEYS,
@@ -276,21 +258,11 @@ def test_silver_rfam_all_models_get_correct_macro(dbt_models_tmpdir: Path):
 # ===========================================================================
 
 
-def test_bronze_rfam_generates_model_and_latest(dbt_models_tmpdir: Path):
-    """RFAM Bronze should generate both a main model and a _latest model."""
-    generate_dbt_models_bronze(
-        ["bronze_rfam_family"],
-        ["family"],
-        "RFAM",
-        "rfam",
-        data_source_env_var="RFAM_DATA_SOURCE",
-    )
+def test_bronze_rfam_generates_one_view_per_entity(dbt_models_tmpdir: Path):
+    """RFAM Bronze generates one view per entity and no ``_latest`` view."""
+    generate_dbt_models_bronze(["bronze_rfam_family"], "RFAM", "rfam")
     bronze_dir = dbt_models_tmpdir / "bronze"
-    assert (bronze_dir / "bronze_rfam_family.sql").exists()
-    assert (bronze_dir / "bronze_rfam_family_latest.sql").exists()
+    assert [p.name for p in bronze_dir.iterdir()] == ["bronze_rfam_family.sql"]
     main_content = (bronze_dir / "bronze_rfam_family.sql").read_text()
     assert "generate_model_bronze" in main_content
     assert "'RFAM'" in main_content
-    latest_content = (bronze_dir / "bronze_rfam_family_latest.sql").read_text()
-    assert "generate_model_bronze_latest" in latest_content
-    assert "RFAM_DATA_SOURCE" in latest_content

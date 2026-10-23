@@ -64,7 +64,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from dagster import AssetExecutionContext, AssetIn, AssetKey, Config, multi_asset
+from dagster import AssetExecutionContext, AssetKey, Config, multi_asset
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject
 from dagster_dbt.asset_utils import (
     DAGSTER_DBT_EXCLUDE_METADATA_KEY,
@@ -77,6 +77,8 @@ from dagster_dbt.asset_utils import (
 from dagster_dbt.dagster_dbt_translator import validate_translator
 from dagster_dbt.dbt_manifest import validate_manifest
 
+from ddd_python.ddd_dbt.dbt_build_with_unique_logfile import silver_vars
+
 # Write dbt logs to the mounted volume so they persist across container restarts.
 _DBT_LOG_PATH = os.getenv("DBT_LOGS_DIRECTORY", "/data/dbt_logs")
 
@@ -84,11 +86,16 @@ _DBT_LOG_PATH = os.getenv("DBT_LOGS_DIRECTORY", "/data/dbt_logs")
 class DbtSilverConfig(Config):
     """Per-run configuration for Silver dbt assets.
 
-    Set ``full_refresh: true`` in the Launchpad to pass ``--full-refresh`` to
-    dbt, rebuilding all Silver tables from scratch instead of incrementally.
+    ``full_refresh: true`` passes ``--full-refresh`` to dbt; the Silver tables
+    ignore it (``full_refresh=false``), because Silver is the state.
+    Set ``delete_guard: false`` for a run with real mass deletes, which the
+    Silver delete guard would otherwise stop, and ``skip_late_files: true`` to
+    log late Bronze files as skipped (runbook: late Bronze files).
     """
 
     full_refresh: bool = False
+    delete_guard: bool = True
+    skip_late_files: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -165,12 +172,9 @@ class DddDbtTranslator(DagsterDbtTranslator):
 
 # Shared translator instance used by all asset sets below
 _translator = DddDbtTranslator()
-_STOP_METABASE_KEY = AssetKey(["stop_metabase_asset"])
 
 
-def _dbt_multi_asset_with_metabase(
-    *, select: str, name: str, extra_deps: list[AssetKey] | None = None
-):
+def _dbt_multi_asset(*, select: str, name: str, extra_deps: list[AssetKey] | None = None):
     manifest = validate_manifest(dbt_project.manifest_path)
     translator = validate_translator(_translator)
     specs, check_specs = build_dbt_specs(
@@ -182,10 +186,8 @@ def _dbt_multi_asset_with_metabase(
         io_manager_key=None,
         project=dbt_project,
     )
-    # DuckDB is single-writer — Metabase holds a persistent read-connection to the
-    # .duckdb file and must release it before dbt can acquire the exclusive write lock.
-    merged_deps = [_STOP_METABASE_KEY, *(extra_deps or [])]
-    specs = [spec.merge_attributes(deps=merged_deps) for spec in specs]
+    if extra_deps:
+        specs = [spec.merge_attributes(deps=extra_deps) for spec in specs]
     op_tags = {
         DAGSTER_DBT_SELECT_METADATA_KEY: select,
         DAGSTER_DBT_EXCLUDE_METADATA_KEY: DBT_DEFAULT_EXCLUDE,
@@ -198,7 +200,6 @@ def _dbt_multi_asset_with_metabase(
         check_specs=check_specs,
         can_subset=True,
         op_tags=op_tags,
-        ins={"stop_metabase_asset": AssetIn(key=_STOP_METABASE_KEY)},
         allow_arbitrary_check_specs=True,
     )
 
@@ -208,14 +209,13 @@ def _dbt_multi_asset_with_metabase(
 # ---------------------------------------------------------------------------
 
 
-@_dbt_multi_asset_with_metabase(
+@_dbt_multi_asset(
     select="resource_type:seed",
     name="dbt_seeds_assets",
 )
 def dbt_seeds_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
-    stop_metabase_asset,
 ):
     """Load all dbt seeds (static CSV reference data) into DuckDB.
 
@@ -227,24 +227,18 @@ def dbt_seeds_assets(
     yield from dbt.cli(["seed", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
-dbt_seeds_assets = dbt_seeds_assets.map_asset_specs(
-    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
-)
-
-
 # ---------------------------------------------------------------------------
 # dbt assets — Bronze layer
 # ---------------------------------------------------------------------------
 
 
-@_dbt_multi_asset_with_metabase(
+@_dbt_multi_asset(
     select="bronze",
     name="dbt_bronze_assets",
 )
 def dbt_bronze_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
-    stop_metabase_asset,
 ):
     """Run all dbt Bronze models (views over the raw Bronze NDJSON files).
 
@@ -259,17 +253,12 @@ def dbt_bronze_assets(
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
-dbt_bronze_assets = dbt_bronze_assets.map_asset_specs(
-    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
-)
-
-
 # ---------------------------------------------------------------------------
 # dbt assets — Silver layer
 # ---------------------------------------------------------------------------
 
 
-@_dbt_multi_asset_with_metabase(
+@_dbt_multi_asset(
     select="silver",
     name="dbt_silver_assets",
 )
@@ -277,23 +266,18 @@ def dbt_silver_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
     config: DbtSilverConfig,
-    stop_metabase_asset,
 ):
     """Run all dbt Silver models (incremental CDC tables + current-version views).
 
     Executes ``dbt build --select silver`` against the local DuckDB target,
     reading from the Bronze views and writing to incremental Silver tables.
 
-    Set ``full_refresh: true`` in the Launchpad to rebuild all Silver tables
-    from scratch (passes ``--full-refresh`` to dbt).
+    The run config (:class:`DbtSilverConfig`) turns the delete guard off or
+    skips late Bronze files for one run.
     """
     args = ["build", "--full-refresh"] if config.full_refresh else ["build"]
+    args += silver_vars(config.delete_guard, config.skip_late_files)
     yield from dbt.cli(args + ["--log-path", _DBT_LOG_PATH], context=context).stream()
-
-
-dbt_silver_assets = dbt_silver_assets.map_asset_specs(
-    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
-)
 
 
 # ---------------------------------------------------------------------------
@@ -301,14 +285,13 @@ dbt_silver_assets = dbt_silver_assets.map_asset_specs(
 # ---------------------------------------------------------------------------
 
 
-@_dbt_multi_asset_with_metabase(
+@_dbt_multi_asset(
     select="gold",
     name="dbt_gold_assets",
 )
 def dbt_gold_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
-    stop_metabase_asset,
 ):
     """Run all dbt Gold models (dimensional views + fact table).
 
@@ -336,17 +319,12 @@ def dbt_gold_assets(
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
 
 
-dbt_gold_assets = dbt_gold_assets.map_asset_specs(
-    lambda spec: spec.merge_attributes(deps=[_STOP_METABASE_KEY])
-)
-
-
 # ---------------------------------------------------------------------------
 # dbt assets — Data Engineering layer
 # ---------------------------------------------------------------------------
 
 
-@_dbt_multi_asset_with_metabase(
+@_dbt_multi_asset(
     select="data_engineering",
     name="dbt_data_engineering_assets",
     extra_deps=[AssetKey(["export", "barrier_all_gold_exported"])],
@@ -354,7 +332,6 @@ dbt_gold_assets = dbt_gold_assets.map_asset_specs(
 def dbt_data_engineering_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
-    stop_metabase_asset,
 ):
     """Run all dbt Data Engineering models (Dagster observability layer).
 

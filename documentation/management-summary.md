@@ -6,11 +6,11 @@ This is a **demo project** that builds a data engineering pipeline with low-cost
 
 The pipeline has **three independent storage switches**, each a single environment variable:
 
-- **Bronze + DuckLake storage** (`RAW_STORAGE_TARGET`) — **local** filesystem (default, free) or **S3-compatible storage** (MinIO locally, AWS S3 in production). Controls where dlt writes extracted files and where DuckLake Parquet data lives. Independent of the other two switches.
+- **Bronze + DuckLake storage** (`RAW_STORAGE_TARGET`) — **local** filesystem (default, free) or **S3-compatible storage** (RustFS locally, AWS S3 in production). Controls where dlt writes extracted files and where DuckLake Parquet data lives. Independent of the other two switches.
 - **Silver table storage** (`SILVER_STORAGE_FORMAT`) — native **DuckDB** tables (default) or **DuckLake** (Parquet data files + a SQL catalog, adding snapshot time-travel). Both keep full SCD Type 2 history; the choice is about *where* Silver lives, not what it contains.
-- **Delta Lake export target** (`STORAGE_TARGET`) — **local** filesystem (free, fully offline), **S3-compatible storage** (MinIO locally, AWS S3 in production), or **Microsoft Fabric OneLake** (cloud, pay-per-use). The export is optional and only matters when sharing data with external tooling.
+- **Delta Lake export target** (`STORAGE_TARGET`) — **local** filesystem (free, fully offline), **S3-compatible storage** (RustFS locally, AWS S3 in production), or **Microsoft Fabric OneLake** (cloud, pay-per-use). The export is optional and only matters when sharing data with external tooling.
 
-The extraction, transformation, orchestration, BI, and backup layers are all open-source and run for free. S3-compatible storage (MinIO) is also free and local. Microsoft Fabric is the only commercial component, and only when you opt into the cloud export.
+The extraction, transformation, orchestration, BI, and backup layers are all open-source and run for free. S3-compatible storage (RustFS) is also free and local. Microsoft Fabric is the only commercial component, and only when you opt into the cloud export.
 
 ---
 
@@ -47,7 +47,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
                     │  (optional)              │
                     │                          │
                     │  A: Local disk (free)    │
-                    │  B: S3 / MinIO           │
+                    │  B: S3 / RustFS           │
                     │  C: Microsoft Fabric     │
                     │     OneLake (ADLS)       │
                     └──────────────────────────┘
@@ -76,14 +76,14 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 ## What It Demonstrates
 
 - **Medallion architecture** with SCD Type 2 historical tracking across entities from multiple sources
-- **Runs locally or in the cloud**: entirely on a laptop with Docker (free), connected to S3-compatible MinIO (free, local), or connected to Microsoft Fabric — same codebase
+- **Runs locally or in the cloud**: entirely on a laptop with Docker (free), connected to S3-compatible RustFS (free, local), or connected to Microsoft Fabric — same codebase
 - **Switchable storage at three layers**: Bronze/DuckLake on local disk or S3 (`RAW_STORAGE_TARGET`); Silver as native DuckDB or DuckLake Parquet (`SILVER_STORAGE_FORMAT`); Delta exports to local, S3, or Fabric (`STORAGE_TARGET`)
 - **Daily automation** via Dagster (two schedules, disabled by default) with run-status sensors, NDJSON run logs and ntfy.sh alerts
 - **Code-generated models**: dbt SQL models generated from macros and a Python generator for consistency
 - **Bundled BI layer**: Metabase connects directly to the DuckDB file for ad-hoc queries and dashboards — no export required
 - **Self-observability**: a dbt layer reads Dagster's own run history so the pipeline can report on its own runs
 - **Backup & restore**: a DuckLake-aware backup system archives each stateful service and ships off-site to a Hetzner StorageBox
-- **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend; MinIO for local S3-like development
+- **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend; RustFS for local S3-like development
 
 ## What It Does Not Do
 
@@ -104,7 +104,7 @@ reference project rather than an enterprise platform, and intentionally leaves o
 | Tool | License | Cost | Notes |
 | --- | --- | --- | --- |
 | **DuckDB** | MIT (open source) | **Free** | Local analytical database. No server, no license fees. |
-| **dbt-oss** | Apache 2.0 (open source) | **Free** | Transformation framework. No dbt Cloud required. |
+| **dbt-core + dbt-duckdb** | Apache 2.0 (open source) | **Free** | Transformation framework. No dbt Cloud required. |
 | **dlt** | Apache 2.0 (open source) | **Free** | Data extraction library. |
 | **Dagster** | Apache 2.0 (open source) | **Free** | Orchestrator. Self-hosted via Docker, no Dagster Cloud required. |
 | **deltalake** | Apache 2.0 (open source) | **Free** | Delta Lake writer for Python. |

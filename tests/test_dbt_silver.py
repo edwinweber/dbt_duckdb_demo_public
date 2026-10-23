@@ -1,9 +1,9 @@
 """Real dbt runs of the Silver layer.
 
-Runs dbt-oss on copies of the CI sample (``tests/fixtures/bronze_sample``) in pytest's
+Runs dbt (dbt-core + dbt-duckdb) on copies of the CI sample (``tests/fixtures/bronze_sample``) in pytest's
 tmp directories and checks the Silver tables that both Silver macros produce:
 ``generate_model_silver_full_extraction`` and ``generate_model_silver_incr_extraction``
-with their pre- and post-hooks.  Every case in the table of
+with their compile-time bookkeeping (``silver_files``) and post-hooks.  Every case in the table of
 ``documentation/dbt_transformations.md`` §3.10 has a test here, plus the building blocks
 of §3.1 (hash, LKHS_ columns, file names, bookmark, ``_cv`` views).
 ``test_integration_silver_cdc.py`` reproduces parts of the SQL without dbt.
@@ -86,20 +86,22 @@ class SilverProject:
         }
 
     # -- Bronze files --------------------------------------------------------------
-    def file_name(self, day: int, suffix: str = ".json") -> str:
-        return f"{self.entity}_202601{day:02d}_000000{suffix}"
+    def file_name(self, day: int, suffix: str = ".json", full: bool = False) -> str:
+        """``full`` marks a full extraction of an incremental entity (``..._full.json``)."""
+        return f"{self.entity}_202601{day:02d}_000000{'_full' if full else ''}{suffix}"
 
     def base_rows(self) -> list[dict]:
         text = (self.entity_dir / self.file_name(1)).read_text()
         return [json.loads(line) for line in text.splitlines() if line.strip()]
 
-    def write(self, day: int, rows: list[dict], suffix: str = ".json") -> None:
+    def write(self, day: int, rows: list[dict], suffix: str = ".json", full: bool = False) -> None:
         text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
-        (self.entity_dir / self.file_name(day, suffix)).write_text(text)
+        (self.entity_dir / self.file_name(day, suffix, full)).write_text(text)
 
     def remove(self, *days: int) -> None:
         for day in days:
-            (self.entity_dir / self.file_name(day)).unlink()
+            for full in (False, True):
+                (self.entity_dir / self.file_name(day, full=full)).unlink(missing_ok=True)
 
     # -- dbt -----------------------------------------------------------------------
     def dbt(self, *args: str) -> subprocess.CompletedProcess:
@@ -120,12 +122,23 @@ class SilverProject:
             args.append("--full-refresh")
         self._must(*args)
 
-    def run(self, full_refresh: bool = False) -> None:
+    def run(self, full_refresh: bool = False, dbt_vars: str | None = None) -> None:
         """Bronze views + Silver, as the pipeline runs them."""
+        self._must(*self._run_args(full_refresh, dbt_vars))
+
+    def run_fails(self, message: str) -> None:
+        """A normal run that must fail with ``message`` in dbt's output."""
+        result = self.dbt(*self._run_args())
+        assert result.returncode != 0, "the run should have failed"
+        assert message in result.stdout, result.stdout[-3000:]
+
+    def _run_args(self, full_refresh: bool = False, dbt_vars: str | None = None) -> list[str]:
         args = ["run", "--select", f"+{self.model}"]
         if full_refresh:
             args.append("--full-refresh")
-        self._must(*args)
+        if dbt_vars:
+            args += ["--vars", dbt_vars]
+        return args
 
     def data_tests_pass(self) -> bool:
         """The model's generic data tests (the singular grain test needs all DDD tables)."""
@@ -136,8 +149,8 @@ class SilverProject:
 
     # -- reading the database ------------------------------------------------------
     def sql(self, query: str, params: list | None = None) -> list[tuple]:
-        """Run a query; {t}, {cv} and {lf} are the Silver table, its _cv view and its
-        _last_file table, {bronze} is the Bronze view."""
+        """Run a query; {t}, {cv}, {lf} and {fl} are the Silver table, its _cv view, its
+        _last_file table and its _files log, {bronze} is the Bronze view."""
         con = duckdb.connect(str(self.root / "test.duckdb"), read_only=True)
         try:
             schema = "test.main_silver"
@@ -150,6 +163,7 @@ class SilverProject:
                 t=f"{schema}.{self.model}",
                 cv=f"{schema}.{self.model}_cv",
                 lf=f"{schema}.{self.model}_last_file",
+                fl=f"{schema}.{self.model}_files",
                 bronze=bronze,
             )
             return con.execute(query, params or []).fetchall()
@@ -171,11 +185,11 @@ class SilverProject:
     def versions(self, key: Any) -> list[dict]:
         rows = self.sql(
             "SELECT LKHS_cdc_operation, day(LKHS_date_valid_from), LKHS_filename, LKHS_hash_value, "
-            "LKHS_date_inserted, LKHS_date_inserted_src, LKHS_source_system_code "
+            "LKHS_date_inserted, LKHS_source_system_code "
             f"FROM {{t}} WHERE {self.pk} = ? ORDER BY LKHS_date_valid_from",
             [key],
         )
-        names = ["op", "day", "filename", "hash", "inserted", "inserted_src", "code"]
+        names = ["op", "day", "filename", "hash", "inserted", "code"]
         return [dict(zip(names, r, strict=True)) for r in rows]
 
     def snapshot(self) -> list[tuple]:
@@ -299,13 +313,11 @@ def test_hash_null_token_and_delimiter(project):
 def test_file_name_variants_and_bookmark(project):
     """Files named .json, .jsonl and .json.jsonl (dlt versions) are all read; valid_from
     comes from the timestamp in the name; _last_file holds the newest processed file and
-    its predecessor."""
+    _files logs every processed file."""
     p = project("sagskategori")
     rows = p.base_rows()
     p.build()
-    assert p.sql("SELECT LKHS_filename, LKHS_filename_previous FROM {lf}") == [
-        (p.file_name(1), None)
-    ]
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(1),)]
     p.write(2, [p.change(rows[0]), *rows[1:]], suffix=".jsonl")
     p.run()
     p.write(3, [p.change(rows[0]), p.change(rows[1]), *rows[2:]], suffix=".json.jsonl")
@@ -315,8 +327,11 @@ def test_file_name_variants_and_bookmark(project):
         p.file_name(1),
         p.file_name(3, ".json.jsonl"),
     ]
-    assert p.sql("SELECT LKHS_filename, LKHS_filename_previous FROM {lf}") == [
-        (p.file_name(3, ".json.jsonl"), p.file_name(2, ".jsonl"))
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(3, ".json.jsonl"),)]
+    assert p.sql("SELECT LKHS_filename, LKHS_status FROM {fl} ORDER BY 1") == [
+        (p.file_name(1), "processed"),
+        (p.file_name(2, ".jsonl"), "processed"),
+        (p.file_name(3, ".json.jsonl"), "processed"),
     ]
     assert not _violations(p)
 
@@ -346,41 +361,6 @@ def test_source_system_code_and_date_inserted(project):
     inserted = p.sql("SELECT DISTINCT LKHS_date_inserted FROM {t} ORDER BY 1")
     assert len(inserted) == 2 and inserted[0] == first_run[0]
     assert p.sql("SELECT DISTINCT LKHS_source_system_code FROM {t}") == [("DDD",)]
-
-
-def test_date_inserted_src_with_a_date_column(project):
-    """With a date column, LKHS_date_inserted_src is the earliest value of that column for
-    the key over all Bronze files."""
-    p = project("sagskategori")
-    rows = p.base_rows()
-    p.build()
-    original_text = rows[0]["opdateringsdato"]
-    later = {**p.change(rows[0]), "opdateringsdato": "2099" + original_text[4:]}  # same format
-    p.write(2, [later, *rows[1:]])
-    p.run()
-    versions = p.versions(rows[0]["id"])
-    original = p.sql(
-        "SELECT CAST(opdateringsdato AS DATETIME) FROM {bronze} WHERE id = ? AND LKHS_filename = ?",
-        [rows[0]["id"], p.file_name(1)],
-    )[0][0]
-    assert [v["op"] for v in versions] == ["I", "U"]
-    assert {v["inserted_src"] for v in versions} == {original}
-
-
-def test_date_inserted_src_without_a_date_column(project):
-    """Without a date column (here Rfam author), LKHS_date_inserted_src is the timestamp of
-    the first file that contains the key."""
-    p = project("author")
-    rows = p.base_rows()
-    late_key = rows[-1]
-    p.write(1, rows[:-1])
-    p.build()
-    p.write(2, rows)
-    p.run()
-    assert p.versions(rows[0]["author_id"])[0]["inserted_src"].day == 1
-    assert [(v["op"], v["inserted_src"].day) for v in p.versions(late_key["author_id"])] == [
-        ("I", 2)
-    ]
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -522,8 +502,9 @@ def test_full_extract_data_tests_pass(full_lifecycle, path):
 # Incremental entities: lifecycle (§3.3, §3.4, §3.5)
 # ═════════════════════════════════════════════════════════════════════════════════
 #
-# Day 1 complete; day 2 complete + full refresh; day 3 incremental file + normal run;
-# day 4 complete + full refresh; day 5 complete + normal run.
+# Day 1 complete; day 2, 4 and 5 are full extractions (file name ends in _full); day 3 is an
+# incremental file.  Every file is processed on its own, as a full file must be; only a full
+# file deletes.
 #
 #   A  missing on day 2, back unchanged on day 3          I1 D2 I3
 #   B  missing on day 2, back changed on day 3            I1 D2 I3
@@ -545,9 +526,9 @@ INCR_EXPECTED = {
               "E": "I1 U3", "G": "I1 D2 I3 U5", "H": "I1", "J": "I1 D2 I3 D4 I5"},
 }  # fmt: skip
 
-INCR_PATHS = ["one run per file", "days 3+4 in one full refresh", "days 3+4 in one normal run"]
-
 INCR_COMBINATIONS = [("duckdb", "stemme"), ("ducklake", "stemme"), ("duckdb", "family")]
+
+FULL_DAYS = {2, 4, 5}  # the full extractions of the incremental lifecycle
 
 
 def _incremental_files(p: SilverProject) -> tuple[dict[int, list[dict]], dict[Any, str]]:
@@ -570,7 +551,7 @@ def _incremental_files(p: SilverProject) -> tuple[dict[int, list[dict]], dict[An
     return files, names
 
 
-def _run_incremental_path(p: SilverProject, path: str) -> dict[str, Any]:
+def _run_incremental_lifecycle(p: SilverProject) -> dict[str, Any]:
     files, names = _incremental_files(p)
     record: dict[str, Any] = {"names": names}
 
@@ -579,153 +560,166 @@ def _run_incremental_path(p: SilverProject, path: str) -> dict[str, Any]:
         record[f"violations {label}"] = _violations(p)
 
     p.build()
-    p.write(2, files[2])
-    p.run(full_refresh=True)
-    observe("day 2")
-    record["first D inserted"] = {
-        k: p.versions(k)[1]["inserted"] for k, v in names.items() if v in ("D", "J")
-    }
-    if path == "one run per file":
-        p.write(3, files[3])
+    for day in (2, 3, 4, 5):
+        p.write(day, files[day], full=day in FULL_DAYS)
         p.run()
-        observe("day 3")
-        before = p.snapshot()
-        p.run()
-        record["repeat run unchanged"] = p.snapshot() == before
-        p.write(4, files[4])
-        p.run(full_refresh=True)
-    elif path == "days 3+4 in one full refresh":
-        p.write(3, files[3])
-        p.write(4, files[4])
-        p.run(full_refresh=True)
-    else:
-        p.write(3, files[3])
-        p.write(4, files[4])
-        p.run()
-        observe("day 3")
-        p.run(full_refresh=True)
-    observe("day 4")
-    p.write(5, files[5])
-    p.run()
-    observe("day 5")
-    before = p.snapshot()
-    p.run(full_refresh=True)
-    record["full refresh unchanged"] = p.snapshot() == before
+        observe(f"day {day}")
+        if day == 3:
+            before = p.snapshot()
+            p.run()
+            record["repeat run unchanged"] = p.snapshot() == before
+    everything = "SELECT * FROM {t} ORDER BY ALL"
+    before_rows = p.sql(everything)
+    p.run(full_refresh=True)  # ignored: the delete history cannot be rebuilt from Bronze
+    record["full refresh ignored"] = p.sql(everything) == before_rows
     observe("day 5 after full refresh")
-    record["carried D inserted"] = {
-        k: p.versions(k)[1]["inserted"] for k, v in names.items() if v in ("D", "J")
-    }
     record["data tests pass"] = p.data_tests_pass()
-    record["snapshot"] = p.snapshot()
     return record
 
 
 @pytest.fixture(scope="module", params=INCR_COMBINATIONS, ids=lambda c: f"{c[0]}-{c[1]}")
-def incremental_lifecycle(request, tmp_path_factory) -> dict[str, dict[str, Any]]:
+def incremental_lifecycle(request, tmp_path_factory) -> dict[str, Any]:
     storage_format, entity = request.param
-    results = {}
-    for path in INCR_PATHS:
-        root = tmp_path_factory.mktemp(f"incr_{storage_format}_{entity}_{path.replace(' ', '_')}")
-        results[path] = _run_incremental_path(SilverProject(root, storage_format, entity), path)
-    return results
+    root = tmp_path_factory.mktemp(f"incr_{storage_format}_{entity}")
+    return _run_incremental_lifecycle(SilverProject(root, storage_format, entity))
 
 
-@pytest.mark.parametrize("path", INCR_PATHS)
-def test_incremental_histories(incremental_lifecycle, path):
-    record = incremental_lifecycle[path]
-    for label, histories in record.items():
+def test_incremental_histories(incremental_lifecycle):
+    for label, histories in incremental_lifecycle.items():
         if label.startswith("histories "):
             day = label.removeprefix("histories ").removesuffix(" after full refresh")
-            assert histories == INCR_EXPECTED[day], f"{path}, {label}"
+            assert histories == INCR_EXPECTED[day], label
 
 
-@pytest.mark.parametrize("path", INCR_PATHS)
-def test_incremental_invariants(incremental_lifecycle, path):
-    for label, violations in incremental_lifecycle[path].items():
+def test_incremental_invariants(incremental_lifecycle):
+    for label, violations in incremental_lifecycle.items():
         if label.startswith("violations "):
-            assert not violations, f"{path}, {label}: {violations}"
+            assert not violations, f"{label}: {violations}"
 
 
-def test_incremental_carried_deletes_keep_their_date_inserted(incremental_lifecycle):
-    """A full refresh rewrites LKHS_date_inserted of every rebuilt row, but a carried
-    D row keeps the value of the run that wrote it."""
-    record = incremental_lifecycle["one run per file"]
-    assert record["carried D inserted"] == record["first D inserted"]
+def test_incremental_repeat_run_changes_nothing_and_full_refresh_is_ignored(incremental_lifecycle):
+    assert incremental_lifecycle["repeat run unchanged"]
+    assert incremental_lifecycle["full refresh ignored"]
 
 
-def test_incremental_repeat_run_and_full_refresh_change_nothing(incremental_lifecycle):
-    assert incremental_lifecycle["one run per file"]["repeat run unchanged"]
-    for path in INCR_PATHS:
-        assert incremental_lifecycle[path]["full refresh unchanged"], path
-
-
-def test_incremental_paths_give_identical_tables(incremental_lifecycle):
-    reference = incremental_lifecycle[INCR_PATHS[0]]["snapshot"]
-    for path in INCR_PATHS[1:]:
-        assert incremental_lifecycle[path]["snapshot"] == reference, path
-
-
-@pytest.mark.parametrize("path", INCR_PATHS)
-def test_incremental_data_tests_pass(incremental_lifecycle, path):
-    assert incremental_lifecycle[path]["data tests pass"]
+def test_incremental_data_tests_pass(incremental_lifecycle):
+    assert incremental_lifecycle["data tests pass"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
-# Incremental entities: full refresh details (§3.4)
+# Incremental entities: deletes come from _full files (§3.4)
 # ═════════════════════════════════════════════════════════════════════════════════
 
 
-def test_full_refresh_of_a_new_table_writes_no_deletes(project):
+def test_a_first_build_writes_no_deletes(project):
+    """Deletes compare a full file with Silver, so a first build writes none, also with a
+    _full file among the files."""
     p = project("stemme")
     rows = p.base_rows()
-    p.write(2, rows[1:])  # key 0 missing from the newest file
-    p.build(full_refresh=True)
+    p.write(2, rows[1:], full=True)  # key 0 missing from a full file
+    p.build()
     assert p.histories({rows[0]["id"]: "k"}) == {"k": "I1"}
 
 
-def test_new_delete_has_the_newest_file_and_the_deleted_content(project):
+def test_a_plain_file_never_deletes_even_when_it_is_complete(project):
+    p = project("stemme")
+    rows = p.base_rows()
+    p.write(2, rows[1:])  # key 0 missing, but the file is not marked _full
+    p.build()
+    p.write(3, rows[2:])
+    p.run()
+    assert p.histories({rows[0]["id"]: "k0", rows[1]["id"]: "k1"}) == {"k0": "I1", "k1": "I1"}
+
+
+def test_new_delete_has_the_full_file_and_the_deleted_content(project):
     p = project("stemme")
     rows = p.base_rows()
     k = rows[0]["id"]
     p.build()
     p.write(2, [p.change(rows[0])])  # incremental file: k changed
     p.run()
-    p.write(3, rows[1:])  # complete file without k
-    p.run(full_refresh=True)
+    p.write(3, rows[1:], full=True)  # full file without k, found by a normal run
+    p.run()
     u, d = p.versions(k)[1:]
     assert (u["op"], d["op"], d["day"]) == ("U", "D", 3)
-    assert d["filename"] == p.file_name(3)
+    assert d["filename"] == p.file_name(3, full=True)
     assert d["hash"] == u["hash"]
 
 
-def test_false_deletes_and_their_repair(project):
-    """Runbook §7: a full refresh on an incremental newest file deletes every key that is
-    not in it.  A full extraction plus a normal run brings them back as I; deleting the
-    false D rows and running a full refresh removes the pair from the history."""
+def test_a_key_that_is_back_before_the_next_full_file_is_not_deleted(project):
+    p = project("stemme")
+    rows = p.base_rows()
+    k = rows[0]["id"]
+    p.build()
+    p.write(2, rows[1:])  # plain file without k
+    p.run()
+    p.write(3, rows, full=True)  # full file with k
+    p.run()
+    assert p.histories({k: "k"}) == {"k": "I1"}
+
+
+@pytest.mark.parametrize("together", [False, True], ids=["one run per file", "one run"])
+def test_several_plain_files_in_one_run(project, together):
+    """Only a full file must be processed on its own: plain files after a delete can be
+    processed together and give the same history, including a deleted key that comes back."""
+    p = project("stemme")
+    rows = p.base_rows()
+    back, changed = rows[0], rows[1]
+    names = {back["id"]: "back", changed["id"]: "changed"}
+    p.build()
+    p.write(2, rows[2:], full=True)  # both keys deleted
+    p.run()
+    p.write(3, [back])  # back with its old content
+    if not together:
+        p.run()
+    p.write(4, [back, p.change(changed)])  # the other key back, changed
+    p.run()
+    assert p.histories(names) == {"back": "I1 D2 I3", "changed": "I1 D2 I4"}
+    assert not _violations(p)
+
+
+def test_a_full_file_with_other_files_to_process_stops_the_run(project):
+    """A full file must be the only file to process: the run fails and writes nothing.
+    Processed one at a time, the same files give the delete."""
+    p = project("stemme")
+    rows = p.base_rows()
+    k = rows[0]["id"]
+    p.build()
+    p.write(2, rows)
+    p.write(3, rows[1:], full=True)  # full file without k, pending together with day 2
+    before = p.snapshot()
+    result = p.dbt("run", "--select", f"+{p.model}")
+    assert result.returncode != 0
+    assert "must be the only Bronze file to process" in result.stdout
+    assert p.snapshot() == before
+    p.remove(3)
+    p.run()
+    p.write(3, rows[1:], full=True)
+    p.run()
+    assert p.histories({k: "k"}) == {"k": "I1 D3"}
+
+
+def test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard(project):
+    """A _full file that is not complete would delete every key it lacks, so the delete guard
+    stops the run and nothing is written.  Forced through, the next real full extraction brings
+    the keys back as I; the false D rows stay in the history (runbook §7)."""
     p = project("stemme")
     rows = p.base_rows()
     kept, gone = rows[0]["id"], rows[100]["id"]
     names = {kept: "kept", gone: "gone"}
     p.build()
-    p.write(2, rows[:5])  # incremental file with five keys
-    p.run(full_refresh=True)
+    p.write(2, rows[:5], full=True)  # incremental file with five keys, marked _full by mistake
+    before = p.snapshot()
+    p.run_fails(f"would delete {len(rows) - 5} of {len(rows)} live keys")
+    assert p.snapshot() == before
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(1),)]
+    p.run(dbt_vars="{silver_delete_guard: false}")
     assert p.histories(names) == {"kept": "I1", "gone": "I1 D2"}
     assert p.sql("SELECT COUNT(*) FROM {cv} WHERE LKHS_cdc_operation = 'D'")[0][0] == len(rows) - 5
-    p.write(3, rows)  # full extraction
+    p.write(3, rows, full=True)  # the real full extraction
     p.run()
     assert p.histories(names) == {"kept": "I1", "gone": "I1 D2 I3"}
     assert p.sql("SELECT COUNT(*) FROM {cv} WHERE LKHS_cdc_operation = 'D'")[0][0] == 0
-    false_run = p.sql("SELECT DISTINCT LKHS_date_inserted FROM {t} WHERE LKHS_cdc_operation = 'D'")
-    assert len(false_run) == 1
-    con = duckdb.connect(str(p.root / "test.duckdb"))
-    con.execute(
-        f"DELETE FROM test.main_silver.{p.model} WHERE LKHS_cdc_operation = 'D' AND LKHS_date_inserted = ?",
-        [false_run[0][0]],
-    )
-    con.close()
-    p.run(full_refresh=True)
-    assert p.histories(names) == {"kept": "I1", "gone": "I1"}
-    assert p.operations_on(3) == {}
     assert not _violations(p)
 
 
@@ -735,36 +729,139 @@ def test_false_deletes_and_their_repair(project):
 
 
 @pytest.mark.parametrize("entity", ["sagskategori", "stemme"])
-def test_late_file_newer_than_the_bookmarks_predecessor(project, entity):
+def test_a_late_file_stops_the_run_until_it_is_skipped(project, entity):
+    """A run reads only the files newer than the bookmark, so a file with an older timestamp
+    that arrives later can never be merged into the history.  It is not in the _files log, so
+    the run stops; with silver_skip_late_files it is logged as skipped and never read."""
     p = project(entity)
     rows = p.base_rows()
     k = rows[0][p.pk]
     p.build()
     p.write(3, rows)
-    p.run()  # _last_file: day 3, predecessor day 1
+    p.run()  # bookmark: day 3
     p.write(2, [p.change(rows[0]), *rows[1:]])  # day 2 arrives late
-    p.run()
-    assert p.histories({k: "k"}) == {"k": "I1 U2 U3"}
+    changed = [rows[0], p.change(rows[1]), *rows[2:]]
+    p.write(4, changed if entity == "sagskategori" else changed[1:2])
+    before = p.snapshot()
+    p.run_fails(f"never processed: {p.file_name(2)}")
+    assert p.snapshot() == before
+    p.run(dbt_vars="{silver_skip_late_files: true}")
+    assert p.histories({k: "k", rows[1][p.pk]: "next"}) == {"k": "I1", "next": "I1 U4"}
+    assert p.sql("SELECT LKHS_filename, LKHS_status FROM {fl} ORDER BY 1") == [
+        (p.file_name(1), "processed"),
+        (p.file_name(2), "skipped"),
+        (p.file_name(3), "processed"),
+        (p.file_name(4), "processed"),
+    ]
+    p.run()  # a skipped file is known: later runs go on
     assert not _violations(p)
 
 
-@pytest.mark.parametrize("entity", ["sagskategori", "stemme"])
-def test_late_file_older_than_the_bookmarks_predecessor(project, entity):
-    p = project(entity)
+def test_a_silver_table_from_an_older_version_is_migrated(project):
+    """A Silver table built by an older version has a _last_file table with the old columns
+    and no _files log.  The next run converts the bookmark in place (the new column comes last,
+    so the bookmark is written by column name) and seeds the log with the files then in the
+    folder up to the bookmark: they are not late files."""
+    p = project("sagskategori")
     rows = p.base_rows()
-    k = rows[0][p.pk]
     p.build()
-    p.write(3, rows)
+    p.write(2, rows)
     p.run()
-    p.write(5, rows)
-    p.run()  # _last_file: day 5, predecessor day 3
-    p.write(2, [p.change(rows[0]), *rows[1:]])  # day 2 arrives very late
+    con = duckdb.connect(str(p.root / "test.duckdb"))
+    schema = "test.main_silver"
+    con.execute(f"DROP TABLE {schema}.{p.model}_files")
+    con.execute(f"DROP TABLE {schema}.{p.model}_last_file")
+    con.execute(
+        f"CREATE TABLE {schema}.{p.model}_last_file (LKHS_filename VARCHAR, "
+        "LKHS_date_valid_from TIMESTAMP, LKHS_filename_previous VARCHAR, "
+        "LKHS_date_valid_from_previous TIMESTAMP, LKHS_date_inserted TIMESTAMP)"
+    )
+    con.execute(
+        f"INSERT INTO {schema}.{p.model}_last_file VALUES (?, '2026-01-02', ?, '2026-01-01', NULL)",
+        [p.file_name(2), p.file_name(1)],
+    )
+    con.close()
+    p.write(3, [p.change(rows[0]), *rows[1:]])
     p.run()
-    assert p.histories({k: "k"}) == {"k": "I1 U3"}  # day 2 skipped, day 3 compared with it
-    assert p.violations()["U row with the hash of the version before it"] == 1
-    p.run(full_refresh=True)  # day 5 is complete, so this is allowed for incremental too
-    assert p.histories({k: "k"}) == {"k": "I1 U2 U3"}
+    assert [c[0] for c in p.sql("DESCRIBE {lf}")] == [
+        "LKHS_filename", "LKHS_date_inserted", "LKHS_filename_pending"
+    ]  # fmt: skip
+    assert p.sql("SELECT LKHS_filename, LKHS_filename_pending FROM {lf}") == [
+        (p.file_name(3), p.file_name(3))
+    ]
+    assert p.sql("SELECT LKHS_filename, LKHS_status FROM {fl} ORDER BY 1") == [
+        (p.file_name(1), "seeded"),
+        (p.file_name(2), "seeded"),
+        (p.file_name(3), "processed"),
+    ]
+    assert p.histories({rows[0]["id"]: "k"}) == {"k": "I1 U3"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════════
+# The delete guard
+# ═════════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("together", [False, True], ids=["alone", "with a good file first"])
+def test_a_truncated_snapshot_stops_the_run(project, together):
+    """A full-extract file that lacks most keys looks like a failed extraction: the run stops
+    and writes nothing, also when the file comes after a good one in the same run.  When the
+    deletes are real, one run with the guard turned off writes them."""
+    p = project("sagskategori")
+    rows = p.base_rows()
+    p.build()
+    if together:
+        p.write(2, [p.change(rows[0]), *rows[1:]])
+    p.write(3, rows[:5])  # 26 of 31 keys missing
+    before = p.snapshot()
+    p.run_fails(f"{p.file_name(3)} would delete {len(rows) - 5} of {len(rows)} live keys")
+    assert p.snapshot() == before
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(1),)]
+    p.run(dbt_vars="{silver_delete_guard: false}")
+    expected = {"D": len(rows) - 5, "U": 1} if together else {"D": len(rows) - 5}  # key 0 is back
+    assert p.operations_on(3) == expected
     assert not _violations(p)
+
+
+# ═════════════════════════════════════════════════════════════════════════════════
+# Column types that Bronze infers differently later
+# ═════════════════════════════════════════════════════════════════════════════════
+
+
+def test_a_type_bronze_infers_differently_after_archiving_gives_no_false_updates(project):
+    """read_json_auto infers types from the files in the folder.  A decimal value makes typeid
+    DOUBLE in Silver; once that file is archived Bronze reads BIGINT.  Bronze is cast to Silver's
+    type before hashing, so an unchanged key hashes 1.0 as before and gets no false U."""
+    p = project("stemme")
+    rows = p.base_rows()
+    k, other = rows[0], rows[1]
+    p.write(1, [{**k, "typeid": 1.5}, *rows[1:]])
+    p.build()
+    p.write(2, [k])  # typeid back to an integer: U2
+    p.run()
+    p.remove(1)  # archived: Bronze now reads typeid as BIGINT
+    p.write(3, [k, p.change(other)])  # k unchanged, the other key changed
+    p.run()
+    bronze_type = p.sql(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = 'bronze_ddd_stemme' AND column_name = 'typeid'"
+    )[0][0]
+    silver_type = dict((c[0], c[1]) for c in p.sql("DESCRIBE {t}"))["typeid"]
+    assert (bronze_type, silver_type) == ("BIGINT", "DOUBLE")
+    assert p.histories({k["id"]: "k", other["id"]: "other"}) == {"k": "I1 U2", "other": "I1 U3"}
+    assert not _violations(p)
+
+
+def test_a_value_that_does_not_fit_silvers_type_stops_the_run(project):
+    """A value the Silver column cannot hold is a real type change: the run stops and Silver's
+    column must be altered by hand (runbook)."""
+    p = project("stemme")
+    rows = p.base_rows()
+    p.build()
+    p.write(2, [{**rows[0], "typeid": "not a number"}])
+    before = p.snapshot()
+    p.run_fails("not a number")
+    assert p.snapshot() == before
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -772,105 +869,80 @@ def test_late_file_older_than_the_bookmarks_predecessor(project, entity):
 # ═════════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize(("prune", "expected"), [((1,), "I1 U5"), ((1, 2), "I1 I3 U5")])
-def test_full_extract_pruning(project, prune, expected):
-    """Keeping the newest processed file, LKHS_filename_previous and the file before it
-    is enough; deleting that file too gives every key an extra I."""
-    p = project("sagskategori")
-    rows = p.base_rows()
-    p.build()
-    for day in (2, 3, 4):
-        p.write(day, rows)
-        p.run()  # _last_file: day 4, predecessor day 3
-    p.remove(*prune)
-    p.write(5, [p.change(rows[0]), *rows[1:]])
-    p.run()
-    assert p.histories({rows[0]["id"]: "k"}) == {"k": expected}
-
-
 @pytest.mark.parametrize(
-    ("days_after_full_extraction", "expected_k", "extra_i_on_day_3"),
-    [((4, 5), "I1 U2 U6", False), ((4,), "I1 U2 I3 U6", True)],
-    ids=["full extraction older than predecessor", "full extraction is the predecessor"],
+    ("entity", "storage_format"),
+    [("sagskategori", "duckdb"), ("stemme", "duckdb"), ("stemme", "ducklake")],
 )
-def test_incremental_pruning_down_to_a_full_extraction(
-    project, days_after_full_extraction, expected_k, extra_i_on_day_3
-):
-    """Remaining files start with the full extraction of day 3.  Safe when it is older
-    than LKHS_filename_previous; when it is the predecessor, every key gets an extra I."""
-    p = project("stemme")
-    rows = p.base_rows()
-    k, w = rows[0], rows[2]
-    state = {r["id"]: r for r in rows}
-    p.build()
-    state[k["id"]] = p.change(k)
-    p.write(2, [state[k["id"]]])
-    p.run()
-    p.write(3, list(state.values()))  # full extraction
-    p.run()
-    for day in days_after_full_extraction:
-        p.write(day, [state[rows[1]["id"]]])  # incremental files, nothing changed
-        p.run()
-    p.remove(1, 2)
-    state[k["id"]], state[w["id"]] = p.change(state[k["id"]]), p.change(w)
-    p.write(6, [state[k["id"]], state[w["id"]]])
-    p.run()
-    histories = p.histories({k["id"]: "k", w["id"]: "w"})
-    assert histories["k"] == expected_k
-    assert histories["w"] == ("I1 U6" if not extra_i_on_day_3 else "I1 I3 U6")
-    assert (p.operations_on(3).get("I", 0) == len(rows)) == extra_i_on_day_3
-
-
-def test_incremental_pruning_without_a_full_extraction(project):
-    """The oldest remaining file is incremental: a key whose previous version was pruned
-    gets I instead of U, and a later full extraction gives unchanged keys a second I."""
-    p = project("stemme")
-    rows = p.base_rows()
-    x, z, w = rows[0], rows[1], rows[2]
-    p.build()
-    p.write(2, [p.change(x)])
-    p.run()
-    p.write(3, [p.change(p.change(x))])
-    p.run()  # _last_file: day 3, predecessor day 2
-    p.remove(1)
-    p.write(4, [p.change(z)])
-    p.run()
-    assert p.histories({z["id"]: "z"}) == {"z": "I1 I4"}
-    p.write(5, [p.change(p.change(x)), p.change(z), *rows[2:]])  # full extraction
-    p.run()
-    assert p.histories({w["id"]: "w"}) == {"w": "I1 I5"}
-    assert p.operations_on(5) == {"I": len(rows) - 2}
-
-
-@pytest.mark.parametrize("entity", ["sagskategori", "stemme"])
-def test_full_refresh_after_pruning_keeps_only_the_remaining_history(project, entity):
-    """A full refresh rebuilds from the remaining files: history before them is lost,
-    a key that only exists in pruned files keeps only a D (incremental) or nothing
-    (full-extract), and incremental D rows are carried forward."""
-    p = project(entity)
+def test_processed_files_can_be_archived(project, entity, storage_format):
+    """Silver is the state, so processed Bronze files can go (the newest processed file stays,
+    so that the Bronze views have a file to read).  Later files are compared with Silver, and
+    a full refresh is ignored: nothing of the history is lost."""
+    full = entity == "stemme"  # the snapshots of an incremental entity are full extractions
+    p = project(entity, storage_format)
     rows = p.base_rows()
     x, gone, deleted = rows[0], rows[1], rows[2]
     others = rows[3:]
     names = {x[p.pk]: "x", gone[p.pk]: "gone", deleted[p.pk]: "deleted", others[0][p.pk]: "other"}
     p.build()
-    p.write(2, [p.change(x), gone, *others])  # complete, `deleted` missing
-    p.run(full_refresh=True)
-    p.write(3, [p.change(p.change(x)), *others])  # complete, `gone` also missing
-    p.write(4, [p.change(p.change(x)), *others])
+    p.write(2, [p.change(x), gone, *others], full=full)  # `deleted` missing: D2
     p.run()
-    p.remove(1, 2)
+    p.write(3, [p.change(p.change(x)), *others], full=full)  # `gone` also missing: D3
+    p.run()
+    history = {"x": "I1 U2 U3", "gone": "I1 D3", "deleted": "I1 D2", "other": "I1"}
+    assert p.histories(names) == history
+    p.remove(1, 2)  # archived; day 3 is the newest processed file
     p.run(full_refresh=True)
-    histories = p.histories(names)
-    assert histories["x"] == "I3" and histories["other"] == "I3"
-    if entity == "stemme":
-        # Incremental: the existing D rows are carried forward; `gone` (only in pruned
-        # files) is missing from the newest file, so it keeps only a new D.
-        assert histories["deleted"] == "D2"
-        assert histories["gone"] == "D4"
-    else:
-        # Full-extract: deletes are derived from the remaining file pairs only.
-        assert histories["deleted"] == ""
-        assert histories["gone"] == ""
+    assert p.histories(names) == history
+    # Both deleted keys come back, one with its old content, one changed; x changes again.
+    p.write(4, [p.change(p.change(p.change(x))), deleted, p.change(gone), *others], full=full)
+    p.run()
+    assert p.histories(names) == {
+        "x": "I1 U2 U3 U4", "gone": "I1 D3 I4", "deleted": "I1 D2 I4", "other": "I1"
+    }  # fmt: skip
+    assert not _violations(p)
+
+
+def test_a_silver_run_after_archiving_reads_the_current_bronze_columns(project):
+    """dlt writes a column only into files where a row has a value, so archiving can take a
+    column out of what the Bronze view reads.  information_schema still lists it until the view
+    is created again; a Silver run without the Bronze views (as dbt_silver_job runs) must work
+    all the same, because the Silver macros read the columns with DESCRIBE."""
+    p = project("stemme")
+    rows = p.base_rows()
+    other = rows[1]
+    p.write(1, [{**rows[0], "_test_marker": "x"}, *rows[1:]])  # the only file with the column
+    p.build()
+    p.write(2, [p.change(other)])
+    p.run()
+    p.remove(1)  # archived: no file in the folder has _test_marker any more
+    p.write(3, [p.change(p.change(other))])
+    p._must("run", "--select", p.model)  # Silver only, the Bronze view is not created again
+    assert p.histories({other["id"]: "other"}) == {"other": "I1 U2 U3"}
+    assert not _violations(p)
+
+
+def test_a_delete_lines_up_with_a_new_source_column(project):
+    """The deleted version is read from Silver, where a new source column sits at the end of
+    the table.  The D row must still have the right value in every column."""
+    p = project("stemme")
+    rows = p.base_rows()
+    k, others = rows[0], rows[1:]
+
+    def mark(r: dict) -> dict:
+        return {**r, "_test_marker": "x"}
+
+    p.build()
+    p.write(2, [mark(k)])  # incremental file: a new field, appended at the end of Silver
+    p.run()
+    p.write(3, [mark(r) for r in others], full=True)  # full file without k: D3
+    p.run()
+    marker, typeid, day = p.sql(
+        f"SELECT _test_marker, typeid, day(LKHS_date_valid_from) FROM {{t}} "
+        f"WHERE {p.pk} = ? AND LKHS_cdc_operation = 'D'",
+        [k[p.pk]],
+    )[0]
+    assert (marker, typeid, day) == ("x", k["typeid"], 3)
+    assert not _violations(p)
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -883,9 +955,9 @@ def test_full_refresh_after_pruning_keeps_only_the_remaining_history(project, en
     [("stemme", "duckdb"), ("stemme", "ducklake"), ("sagskategori", "duckdb")],
 )
 def test_new_source_column_then_full_refresh(project, entity, storage_format):
-    """A new field gives a U for keys that have a value in it.  A normal run adds the
-    column at the end of the Silver table; the following full refresh still writes
-    correctly aligned rows and recomputes the hashes of all versions."""
+    """A new field gives a U only for keys that have a value in it: Silver's latest version is
+    hashed again with the current columns, the new one counting as NULL.  A normal run adds the
+    column at the end of the Silver table; a full refresh is ignored."""
     p = project(entity, storage_format)
     pk = p.pk
     rows = p.base_rows()
@@ -902,23 +974,23 @@ def test_new_source_column_then_full_refresh(project, entity, storage_format):
     assert p.sql("DESCRIBE {t}")[-1][0] == "_test_marker"
     names = {rows[0][pk]: "marked", rows[6][pk]: "unmarked", missing: "missing"}
     assert p.histories(names) == {"marked": "I1 U2", "unmarked": "I1", "missing": "I1"}
-    p.write(3, [mark(r) for r in rows if r[pk] != missing])  # complete, one key missing
-    p.run(full_refresh=True)
-    assert p.histories(names) == {"marked": "I1 U2", "unmarked": "I1", "missing": "I1 D3"}
-    columns = [c[0] for c in p.sql("DESCRIBE {t}")]
-    assert columns.index("_test_marker") < columns.index("LKHS_filename")  # Bronze order again
-    assert not _violations(p)
-    assert p.versions(rows[6][pk])[0]["hash"] != first_hash  # hashes recomputed
+    p.write(3, [mark(r) for r in rows if r[pk] != missing], full=True)  # complete, one key missing
+    p.run()
+    expected = {"marked": "I1 U2", "unmarked": "I1", "missing": "I1 D3"}
+    assert p.histories(names) == expected
     before = p.snapshot()
     p.run(full_refresh=True)
     assert p.snapshot() == before
+    assert p.sql("DESCRIBE {t}")[-1][0] == "_test_marker"
+    assert p.versions(rows[6][pk])[0]["hash"] == first_hash
+    assert not _violations(p)
     assert p.data_tests_pass()
 
 
 @pytest.mark.parametrize("entity", ["sagskategori", "stemme"])
 def test_dropped_source_field(project, entity):
     """A field the source stops sending stays in Bronze as NULL, so every key that had a
-    value gets a U; a full refresh afterwards keeps that history."""
+    value gets a U; a full refresh afterwards is ignored."""
     p = project(entity)
     rows = p.base_rows()
     field = {"sagskategori": "kategori", "stemme": "typeid"}[entity]
@@ -927,7 +999,7 @@ def test_dropped_source_field(project, entity):
     p.run()
     assert p.operations_on(2) == {"U": len(rows)}
     before = p.snapshot()
-    p.run(full_refresh=True)  # day 2 is complete, so this is allowed for both
+    p.run(full_refresh=True)
     assert p.snapshot() == before
     assert not _violations(p)
 

@@ -86,7 +86,6 @@ select  case_step.LKHS_case_id
 ,       case_step_status.status           AS case_step_status_danish
 ,       case_step_type.type               AS case_step_type_danish
 --      Metadata
-,       case_src.LKHS_date_inserted_src
 ,       CASE
             WHEN case_src.LKHS_row_version = 1
                 THEN CAST('1900-01-01' AS DATETIME)
@@ -143,7 +142,6 @@ SELECT 0                              AS LKHS_case_id
 ,      NULL                           AS case_status_danish
 ,      NULL                           AS case_step_status_danish
 ,      NULL                           AS case_step_type_danish
-,      CAST('1900-01-01' AS DATETIME) AS LKHS_date_inserted_src
 ,      CAST('1900-01-01' AS DATETIME) AS LKHS_date_valid_from
 ,      CAST('9999-12-31' AS DATETIME) AS LKHS_date_valid_to
 ,      1                              AS LKHS_row_version

@@ -29,8 +29,8 @@ from typing import Literal
 from ddd_python.ddd_dlt import dlt_pipeline_execution_functions as dpef
 from ddd_python.ddd_dlt.dlt_pipeline_execution_functions import PipelineTask
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
-from ddd_python.ddd_utils.path_utils import build_bronze_destination_path
-from ddd_python.ddd_utils.string_utils import resolve_date_to_load_from
+from ddd_python.ddd_utils.path_utils import build_bronze_destination_path, build_bronze_file_name
+from ddd_python.ddd_utils.string_utils import is_full_extract, resolve_date_to_load_from
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,11 @@ def run_extraction_pipelines_rfam(
             date_to_load_from=date_to_load_from,
         )
 
-        destination_file_name = f"{table_name}_{start_time:%Y%m%d_%H%M%S}.json"
+        destination_file_name = build_bronze_file_name(
+            table_name,
+            start_time,
+            full=table_name in incremental_set and is_full_extract(date_to_load_from),
+        )
         dest_dir = build_bronze_destination_path(SOURCE_SYSTEM_CODE, table_name)
 
         tasks.append(

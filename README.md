@@ -24,7 +24,7 @@ trade-off is simplicity and cost; the patterns still apply on a larger platform.
 | What does it do? | Pulls 18 Danish Parliament entities and 7 Rfam tables, keeps every version in Silver (SCD Type 2), models a star schema in Gold, and optionally publishes Delta Lake tables. |
 | Where is the main SQL? | Hash-based CDC in [`dbt/macros/`](dbt/macros/) ([explained](documentation/dbt_transformations.md)); star schema in [`dbt/models/gold/`](dbt/models/gold/). |
 | Where is the main Python? | One pipeline engine behind both the CLI and Dagster: [`dlt_pipeline_execution_functions.py`](ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py); asset factories in [`ddd_dagster/`](ddd_python/ddd_dagster/). |
-| Can I see it run without credentials? | CI runs a real `dbt build` (122 models, 2 seeds, 263 data tests) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
+| Can I see it run without credentials? | CI runs a real `dbt build` (105 models, 2 seeds, 314 data tests) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
 | How is it verified? | About 300 pytest tests with an 80% coverage floor, ruff and mypy, `dbt parse` on all three storage targets, real dbt runs of every documented Silver case, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
 | Why these trade-offs? | [design_decisions.md](documentation/design_decisions.md) lists the alternatives and what was given up. |
 
@@ -65,7 +65,7 @@ host install without Docker, see [Local setup](#local-setup-without-docker).
                  ▼                               ▼ (STORAGE_TARGET)
             Metabase                   local disk / S3 / Fabric OneLake → Power BI
 
- Dagster runs it all daily (06:00 Europe/Copenhagen), stopping Metabase while dbt writes.
+ Dagster runs it all daily (06:00 Europe/Copenhagen); duckdb_server is the only writer.
 ```
 
 The three switches are independent; [storage_combinations.md](documentation/storage_combinations.md)
@@ -77,15 +77,16 @@ export target: Bronze files and logs stay local (or, for Bronze, on S3).
 - **Hash-based CDC with SCD Type 2.** Every Silver table keeps every version of
   every row. Changes are found by comparing a SHA-256 hash of the business
   columns across extraction files. Full-extract tables detect deletes on every
-  run; date-filtered incremental entities detect them on a `--full-refresh`
-  after a full extraction ([details](documentation/dbt_transformations.md#3-silver-cdc-into-scd-type-2)).
+  run; date-filtered incremental entities detect them when a full extraction
+  (a file named `..._full.json`) is processed on its own ([details](documentation/dbt_transformations.md#3-silver-cdc-into-scd-type-2)).
 - **Stateless incremental extraction.** Incremental entities reload a fixed
   lookback window (31 days for the API, 365 for Rfam) instead of keeping a
   cursor. The overlap is harmless because unchanged rows hash the same, so reruns
   and failed runs need no state repair.
-- **DuckDB's single writer.** dbt jobs run in one process while extraction and
-  export run four-wide; Metabase is stopped before dbt writes and restarted
-  afterwards, also when a run fails.
+- **DuckDB's single writer.** In Docker the `duckdb_server` container is the only
+  process with the database file open; Dagster, dbt and Metabase are its quack
+  clients, so nothing is stopped for a run. dbt jobs run in one process,
+  extraction and export four-wide.
 - **Switchable Silver storage.** Native DuckDB tables, or DuckLake (Parquet plus
   a catalog, locally or on S3), with no change to the models.
 - **Delta export with an in-database dedup.** The Silver export anti-joins
@@ -113,12 +114,13 @@ availability. More in [design_decisions.md](documentation/design_decisions.md#th
 | --- | --- |
 | Language | Python ≥ 3.13 |
 | Extraction | dlt ≥ 1.31 |
-| Transformation | dbt-oss 2.0.5 (standalone binary) + dbt-utils 1.4.1 |
-| Query engine | DuckDB ≥ 1.5.6, < 1.6 |
+| Transformation | dbt-core ≥ 1.12.6 + dbt-duckdb ≥ 1.11.0 + dbt-utils 1.4.1 |
+| Query engine | DuckDB ≥ 2.0.0 |
+| Single-writer server | `duckdb_quack_server.py` (Docker); all containers connect via quack RPC |
 | Silver storage | DuckDB tables or DuckLake |
 | Orchestration | Dagster ≥ 1.13.26 |
 | Export | `deltalake` + PyArrow → local, S3 or Microsoft Fabric OneLake |
-| BI | Metabase (reads the DuckDB file); Power BI via OneLake |
+| BI | Metabase (connects via quack); Power BI via OneLake |
 | Alerting | ntfy.sh push notifications (optional) |
 | Deployment | Docker Compose on a Hetzner CPX42 |
 
@@ -138,7 +140,6 @@ availability. More in [design_decisions.md](documentation/design_decisions.md#th
 ```bash
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dagster,dev]"
-bash scripts/install_dbt_oss.sh          # dbt-oss 2.0.5 → ~/.local/bin/dbt
 cp .env.example .env                     # replace the /path/to/repo placeholders
 set -a && source .env && set +a          # the dbt CLI reads its settings from the environment
 
@@ -175,17 +176,17 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 
 ## Lessons learned
 
-- **DuckDB allows one writer per file.** A dbt run waits for a lock while
-  another process, such as Metabase, holds a connection. dbt therefore runs in
-  one process, and Metabase is stopped during dbt runs.
+- **DuckDB allows one writer per file.** A server process (`duckdb_server`, DuckDB's
+  quack protocol) owns the file, and dbt, Dagster and Metabase connect to it as
+  clients, so readers no longer block writers.
 - **A lookback window works instead of a cursor when the next layer is
   idempotent.** The hash CDC ignores the overlap, and there is no state to
   repair after a failed run.
 - **Deletes need a complete snapshot.** An incremental extract cannot show a
-  deletion, so a `--full-refresh` of an incremental entity must follow a full
-  extraction; on a partial file it records false deletes.
-- **DuckDB 1.5 reads Delta but cannot write it,** so the export reads with
-  DuckDB and writes with `deltalake`.
+  deletion, so incremental entities record deletes only from a full extraction
+  (`..._full.json`); a partial file marked as full records false deletes.
+- **The DuckDB delta writer has an Azure/OneLake regression,** so the export
+  reads with DuckDB (`delta_scan`) and writes with `deltalake` + PyArrow.
 - **DuckLake keeps very small tables inline in the catalog.** Not every table
   appears as a Parquet file on disk; this is expected.
 - **Lazy configuration allows offline work.** Code generation and tests import
@@ -215,8 +216,8 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 | `ddd_python/` | Python package: `ddd_dlt` (extraction, export), `ddd_dbt` (model generator, dbt runner), `ddd_dagster` (orchestration), `ddd_utils` (configuration, paths, backups) |
 | `dbt/` | dbt project: models, macros, seeds, tests |
 | `tests/` | pytest suite and the CI data sample |
-| `docker/`, `docker-compose*.yml` | Images and services (`run`, `dagster`, `metabase`, `backup`; MinIO as an override) |
-| `scripts/` | Operator scripts: dbt-oss install, Metabase stop/start, deploy, backup cron, CI sample |
+| `docker/`, `docker-compose*.yml` | Images and services (`run`, `dagster`, `metabase`, `backup`; RustFS as an override) |
+| `scripts/` | Operator scripts: deploy, backup cron, host setup, CI sample, DuckDB upgrade |
 | `documentation/` | The guides above |
 
 ## License and contact

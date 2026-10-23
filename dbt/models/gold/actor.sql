@@ -61,7 +61,6 @@ SELECT  actor.LKHS_actor_id
             - position('<partyShortname>' in biografi)
             - length('<partyShortname>')
         )                             AS party_short_name
-,       actor.LKHS_date_inserted_src
 --      Make the first row_version valid from 1900-01-01.
 ,       CASE
             WHEN actor.LKHS_row_version = 1
@@ -95,7 +94,6 @@ select  0                              AS LKHS_actor_id
 ,       NULL                           AS death_date
 ,       NULL                           AS party_name
 ,       NULL                           AS party_short_name
-,       CAST('1900-01-01' AS DATETIME) AS LKHS_date_inserted_src
 ,       CAST('1900-01-01' AS DATETIME) AS LKHS_date_valid_from
 ,       CAST('9999-12-31' AS DATETIME) AS LKHS_date_valid_to
 ,       1                              AS LKHS_row_version

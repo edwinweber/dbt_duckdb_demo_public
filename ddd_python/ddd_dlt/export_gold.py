@@ -8,6 +8,7 @@ comes from ``open_export_connection()`` which attaches the DuckLake catalog if n
 import argparse
 import logging
 
+from deltalake import DeltaTable
 from deltalake.writer import write_deltalake
 
 import duckdb
@@ -16,11 +17,44 @@ from ddd_python.ddd_utils.path_utils import build_delta_export_path, open_export
 
 logger = logging.getLogger(__name__)
 
+# Gold is overwritten on every run, so each run leaves a full copy of the table behind.
+# Keep 7 days of time travel and delete everything older.
+GOLD_RETENTION_DAYS = 7
+_RETENTION_PROPERTIES = {
+    "delta.logRetentionDuration": f"interval {GOLD_RETENTION_DAYS} days",
+    "delta.deletedFileRetentionDuration": f"interval {GOLD_RETENTION_DAYS} days",
+}
+
+
+def _prune_history(path: str, storage_options: dict, table: str) -> None:
+    """Limit a Gold Delta table's time travel to ``GOLD_RETENTION_DAYS``.
+
+    Sets the retention properties, vacuums data files no longer referenced by a
+    version inside the window (including untracked leftovers), and removes expired ``_delta_log`` entries.
+    Failures are logged and swallowed: the export itself already succeeded, and
+    the next run prunes again.
+    """
+    try:
+        dt = DeltaTable(path, storage_options=storage_options)
+        dt.alter.set_table_properties(_RETENTION_PROPERTIES)
+        removed = dt.vacuum(
+            retention_hours=GOLD_RETENTION_DAYS * 24,
+            dry_run=False,
+            enforce_retention_duration=True,
+            full=True,  # also remove files the log no longer tracks
+        )
+        dt.create_checkpoint()
+        dt.cleanup_metadata()
+        logger.info("Pruned Gold Delta-table %s — %d old file(s) removed.", table, len(removed))
+    except Exception as e:
+        logger.warning("Could not prune Gold Delta-table %s: %s", table, e)
+
 
 def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) -> int:
     """Export one Gold table from DuckDB to the configured Delta Lake destination.
 
-    Gold tables are always fully overwritten (``mode="overwrite"``).
+    Gold tables are always fully overwritten (``mode="overwrite"``). Afterwards
+    history older than ``GOLD_RETENTION_DAYS`` is pruned.
 
     Returns:
         Number of rows written.
@@ -30,17 +64,19 @@ def export_single_gold_table(connection: duckdb.DuckDBPyConnection, table: str) 
     if db is None:
         raise OSError("DUCKDB_DATABASE must be set")
     query = f"SELECT * FROM {db}.main_gold.{table}"
-    result = connection.execute(query)
-    df = result.to_arrow_table()
+    arrow_table = connection.sql(query).to_arrow_table()
+    if arrow_table is None:
+        raise RuntimeError(f"DuckDB returned None for Gold query on {table}")
     write_deltalake(
         target_table_path,
-        df,
+        arrow_table,
         mode="overwrite",
         schema_mode="merge",
         storage_options=storage_options,
     )
-    logger.info("Replaced Gold Delta-table %s — %d rows written.", table, df.num_rows)
-    return int(df.num_rows)
+    logger.info("Replaced Gold Delta-table %s — %d rows written.", table, arrow_table.num_rows)
+    _prune_history(target_table_path, storage_options, table)
+    return int(arrow_table.num_rows)
 
 
 def write_tables_to_delta_gold(connection: duckdb.DuckDBPyConnection, tables: list[str]) -> None:

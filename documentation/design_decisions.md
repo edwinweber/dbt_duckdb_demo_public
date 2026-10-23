@@ -86,9 +86,9 @@ dashboards, not for low-latency serving.
 
 **Schema evolution.** New source columns flow through: `read_json_auto` with
 `union_by_name` picks them up in Bronze, the hash expression is rebuilt from
-`information_schema`, and Silver uses `on_schema_change='append_new_columns'`.
-Renames, type changes and dropped columns need a deliberate change plus a
-`--full-refresh` of the affected model.
+the Bronze view's current columns (`DESCRIBE`), and Silver uses `on_schema_change='append_new_columns'`.
+Renames and type changes need a deliberate change of the Silver table, because
+Silver is the state and is not rebuilt.
 
 ---
 
@@ -112,14 +112,15 @@ unchanged rows hash the same.
 **Given up.**
 
 - The hash says *that* a row changed, not *which* columns changed.
-- **Deletes of incremental entities are only detected on a `--full-refresh`.**
-  A deleted record just stops appearing in date-filtered extracts. A full
-  refresh compares Silver's current state with the newest Bronze file
-  (`bronze_<entity>_latest`), so that file must be a **complete** snapshot:
-  run a full extraction (early `date_to_load_from`) first. A periodic
-  full-keyset reconciliation would close the gap; it is not implemented.
+- **Deletes of incremental entities are only detected at a full extraction.**
+  A deleted record just stops appearing in date-filtered extracts. Full
+  extractions are marked `_full` in the file name (`date_to_load_from` of
+  `1900-01-01` or earlier). When a `_full` file is the only new file, every key
+  that is alive in Silver and missing from it gets a `D`; a key that comes back
+  later gets an `I`. A deleted key stays visible until the next full extraction,
+  so run one regularly, and only a complete extraction may carry the marker.
   Full-extract entities detect deletes on every run. Details:
-  [dbt_transformations.md §3.4](dbt_transformations.md#34-deletes-of-incremental-entities---full-refresh-only).
+  [dbt_transformations.md §3.4](dbt_transformations.md#34-deletes-of-incremental-entities-_full-files).
 - Tracking columns are excluded from the hash, so a re-run with no data change
   leaves no trace in Silver (intended).
 
@@ -166,12 +167,13 @@ for tests; the run history in SQLite feeds the observability layer.
 
 **Consequences of the single writer (ADR-1).**
 
-- dbt jobs and `full_pipeline_job` use `in_process_executor`; extraction and
-  export jobs run four-wide with `multiprocess_executor`. Inside
-  `full_pipeline_job` the extraction steps therefore also run one by one.
-- Metabase is stopped before and started after every job that writes
-  (`_with_metabase_control`), and every writing asset depends on
-  `stop_metabase_asset`. If a run fails, the failure sensor restarts Metabase.
+- dbt jobs use `in_process_executor`; extraction and export jobs run four-wide
+  with `multiprocess_executor`; `full_pipeline_job` runs two steps at a time
+  (`FULL_PIPELINE_MAX_CONCURRENT`). Asset dependencies keep the layer order, and
+  with `duckdb_server` parallel dbt steps are separate quack clients.
+- In Docker, Metabase and Dagster are quack clients of `duckdb_server`, which owns
+  the file, so Metabase is not stopped around writing jobs (see ADR-12). Outside
+  Docker only one process may write the file at a time.
 
 ---
 
@@ -194,8 +196,8 @@ Parquet data can live in object storage.
 - Two code paths. Every Silver helper table must be qualified with
   `{{ this.database }}`, because DuckDB will not let one transaction write to two
   databases.
-- Switching moves no data: rebuild Silver from Bronze or, for
-  `duckdb` → `ducklake`, run `migrate_silver_to_ducklake`.
+- Switching moves no data: Silver is the state, so for `duckdb` → `ducklake` run
+  `migrate_silver_to_ducklake`.
 - Parquet takes more space than the native format, and BI tools need the
   `ducklake` extension plus an `ATTACH` (Metabase's image has it built in).
 - The catalog needs occasional maintenance (`ducklake_cleanup_job`).
@@ -210,9 +212,10 @@ the Silver table against `delta_scan('<target>')` on (primary key,
 `deltalake.write_deltalake`. Gold is a full overwrite and does not read the
 target.
 
-**Context.** At the pinned DuckDB version (≥1.5.6, <1.6) the delta extension
-can only read. Newer DuckDB versions can write Delta, but have an Azure/OneLake
-regression.
+**Context.** DuckDB ≥ 2.0 can write Delta directly via its delta extension,
+but there is an Azure/OneLake regression in the DuckDB delta writer; the
+`deltalake` library write path works correctly for all three export destinations
+(local, S3, OneLake). The split read/write approach is therefore kept.
 
 **Alternatives.** Read the target with `DeltaTable(...).to_pyarrow_table()`
 (loads the whole target into memory every run); Parquet then convert (extra I/O).
@@ -220,15 +223,15 @@ regression.
 **Gained.** Only the join keys of the target are read, with projection pushdown;
 the write path is a mature library.
 
-**Given up.** Two libraries in one code path. Revisit on the next DuckDB upgrade,
-once a writer-capable version is pinned **and** the Azure regression is fixed.
+**Given up.** Two libraries in one code path. Revisit once the Azure regression
+in the DuckDB delta writer is fixed.
 
 ---
 
 ## ADR-8: One source of truth for entities
 
 **Decision.** `ddd_python/ddd_utils/configuration_variables.py` holds every
-entity list, primary key, date column and Rfam query. Model names and other
+entity list, primary key and Rfam query. Model names and other
 lists are derived from it with comprehensions; the model generator, Dagster
 asset factories and tests all read it.
 
@@ -237,7 +240,7 @@ what to extract); YAML (another format to validate); per-layer lists (drift).
 
 **Gained.** Adding an entity is a list change plus `generate_dbt_models`.
 Import-time checks (`ValueError`, so they survive `python -O`) catch a table
-without a primary key or date-column entry; `test_configuration_variables.py`
+without a primary key; `test_configuration_variables.py`
 checks subsets and counts.
 
 **Given up.** No adding entities at runtime. The Gold star schema is still
@@ -273,7 +276,7 @@ always stay local.
 **Alternatives.** Always S3 (breaks offline development); one combined switch
 (cannot express "Bronze on S3, export to OneLake").
 
-**Gained.** Durable, shareable raw data when needed (MinIO locally, AWS S3 in
+**Gained.** Durable, shareable raw data when needed (RustFS locally, AWS S3 in
 production) while the default stays offline. With DuckLake on S3,
 `DUCKLAKE_DATA_PATH` is derived from the bucket variables.
 
@@ -281,6 +284,80 @@ production) while the default stays offline. With DuckLake on S3,
 [storage_combinations.md](storage_combinations.md)) and more variables to set. In
 S3 mode the local DuckLake backup is skipped; bucket versioning is the
 durability mechanism.
+
+---
+
+## ADR-11: dbt-core + dbt-duckdb (replaced dbt-oss)
+
+**Decision.** The project uses `dbt-core` + `dbt-duckdb` (Python packages,
+pinned as ranges), replacing the earlier `dbt-oss 2.0.8`.
+
+**Why dbt-oss was removed.** `dbt-oss` 2.0.8 bundled DuckDB 1.5.4 inside the
+Rust binary. When the project upgraded to DuckDB ≥ 2.0, dbt-oss could not
+connect to the quack RPC server (the protocol changed between DuckDB versions).
+There is no upgrade path for dbt-oss 2.x to support a newer embedded DuckDB
+without a rebuild of the Rust binary. Additionally, `dbt-oss` ships the `dbt`
+Python namespace; installing it alongside `dagster-dbt` (which also pulls in
+`dbt-core`) causes a `NoneType.enabled` crash in dagster-dbt's NodeSelector
+(issue #34215). `dbt-core` + `dbt-duckdb` do not have this conflict.
+
+**Alternatives.** The proprietary `dbt` distribution (same Python packages as
+`dbt-core` under a different license); `dbt-oss` 2.x rebuilt against DuckDB 2.x
+(not publicly available).
+
+**Gained.** Compatible with DuckDB ≥ 2.0 and the quack server. The adapter
+(`dbt-duckdb`) can be patched via `dbt_quack.py` to connect via quack RPC
+instead of opening the file directly, which is how Docker mode achieves the
+single-writer guarantee. The toolchain remains fully open source (Apache 2.0 /
+MIT).
+
+**Given up.** The single executable convenience of dbt-oss. The `dbt` binary is
+now the dbt-core CLI entry point.
+
+**Compatibility note.** Do not reinstall `dbt-oss` alongside `dbt-core`; the
+shared `dbt` namespace conflict will crash dagster-dbt. Run `pip check` after
+any dbt-related package change.
+
+---
+
+## ADR-12: DuckDB 2.0 and the quack single-writer server
+
+**Decision.** The project runs DuckDB ≥ 2.0 and, in Docker mode, routes all
+database access through a single long-lived `duckdb_quack_server.py` process
+that owns the `.duckdb` file exclusively. All other containers (dagster, run,
+metabase) connect via quack RPC (token-authenticated, TCP).
+
+**Context.** DuckDB has a strict single-writer rule; before this change,
+Metabase had to be stopped before every dbt run, with shell scripts coordinating
+the Docker lifecycle. DuckDB 2.0 ships the `quack` extension which exposes a
+read-write server interface. A dedicated server container that holds the one
+write connection removes the stop/start cycle entirely.
+
+**Rationale.**
+- `duckdb_server` container: mounts `/data/duckdb` and `/data/dagster`; all
+  other services connect via `QUACK_SERVER_HOST=duckdb_server`.
+- `dbt_quack.py` monkey-patches `dbt-duckdb`'s environment class to open a
+  quack connection when `QUACK_SERVER_HOST` is set, leaving the local-file code
+  path unchanged for non-Docker use.
+- `QUACK_SERVER_TOKEN` is required (≥ 4 chars) and SQL-escaped with
+  `token.replace("'", "''")` before interpolation (quack's `CREATE SECRET` does
+  not accept bound parameters).
+- `dagster_step_failures_raw` switches from NDJSON files to a `sqlite_scan` of
+  `$DAGSTER_HOME/history/runs/*.db`, which the server already mounts; the
+  failure sensor no longer exports step-failure NDJSON files.
+
+**Alternatives.** DuckDB WAL mode with concurrent readers (not supported; DuckDB
+does not offer a native server mode before 2.0); MotherDuck (cloud dependency,
+not wanted for this project).
+
+**Gained.** No Metabase stop/start cycle; simpler Dagster job definitions;
+Metabase stays connected while dbt runs. The quack adapter is activated only by
+`QUACK_SERVER_HOST`, so local (non-Docker) usage is unaffected.
+
+**Given up.** An additional container to keep running; the quack extension is
+relatively new and its API may change before DuckDB 3.0. Outside Docker the
+single-writer rule still applies; do not open a second read-write DuckDB
+connection from Python.
 
 ---
 
@@ -294,16 +371,18 @@ Versions are pinned as ranges in [`pyproject.toml`](../pyproject.toml).
 | `requests` | OData pagination loop (follows `odata.nextLink`, 30 s timeout) |
 | `sqlalchemy` + `pymysql` | Rfam extraction: streamed queries with bound parameters; pure-Python driver, no C build in the image |
 | `python-dotenv` | Loads `.env` before configuration is read |
-| `duckdb` | The query engine (ADR-1); pinned `<1.6` for the delta extension (ADR-7) |
-| `deltalake` + `pyarrow` | Writes Delta tables; Arrow is the zero-copy hand-off from DuckDB |
+| `duckdb` | The query engine (ADR-1); pinned `>=2.0.0,<3` |
+| `deltalake` + `pyarrow` | Writes Delta tables; Arrow is the zero-copy hand-off from DuckDB (ADR-7) |
 | `azure-identity` + `azure-storage-file-datalake` | OneLake export only: service-principal token for `deltalake`, and the Fabric capacity pause/resume CLI. Imported lazily |
 | `dagster`, `dagster-webserver`, `dagster-dbt` | Orchestration and UI (`[dagster]` extra); `dagster-dbt` drives the dbt binary in CLI mode |
+| `dbt-core` + `dbt-duckdb` + `dbt-utils` | dbt transformation layer; `dbt-duckdb` is the DuckDB adapter; `dbt_quack.py` patches it for quack RPC in Docker (ADR-11, ADR-12) |
 | `pytest`, `pytest-cov`, `ruff`, `mypy`, `types-requests`, `pandas`, `boto3` | Tests, coverage, lint/format, types (`[dev]` extra). pandas only reads query results in tests; boto3 only creates buckets in the S3 tests |
 
-**dbt is not a Python dependency.** dbt-oss 2.0.5 is a standalone binary with
-the DuckDB adapter built in, installed by `scripts/install_dbt_oss.sh` (and in
-the Dockerfile) with a SHA-256 check. Installing a dbt Python package next to
-`dagster-dbt` would switch it out of CLI mode.
+**dbt-core + dbt-duckdb are installed with pip.** `dbt-core` provides the `dbt`
+CLI; `dbt-duckdb` provides the DuckDB adapter. `dagster-dbt` stays in CLI mode
+(`DbtCliResource`). Do not reinstall `dbt-oss` alongside these packages; they
+share the `dbt` Python namespace and will crash dagster-dbt (issue #34215).
+Why `dbt-core` and not `dbt-oss`: ADR-11.
 
 **Capped on purpose:** `grpcio-health-checking<1.82` in the `[dagster]` extra,
 because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
@@ -343,17 +422,18 @@ Deliberate limits of a single-node reference project:
 - One server: no high availability or failover (nightly backups instead), and
   no dev/staging/prod split.
 - Access control is the firewall plus file permissions; no row-level security.
-- Deletes in incremental entities need a full extraction plus a
-  `--full-refresh` (ADR-3).
-- Bronze can only be pruned down to a complete file that is older than
-  `LKHS_filename_previous` in the model's `_last_file` table. Silver compares
-  each version with the key's previous version in Bronze, and a normal run
-  evaluates the files from `LKHS_filename_previous` onwards again. For
-  incremental entities that means a full extraction after which at least two
-  newer files have been processed; full-extract entities need their last three
-  processed files. Pruning more gives extra `I` rows in Silver, and a full
-  refresh after pruning keeps only the history in the remaining files. Details:
-  [dbt_transformations.md §3.6](dbt_transformations.md#36-never-delete-bronze-files-arbitrarily).
+- Deletes in incremental entities are only seen at a full extraction (a `_full`
+  file), so they are as late as the full extractions are rare (ADR-3).
+- Silver is the state, not a function of the Bronze files: a run compares only
+  the files newer than the model's bookmark with Silver's latest version of each
+  key, and Silver models ignore `--full-refresh`. That keeps a run's cost
+  independent of the history and lets processed Bronze files be archived
+  (`bronze_archive_job`, on demand); the price is that repairs go through backups
+  or a replay instead of a rebuild. Bronze plus its archive still holds every
+  extract, which is what a replay reads. Because a wrong Silver run cannot be
+  undone by a refresh, a run stops on a probable mass delete (the delete guard)
+  and on late files, and Bronze is cast to Silver's column types. Details:
+  [dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2).
 
 Improvements worth making, roughly in order of value:
 

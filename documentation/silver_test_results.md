@@ -1,9 +1,17 @@
 # Silver Layer: Test Cases and Results
 
 Every test of the Silver CDC logic, what it checks, the expected result and the
-result of a run on 2026-10-13. The logic itself is described in
+result of a run on 2026-10-20. The logic itself is described in
 [dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2);
 section numbers (§3.x) below refer to that document.
+
+> **Superseded.** This is the dated record of a run on 2026-10-20 against the
+> macros of commit `498482d`. Since then deletes of incremental entities come from
+> a `_full` file processed on its own ([dbt_transformations.md §3.4](dbt_transformations.md#34-deletes-of-incremental-entities-_full-files)),
+> Silver is the state (a run compares only new Bronze files with Silver and is never
+> rebuilt), and the column `LKHS_date_inserted_src` was removed. Several tests below
+> were rewritten, renamed or removed; the current tests are listed in
+> [dbt_transformations.md §3.11](dbt_transformations.md#311-how-this-is-verified).
 
 ## Summary
 
@@ -11,12 +19,13 @@ section numbers (§3.x) below refer to that document.
 | --- | --- | --- | --- | --- |
 | [`test_dbt_silver.py`](../tests/test_dbt_silver.py) | the real macros, with dbt-oss on copies of the CI sample | 91 | **91 passed** | 66 passed, **25 failed** |
 | [`test_integration_silver_cdc.py`](../tests/test_integration_silver_cdc.py) | hand-written copies of the macro SQL in DuckDB, no dbt | 32 | **32 passed** | not run (the mirrors follow the new SQL) |
-| **Total** | | **123** | **123 passed** in 245 s | |
+| **Total** | | **123** | **123 passed** in 266 s | |
 
-**Environment:** dbt-oss 2.0.5, DuckDB 1.5.6, Python 3.13.16, pytest 9.1.1, WSL2.
-The macros in `dbt/macros/` are those of commit `498482d` (no local changes);
-the test modules are the working-tree versions (`test_dbt_silver.py` is the
-renamed and extended `test_dbt_silver_incremental_deletes.py`).
+**Environment:** dbt-oss 2.0.8, DuckDB 1.5.6, Python 3.13.16, pytest 9.1.1, WSL2.
+The macros in `dbt/macros/` are those of commit `498482d` (unchanged up to
+`c5465ed`, the commit of this run); the test modules are those of `c5465ed`.
+The "before the fix" column was measured on 2026-10-13 with dbt-oss 2.0.5 and
+was not rerun.
 
 **Commands:**
 

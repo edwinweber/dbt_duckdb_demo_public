@@ -82,7 +82,7 @@ AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
 # ── Storage target (optional — eager) ───────────────────────────────────
 # Controls the Delta Lake export destination (Silver/Gold layer output).
 #   local   — write to LOCAL_STORAGE_PATH on disk (default; no credentials needed)
-#   s3      — write to S3-compatible storage (MinIO or AWS S3); requires S3_BUCKET_DELTA
+#   s3      — write to S3-compatible storage (RustFS or AWS S3); requires S3_BUCKET_DELTA
 #   onelake — write to Microsoft Fabric OneLake via abfss://; requires Azure SP
 # Set LOCAL_STORAGE_PATH to override the default local base path.
 _VALID_STORAGE_TARGETS = frozenset({"local", "onelake", "s3"})
@@ -95,6 +95,8 @@ if _storage_target not in _VALID_STORAGE_TARGETS:
 STORAGE_TARGET = _storage_target
 LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "data")
 DLT_PIPELINE_RUN_LOG_DIR = os.getenv("DLT_PIPELINE_RUN_LOG_DIR", f"{LOCAL_STORAGE_PATH}/logs")
+# Where archive_bronze moves processed Bronze files (on demand, see bronze_archive_job).
+BRONZE_ARCHIVE_DIR = os.getenv("BRONZE_ARCHIVE_DIR", f"{LOCAL_STORAGE_PATH}/archive/Bronze")
 
 # ── Silver storage format (optional — eager) ─────────────────────────────
 # "duckdb"   — silver tables are native DuckDB tables (default)
@@ -119,7 +121,7 @@ DUCKLAKE_DATA_PATH = os.getenv("DUCKLAKE_DATA_PATH")
 # DuckLake Silver Parquet files.  Independent of STORAGE_TARGET (Delta Lake
 # export destination).  These files never go to OneLake.
 #   local — local disk under LOCAL_STORAGE_PATH (default)
-#   s3    — S3-compatible storage (MinIO locally, AWS S3 in production)
+#   s3    — S3-compatible storage (RustFS locally, AWS S3 in production)
 RAW_STORAGE_TARGET = os.getenv("RAW_STORAGE_TARGET", "local")
 if RAW_STORAGE_TARGET not in {"local", "s3"}:
     raise OSError(f"RAW_STORAGE_TARGET must be 'local' or 's3', got: {RAW_STORAGE_TARGET!r}")
@@ -130,7 +132,7 @@ if RAW_STORAGE_TARGET not in {"local", "s3"}:
 # for the relevant switch.  Accessing any S3_* attribute when neither switch
 # is "s3" raises AttributeError, mirroring how OneLake credentials are only
 # resolved when STORAGE_TARGET=onelake.
-# MinIO (local dev): set S3_ENDPOINT, S3_USE_SSL=false, S3_URL_STYLE=path.
+# RustFS (local dev): set S3_ENDPOINT, S3_USE_SSL=false, S3_URL_STYLE=path.
 # AWS S3 (production): omit S3_ENDPOINT (empty = AWS default), S3_USE_SSL=true, S3_URL_STYLE=vhost.
 _any_s3 = RAW_STORAGE_TARGET == "s3" or STORAGE_TARGET == "s3"
 if _any_s3:
@@ -171,6 +173,19 @@ if STORAGE_TARGET == "s3":
         raise OSError("STORAGE_TARGET=s3 requires S3_BUCKET_DELTA")
     S3_BUCKET_DELTA = os.getenv("S3_BUCKET_DELTA")
     S3_PREFIX_DELTA = os.getenv("S3_PREFIX_DELTA", "")
+
+# ── Quack server (optional — eager) ─────────────────────────────────────
+# Leave QUACK_SERVER_HOST empty (default) for standalone/CI use with direct
+# DuckDB file access.  Set it to the server container hostname (e.g.
+# "duckdb_server") in Docker to route all DuckDB access through the quack
+# RPC server.
+QUACK_SERVER_HOST: str = os.getenv("QUACK_SERVER_HOST", "")
+QUACK_SERVER_TOKEN: str = os.getenv("QUACK_SERVER_TOKEN", "")
+QUACK_SERVER_PORT: int = _int_env("QUACK_SERVER_PORT", 9494)
+# DuckDB buffer-manager limit of the server. DuckDB 2.0 reserves 32 MiB per open file in
+# read_json_auto(..., union_by_name=true) (Bronze views) but barely touches it, so the
+# default (80% of the container limit) is exhausted by ~100 files while real RSS stays ~1 GB.
+QUACK_SERVER_MEMORY_LIMIT: str = os.getenv("QUACK_SERVER_MEMORY_LIMIT", "12GB")
 
 # ── Danish Democracy data retrieval (optional — eager) ───────────────────
 DANISH_DEMOCRACY_BASE_URL = os.getenv("DANISH_DEMOCRACY_BASE_URL")

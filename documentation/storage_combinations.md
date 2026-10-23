@@ -118,10 +118,10 @@ Silver is appended incrementally, Gold is overwritten; one directory per table
 
 Used by both `RAW_STORAGE_TARGET=s3` and `STORAGE_TARGET=s3`.
 
-| Variable | MinIO (local) | AWS S3 |
+| Variable | RustFS (local) | AWS S3 |
 | --- | --- | --- |
-| `S3_ENDPOINT` | `http://minio:9000` | empty |
-| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `minioadmin` / `minioadmin` (or your own) | IAM keys |
+| `S3_ENDPOINT` | `http://rustfs:9000` | empty |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `rustfsadmin` / `rustfsadmin` (or your own) | IAM keys |
 | `S3_REGION` | `us-east-1` | your region |
 | `S3_USE_SSL` | `false` | `true` |
 | `S3_URL_STYLE` | `path` (**required**; `vhost` gives 400 errors) | `vhost` |
@@ -141,16 +141,16 @@ DUCKDB_DATABASE_LOCATION=/data/duckdb/danish_democracy_data.duckdb
 DUCKDB_DATABASE=danish_democracy_data
 ```
 
-**2. Everything on MinIO, Silver in DuckLake** (combination 11).
+**2. Everything on RustFS, Silver in DuckLake** (combination 11).
 
 ```bash
 RAW_STORAGE_TARGET=s3
 SILVER_STORAGE_FORMAT=ducklake
 STORAGE_TARGET=s3
 DUCKLAKE_CATALOG_LOCATION=/data/duckdb/ducklake_catalog.ducklake
-S3_ENDPOINT=http://minio:9000
-S3_ACCESS_KEY_ID=minioadmin
-S3_SECRET_ACCESS_KEY=minioadmin
+S3_ENDPOINT=http://rustfs:9000
+S3_ACCESS_KEY_ID=rustfsadmin
+S3_SECRET_ACCESS_KEY=rustfsadmin
 S3_REGION=us-east-1
 S3_USE_SSL=false
 S3_URL_STYLE=path
@@ -181,21 +181,21 @@ it with `python -m ddd_python.ddd_utils.fabric_capacity_pause_resume resume`.
 
 ---
 
-## MinIO for local development
+## RustFS for local development
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.minio.yml up -d minio
+docker compose -f docker-compose.yml -f docker-compose.rustfs.yml up -d rustfs
 # S3 API on http://localhost:9000, console on http://localhost:9001
 ```
 
 Buckets must exist before the first extraction. Create them in the console
-(Object Browser → **+**) or with the `mc` client:
+or with the `aws` CLI:
 
 ```bash
-mc alias set ddd http://localhost:9000 minioadmin minioadmin
-mc mb ddd/ddd-bronze
-mc mb ddd/ddd-ducklake   # only with SILVER_STORAGE_FORMAT=ducklake
-mc mb ddd/ddd-delta      # only with STORAGE_TARGET=s3
+export AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin
+aws --endpoint-url http://localhost:9000 s3 mb s3://ddd-bronze
+aws --endpoint-url http://localhost:9000 s3 mb s3://ddd-ducklake   # only with SILVER_STORAGE_FORMAT=ducklake
+aws --endpoint-url http://localhost:9000 s3 mb s3://ddd-delta      # only with STORAGE_TARGET=s3
 ```
 
 On AWS: `aws s3 mb s3://ddd-bronze --region <region>` and so on.
@@ -205,11 +205,11 @@ On AWS: `aws s3 mb s3://ddd-bronze --region <region>` and so on.
 Changing a switch moves no data.
 
 - **Bronze to S3:** copy the existing `Files/Bronze/` tree into the bucket (for
-  example `mc mirror` or `aws s3 sync`) before the next run, so Silver keeps its
+  example `aws s3 sync` or `rclone sync`) before the next run, so Silver keeps its
   file history.
-- **Silver to DuckLake:** either copy the history with
-  `python -m ddd_python.ddd_utils.migrate_silver_to_ducklake`, or rebuild from
-  Bronze with `dbt build --select tag:silver --full-refresh` (the new tables do
-  not exist yet, so no delete detection runs).
+- **Silver to DuckLake:** copy the history with
+  `python -m ddd_python.ddd_utils.migrate_silver_to_ducklake`. Silver is the state:
+  a first build in the new location would only derive what the Bronze files still
+  hold, without the deletes of incremental entities.
 - **Export target:** the next export writes a fresh Delta table at the new
   location; Silver is exported in full the first time.

@@ -40,18 +40,20 @@ tests/                           ← 132 pytest tests across 15 modules
 - Bronze = `read_json_auto` views only. Never materialise Bronze as tables.
 - Silver = incremental CDC tables + `_cv` current-version views. Use `LKHS_` prefix on all tracking columns.
 - Gold = views only. Never materialise Gold as tables.
-- `LKHS_` prefix: `LKHS_hash_value`, `LKHS_date_valid_from`, `LKHS_cdc_operation`, `LKHS_date_inserted`, `LKHS_date_inserted_src`, `LKHS_filename`, `LKHS_pipeline_execution_inserted`.
+- `LKHS_` prefix: `LKHS_hash_value`, `LKHS_date_valid_from`, `LKHS_cdc_operation`, `LKHS_date_inserted`, `LKHS_filename`, `LKHS_pipeline_execution_inserted`.
 
 **DuckDB single-writer:**
 - dbt jobs + full_pipeline use Dagster's `in_process_executor`. Extraction/export use `multiprocess_executor(max_concurrent=4)`. Never suggest concurrent writes to DuckDB.
 - Export reads use `open_export_connection()` (read-only) from `path_utils`. Never open a second read-write connection.
 
 **DuckLake mode (`SILVER_STORAGE_FORMAT=ducklake`):**
-- All Silver helper tables (`_last_file`, `_current_temp`) must be qualified with `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` — one transaction, one database.
+- The Silver helper tables `_last_file` and `_files` must be qualified with `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` — one transaction, one database.
 - DuckLake is independent of `STORAGE_TARGET` (which only controls Delta Lake export destination).
 
-**DuckDB version pinned ≥1.5.6, <1.6:**
-- The delta extension is read-only at this version. Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path off `deltalake` — there's an Azure/OneLake regression in newer DuckDB delta writers.
+**DuckDB version pinned ≥2.0.0, <3:**
+- Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path to the DuckDB delta writer — there is an Azure/OneLake regression in it.
+- Do not reinstall `dbt-oss` alongside `dbt-core`; shared `dbt` namespace crashes dagster-dbt (issue #34215).
+- In Docker, `duckdb_server` is the sole read-write owner; all other containers connect via quack RPC. `QUACK_SERVER_HOST` triggers the quack code path in `path_utils.py` and `dbt_quack.py`.
 
 **Security:**
 - Date params validated with `re.fullmatch(r"\d{4}-\d{2}-\d{2}")` before SQL interpolation. Keep this guard on all Rfam and incremental extraction code.

@@ -6,10 +6,11 @@ from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv())
 
-from dagster import AssetKey, AssetsDefinition, Definitions
+from dagster import Definitions
 from dagster_dbt import DbtCliResource
 
 from ddd_python.ddd_dagster.assets import all_extraction_assets
+from ddd_python.ddd_dagster.bronze_archive_assets import bronze_archive_asset
 from ddd_python.ddd_dagster.dbt_assets import (
     _DBT_PROJECT_DIR,
     dbt_bronze_assets,
@@ -21,6 +22,7 @@ from ddd_python.ddd_dagster.dbt_assets import (
 from ddd_python.ddd_dagster.ducklake_cleanup_assets import ducklake_cleanup_asset
 from ddd_python.ddd_dagster.export_assets import all_export_assets
 from ddd_python.ddd_dagster.jobs import (
+    bronze_archive_job,
     danish_parliament_all_job,
     danish_parliament_full_extract_job,
     danish_parliament_incremental_job,
@@ -41,10 +43,6 @@ from ddd_python.ddd_dagster.jobs import (
     rfam_full_extract_job,
     rfam_incremental_job,
 )
-from ddd_python.ddd_dagster.metabase_control_assets import (
-    build_start_metabase_asset,
-    stop_metabase_asset,
-)
 from ddd_python.ddd_dagster.resources import DltPipelineResource
 from ddd_python.ddd_dagster.rfam_assets import all_rfam_extraction_assets
 from ddd_python.ddd_dagster.schedules import (
@@ -56,43 +54,18 @@ from ddd_python.ddd_dagster.sensors import (
     danish_parliament_run_success_sensor,
 )
 
-
-def _asset_keys(asset_defs: list[AssetsDefinition]) -> list[AssetKey]:
-    keys: list[AssetKey] = []
-    for asset_def in asset_defs:
-        keys.extend(sorted(asset_def.keys, key=lambda key: key.to_user_string()))
-    return keys
-
-
-_extraction_assets = list(all_extraction_assets)
-_rfam_assets = list(all_rfam_extraction_assets)
-_dbt_assets = [
-    dbt_seeds_assets,
-    dbt_bronze_assets,
-    dbt_silver_assets,
-    dbt_gold_assets,
-    dbt_data_engineering_assets,
-]
-_export_assets = list(all_export_assets)
-_materialization_assets = [
-    *_extraction_assets,
-    *_rfam_assets,
-    *_dbt_assets,
-    *_export_assets,
-    ducklake_cleanup_asset,
-]
-start_metabase_asset = build_start_metabase_asset(_asset_keys(_materialization_assets))
-
-
 defs = Definitions(
     assets=[
-        stop_metabase_asset,
-        *_extraction_assets,
-        *_rfam_assets,
-        *_dbt_assets,
-        *_export_assets,
+        *list(all_extraction_assets),
+        *list(all_rfam_extraction_assets),
+        dbt_seeds_assets,
+        dbt_bronze_assets,
+        dbt_silver_assets,
+        dbt_gold_assets,
+        dbt_data_engineering_assets,
+        *list(all_export_assets),
         ducklake_cleanup_asset,
-        start_metabase_asset,
+        bronze_archive_asset,
     ],
     jobs=[
         danish_parliament_incremental_job,
@@ -108,6 +81,7 @@ defs = Definitions(
         dbt_gold_job,
         dbt_data_engineering_job,
         ducklake_cleanup_job,
+        bronze_archive_job,
         export_silver_job,
         export_gold_job,
         full_pipeline_job,

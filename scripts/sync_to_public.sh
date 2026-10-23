@@ -17,6 +17,11 @@ PRIVATE_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PUBLIC_REPO="/home/edwin/source/repos/dbt_duckdb_demo_public"
 SYNC_REF_FILE="$PUBLIC_REPO/SYNC_REF"
 
+# ── Bring the public clone up to date first ───────────────────────────────────
+# Changes made on GitHub (a merged pull request) would otherwise be overwritten or
+# make the push fail after the copy.  --ff-only stops when the clone has diverged.
+git -C "$PUBLIC_REPO" pull --ff-only origin main
+
 # ── Resolve the base commit (last sync point) ────────────────────────────────
 if [[ -f "$SYNC_REF_FILE" ]]; then
     BASE_COMMIT=$(cat "$SYNC_REF_FILE")
@@ -68,7 +73,9 @@ done <<< "$CHANGED"
 echo "$HEAD_COMMIT" > "$SYNC_REF_FILE"
 
 # ── Commit and push ───────────────────────────────────────────────────────────
-PRIVATE_MSG=$(git -C "$PRIVATE_REPO" log --format="%s" "$BASE_COMMIT..$HEAD_COMMIT" | head -1)
+# git log -1, not "git log | head -1": with pipefail, head closing the pipe early makes git
+# exit on SIGPIPE and the script stops after the copy, before the commit.
+PRIVATE_MSG=$(git -C "$PRIVATE_REPO" log -1 --format="%s" "$HEAD_COMMIT")
 COMMIT_MSG="${1:-Sync with private repo: $PRIVATE_MSG}"
 
 git -C "$PUBLIC_REPO" add -A
