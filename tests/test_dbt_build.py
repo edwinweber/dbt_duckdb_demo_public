@@ -1,16 +1,25 @@
-"""Tests for dbt_build_with_unique_logfile._check_for_test_failures.
+"""Tests for dbt_build_with_unique_logfile.
 
 Verifies that test failures embedded in a dbt NDJSON log are detected and
 re-raised as RuntimeError so that nominally-successful dbt runs (exit code 0)
-still surface as Dagster run failures when data quality tests fail.
+still surface as Dagster run failures when data quality tests fail, and that the
+dbt command carries the executable, the selection and the Silver switches.
 """
 
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from ddd_python.ddd_dbt.dbt_build_with_unique_logfile import _check_for_test_failures
+from ddd_python.ddd_dbt import dbt_build_with_unique_logfile as module
+from ddd_python.ddd_dbt.dbt_build_with_unique_logfile import (
+    _check_for_test_failures,
+    main,
+    run_dbt_build,
+    silver_vars,
+)
 
 
 def _write_log(path: Path, events: list[dict]) -> Path:
@@ -143,3 +152,79 @@ def test_check_handles_empty_log_file(tmp_path):
     log = tmp_path / "dbt.json"
     log.write_text("", encoding="utf-8")
     _check_for_test_failures(str(log))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The dbt command and the Silver switches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("delete_guard", "skip_late_files", "expected"),
+    [
+        (True, False, []),
+        (False, False, ["--vars", '{"silver_delete_guard": false}']),
+        (True, True, ["--vars", '{"silver_skip_late_files": true}']),
+        (
+            False,
+            True,
+            ["--vars", '{"silver_delete_guard": false, "silver_skip_late_files": true}'],
+        ),
+    ],
+)
+def test_silver_vars(delete_guard, skip_late_files, expected):
+    assert silver_vars(delete_guard, skip_late_files) == expected
+
+
+def test_run_dbt_build_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("DBT_EXECUTABLE", "dbt-quack")
+    with patch.object(module.subprocess, "run") as run:
+        run_dbt_build(str(tmp_path / "dbt.json"), "silver_ddd_sag", delete_guard=False)
+    assert run.call_args.args[0] == [
+        "dbt-quack", "build", "--log-format", "json", "--no-use-colors",
+        "--select", "silver_ddd_sag", "--vars", '{"silver_delete_guard": false}',
+    ]  # fmt: skip
+    assert run.call_args.kwargs["timeout"] == 3600
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (subprocess.CalledProcessError(2, "dbt"), "return code 2"),
+        (subprocess.TimeoutExpired("dbt", 3600), "timed out"),
+    ],
+)
+def test_run_dbt_build_raises_when_dbt_fails(tmp_path, error, message):
+    with (
+        patch.object(module.subprocess, "run", side_effect=error),
+        pytest.raises(RuntimeError, match=message),
+    ):
+        run_dbt_build(str(tmp_path / "dbt.json"))
+
+
+def test_run_dbt_build_fails_on_failed_nodes_after_exit_zero(tmp_path):
+    def fake_run(command, stdout, **kwargs):
+        stdout.write(json.dumps(_node_finished_event("test.my_project.unique_id", "fail")) + "\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    with (
+        patch.object(module.subprocess, "run", side_effect=fake_run),
+        pytest.raises(RuntimeError, match="unique_id"),
+    ):
+        run_dbt_build(str(tmp_path / "dbt.json"))
+
+
+def test_main_writes_a_timestamped_log_and_passes_the_switches(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.get_variables_from_env, "DBT_LOGS_DIRECTORY", str(tmp_path / "logs"))
+    with patch.object(module, "run_dbt_build") as run:
+        main("silver", delete_guard=False, skip_late_files=True)
+    log_file, select, delete_guard, skip_late_files = run.call_args.args
+    assert Path(log_file).parent == tmp_path / "logs"
+    assert Path(log_file).name.startswith("dbt_build_log_")
+    assert (select, delete_guard, skip_late_files) == ("silver", False, True)
+
+
+def test_main_requires_the_log_directory(monkeypatch):
+    monkeypatch.setattr(module.get_variables_from_env, "DBT_LOGS_DIRECTORY", None)
+    with pytest.raises(OSError, match="DBT_LOGS_DIRECTORY"):
+        main()

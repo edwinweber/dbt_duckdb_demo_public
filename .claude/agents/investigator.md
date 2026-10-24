@@ -14,12 +14,12 @@ You are a diagnostic agent for **Danish Democracy Data (dbt_duckdb_demo)**. When
 ## Project context for diagnosis
 
 **Pipeline stages and their failure modes:**
-- **dlt extraction** (`ddd_dlt/`): silently partial extracts (network timeout mid-page), stale `dlt/pipelines_dir/` state causing wrong incremental watermarks, MySQL connection hangs (use `connect_timeout=30`).
-- **dbt build** (`dbt/`): DuckDB lock conflicts (another process holds read-write on the `.duckdb` file — check Metabase, DBeaver), macro expansion errors (Jinja), Silver CDC logic producing wrong `LKHS_cdc_operation` values.
+- **dlt extraction** (`ddd_dlt/`): silently partial extracts (network timeout mid-page), MySQL connection hangs (use `connect_timeout=30`), extraction gaps longer than the lookback window (changes in the gap are missed until a full extraction).
+- **dbt build** (`dbt/`): outside Docker, DuckDB lock conflicts (another process holds the `.duckdb` file — check DBeaver, a DuckDB shell); in Docker, `duckdb_server` down or a token mismatch. Silver runs stop on purpose on a missing bookmark, a late Bronze file, a probable mass delete (delete guard) or a `_full` file new together with other files — the message says which (runbook §7). Also macro expansion errors (Jinja) and type conversion errors (a real source type change).
 - **Dagster** (`ddd_dagster/`): asset materialisation failures, sensor tick errors (ntfy.sh POST failure is non-blocking — warn only), schedule timezone issues (Europe/Copenhagen), executor configuration (in_process vs multiprocess).
 - **Delta Lake export** (`ddd_dlt/export_*.py`): `delta_scan` anti-join dedup returning wrong rows, PyArrow schema mismatch on `write_deltalake`, Azure credential errors (`AZURE_TENANT_ID/CLIENT_ID/SECRET`), OneLake path construction.
-- **DuckLake mode** (`SILVER_STORAGE_FORMAT=ducklake`): catalog file corruption, `_current_temp` directories not cleaned up (run `ducklake_cleanup_job` manually), Silver tables missing from `ducklake_catalog.main_silver` after a failed run.
-- **Metabase** (`docker/Dockerfile.metabase`): cannot connect to quack server (check `QUACK_SERVER_TOKEN` matches, `duckdb_server` is up), ducklake extension not loaded (check rendered init SQL at `/data/metabase/duckdb-init.sql`), JDBC driver version (needs ≥1.5.3 for DuckLake).
+- **DuckLake mode** (`SILVER_STORAGE_FORMAT=ducklake`): catalog file corruption, leftover `_current_temp` directories from earlier Silver macro versions (run `ducklake_cleanup_job` manually), Silver tables missing from `ducklake_catalog.main_silver` after a failed run.
+- **Metabase** (`docker/Dockerfile.metabase`): cannot connect to the quack server (check `QUACK_SERVER_TOKEN` matches and `duckdb_server` is up; the rendered init SQL is `$METABASE_DATA_DIR/duckdb-init.sql`, default `/data/metabase/data/duckdb-init.sql`); it uses DuckDB JDBC 2.0 with `ATTACH` + `USE`, and DuckLake Silver tables are not listed in its schema browser (query them as `danish_democracy_data.ducklake_catalog.main_silver.<table>`).
 - **quack server** (`ddd_dlt/duckdb_quack_server.py`): token too short (must be ≥4 chars), `DUCKLAKE_CATALOG_LOCATION` missing in ducklake mode, DuckDB extension not installed server-side.
 - **CI** (`pyproject.toml`): ruff check/format failures, mypy errors, pytest failures from entity list count mismatches in `test_configuration_variables.py`.
 
@@ -27,7 +27,7 @@ You are a diagnostic agent for **Danish Democracy Data (dbt_duckdb_demo)**. When
 
 1. **Read the error exactly** — don't paraphrase stack traces. The specific exception type and line number matter.
 2. **Check environment first** — most failures in this project are env var or file path issues. Verify `DUCKDB_DATABASE_LOCATION`, `DUCKLAKE_CATALOG_LOCATION`, `SILVER_STORAGE_FORMAT`, `STORAGE_TARGET`.
-3. **Check what holds the DuckDB lock** — `lsof <path>.duckdb` or `fuser <path>.duckdb`. A second read-write connection is the most common cause of mysterious dbt failures.
+3. **Check what holds the DuckDB file** — outside Docker, `lsof <path>.duckdb` or `fuser <path>.duckdb`; a second connection is the most common cause of mysterious dbt failures there. In Docker only `duckdb_server` may hold it.
 4. **Inspect the extraction logs** for extraction anomalies — one NDJSON record per pipeline run under `DLT_PIPELINE_RUN_LOG_DIR/<DDD|RFAM>/<pipeline>/`. There are no incremental watermarks: incremental entities reload a fixed lookback window, so a partial load means a failed or filtered run, not stale state.
 5. **Read logs in order** — Dagster run logs, then dbt JSON logs (`DBT_LOGS_DIRECTORY`), then dlt output, then DuckDB error messages.
 6. **For DuckLake issues** — check whether `{{ this.database }}` qualification is consistent across all Silver macro-generated helper tables. Cross-database writes in one transaction are forbidden.

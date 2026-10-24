@@ -18,7 +18,7 @@ behind the design see [design_decisions.md](design_decisions.md).
 | **Bronze** (`main_bronze`) | view | one view per entity, plus 3 utility views (`bronze_dates`, `bronze_dates_holidays`, `bronze_source_systems`) | the extraction files, read with `read_json_auto()` |
 | **Silver** (`main_silver`) | incremental table + view | one CDC table + one `_cv` view per entity | Bronze |
 | **Gold** (`main_gold`) | view | handcrafted dimensions/facts + generated `_cv` views | Silver `_cv` views and tables |
-| **data_engineering** | views (2 tables) | Dagster run history as a small star schema | Dagster's SQLite + step-failure NDJSON |
+| **data_engineering** | views (2 tables) | Dagster run history as a small star schema | Dagster's SQLite run storage, read with `sqlite_scan()` |
 
 - **Generated vs handwritten.** All Bronze and Silver model files and the Gold
   `_cv` views are written by `python -m ddd_python.ddd_dbt.generate_dbt_models`
@@ -531,7 +531,7 @@ Results per key.
 The source must deliver one row per key per file; duplicates are detected, not
 handled. The grain test `silver_no_duplicate_id_date_valid_from` covers all 18
 DDD Silver tables and a generic test covers `silver_rfam_family`; the other six
-Rfam tables have no grain test (improvement 5 in
+Rfam tables have no grain test (improvement 6 in
 [design_decisions.md](design_decisions.md#known-limitations-and-possible-improvements)).
 
 ### 3.11 How this is verified
@@ -616,6 +616,7 @@ All macros live in [`dbt/macros/`](../dbt/macros/).
 | `generate_model_silver_incr_extraction(…same…)` | incremental Silver models | compares a key's first new version with its latest Silver version and later ones with the version before them: I/U; deletes from a `_full` file that is the only new file, and stops the run when it is not (§3.3–3.4); `full_refresh=false` |
 | `silver_files(file_name, data_source_env_var)` | both Silver macros | at compile time: reads the bookmark, stops on late files, lists the newer Bronze files, notes the newest as pending and logs the files (§3.1) |
 | `silver_bookmark_post_hook()`, `silver_files_post_hook()` | both Silver macros (post-hooks) | after a successful run: move the pending file to the bookmark, mark the pending files processed |
+| `silver_bronze_column_types(bronze_table_name)`, `silver_column_types()` | the two macros below | the Bronze view's columns and types as the files are now (`DESCRIBE`), and the Silver table's types by column name |
 | `silver_bronze_columns(bronze_table_name)` | both Silver macros | select list over the Bronze view that casts the columns Silver already has to Silver's type (normal runs) |
 | `silver_state_columns(bronze_table_name)` | both Silver macros | select list over the Silver table with the Bronze view's columns (missing ones as NULL), to hash Silver's latest version |
 | `silver_delete_guard()` | both Silver macros | the condition that stops a normal run when a file deletes too many keys (§3.1) |

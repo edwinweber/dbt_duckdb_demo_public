@@ -59,7 +59,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 > - The **Silver** layer is stored either as native DuckDB tables (default) or as **DuckLake** (Parquet + catalog) — set by `SILVER_STORAGE_FORMAT`.
 > - The optional **Delta Lake export** writes to local disk, S3, or Fabric OneLake — set by `STORAGE_TARGET`.
 >
-> Metabase reads the DuckDB file directly and needs **no export** at all.
+> Metabase queries DuckDB through the pipeline's own DuckDB server process and needs **no export** at all.
 
 ### Data Flow Summary
 
@@ -67,7 +67,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 | --- | --- | --- |
 | **Extract** | Python + dlt | Entities fetched from Danish Parliament API and tables from Rfam MySQL (each incremental or full extract). Written as timestamped JSON. Lands on local disk or S3 (per `RAW_STORAGE_TARGET`). |
 | **Bronze** | dbt views | Raw JSON exposed as queryable views via DuckDB. |
-| **Silver** | dbt incremental tables | SCD Type 2 history with SHA-256 hash-based change detection. Inserts, updates, and deletes tracked. Stored as native DuckDB tables or DuckLake Parquet (per `SILVER_STORAGE_FORMAT`). DuckLake can live locally or on S3 (per `RAW_STORAGE_TARGET`). |
+| **Silver** | dbt incremental tables | SCD Type 2 history with SHA-256 hash-based change detection. Inserts, updates, and deletes tracked. Silver holds the state: each run reads only the new extraction files, and processed files are moved to an archive on demand. Stored as native DuckDB tables or DuckLake Parquet (per `SILVER_STORAGE_FORMAT`). DuckLake can live locally or on S3 (per `RAW_STORAGE_TARGET`). |
 | **Gold** | dbt views | Business-friendly English names, surrogate keys (signed BIGINT for Power BI compatibility), XML biography parsing, current-version views. |
 | **Export** (optional) | DuckDB `delta_scan` + deltalake | Silver and Gold written as Delta Lake tables (incremental append for Silver, overwrite for Gold). Dedup read runs inside DuckDB; write uses the `deltalake` library. Target is local disk, S3, or OneLake (per `STORAGE_TARGET`). |
 
@@ -80,7 +80,7 @@ The extraction, transformation, orchestration, BI, and backup layers are all ope
 - **Switchable storage at three layers**: Bronze/DuckLake on local disk or S3 (`RAW_STORAGE_TARGET`); Silver as native DuckDB or DuckLake Parquet (`SILVER_STORAGE_FORMAT`); Delta exports to local, S3, or Fabric (`STORAGE_TARGET`)
 - **Daily automation** via Dagster (two schedules, disabled by default) with run-status sensors, NDJSON run logs and ntfy.sh alerts
 - **Code-generated models**: dbt SQL models generated from macros and a Python generator for consistency
-- **Bundled BI layer**: Metabase connects directly to the DuckDB file for ad-hoc queries and dashboards — no export required
+- **Bundled BI layer**: Metabase connects to the DuckDB server process for ad-hoc queries and dashboards — no export required
 - **Self-observability**: a dbt layer reads Dagster's own run history so the pipeline can report on its own runs
 - **Backup & restore**: a DuckLake-aware backup system archives each stateful service and ships off-site to a Hetzner StorageBox
 - **Cost-aware design**: built-in Fabric capacity pause/resume to reduce cloud spend; RustFS for local S3-like development
@@ -103,14 +103,14 @@ reference project rather than an enterprise platform, and intentionally leaves o
 
 | Tool | License | Cost | Notes |
 | --- | --- | --- | --- |
-| **DuckDB** | MIT (open source) | **Free** | Local analytical database. No server, no license fees. |
+| **DuckDB** | MIT (open source) | **Free** | Local analytical database; in Docker one small DuckDB server process (quack) owns the file. No license fees. |
 | **dbt-core + dbt-duckdb** | Apache 2.0 (open source) | **Free** | Transformation framework. No dbt Cloud required. |
 | **dlt** | Apache 2.0 (open source) | **Free** | Data extraction library. |
 | **Dagster** | Apache 2.0 (open source) | **Free** | Orchestrator. Self-hosted via Docker, no Dagster Cloud required. |
 | **deltalake** | Apache 2.0 (open source) | **Free** | Delta Lake writer for Python. |
 | **Docker** | Apache 2.0 | **Free** | Docker Engine (Docker Desktop may require a license for enterprises >250 employees). |
 | **DuckLake** | MIT (open source) | **Free** | Optional Silver storage format (Parquet + catalog). Parquet on local disk or S3 — no service to pay for. |
-| **Metabase** | AGPL / open source | **Free** | Self-hosted BI, reads the DuckDB file directly. |
+| **Metabase** | AGPL / open source | **Free** | Self-hosted BI, connects to the DuckDB server process. |
 | **Hetzner Cloud** | Commercial (optional) | **~€35/mo** | The production server (CPX42, 8 vCPU / 16 GB) + block volumes + StorageBox. Only if you self-host rather than run locally. |
 | **Microsoft Fabric** | Commercial (optional) | **Varies** | Only needed for the OneLake export. F2 capacity starts at ~€0.26/hour (~€190/month). OneLake storage: ~€0.023/GB/month. Can be paused when idle. |
 | **Azure Service Principal** | Included with Azure AD | **Free** | Required only for Fabric/OneLake authentication. |
@@ -135,7 +135,7 @@ reference project rather than an enterprise platform, and intentionally leaves o
 | --- | --- |
 | Data sources | Danish Parliament API (18 OData entities) + Rfam MySQL database (7 tables); each incremental or full extract |
 | Silver storage formats | DuckDB native tables (default) or DuckLake (Parquet + catalog) |
-| Docker services | One-off runner, Dagster UI, Metabase, backup |
+| Docker services | DuckDB server, Dagster UI, Metabase; one-off runner and backup |
 | License | MIT |
 
 > For current model and macro counts, run `find dbt/models -name '*.sql' | wc -l` and `ls dbt/macros/*.sql | wc -l`.

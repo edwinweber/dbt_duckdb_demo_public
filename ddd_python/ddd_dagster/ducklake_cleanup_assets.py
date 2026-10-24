@@ -8,9 +8,9 @@ Runs three cleanup steps against the DuckLake catalog:
 2. ``ducklake_delete_orphaned_files`` — removes Parquet files that are no
    longer referenced by any live snapshot.
 3. Filesystem sweep — deletes any residual ``*_current_temp`` directories
-   created by the Silver pre/post-hooks.  These are invisible to DuckLake's
-   vacuum because dbt creates and drops them via plain DuckDB DDL, not through
-   the DuckLake catalog.  ``*__dbt_tmp`` directories are intentionally
+   left by earlier versions of the Silver macros (the current macros do not
+   create them).  They are invisible to DuckLake's vacuum because dbt created
+   and dropped them via plain DuckDB DDL, not through the DuckLake catalog.  ``*__dbt_tmp`` directories are intentionally
    preserved: DuckLake stores live table data there (dbt's incremental-append
    strategy writes staging files into ``__dbt_tmp/`` and the main table's
    catalog snapshot references them directly).  Deleting ``__dbt_tmp``
@@ -50,7 +50,7 @@ SNAPSHOT_RETENTION_DAYS = 31
     description=(
         "Vacuums the DuckLake catalog: expires old snapshots, deletes "
         "orphaned Parquet files, and removes residual _current_temp directories "
-        "left by the Silver pre/post-hooks. __dbt_tmp directories are intentionally "
+        "left by earlier Silver macro versions. __dbt_tmp directories are intentionally "
         "preserved because DuckLake stores live table data there."
     ),
 )

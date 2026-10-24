@@ -353,7 +353,7 @@ def dbt_data_engineering_assets(
                                          with step timing (PLANNED → MATERIALIZED)
 
     Failure tracking:
-    * ``dagster_step_failures_raw``    — one row per failed asset per run (reads NDJSON exported by the failure sensor)
+    * ``dagster_step_failures_raw``    — one row per failed asset per run (reads the per-run SQLite files)
     * ``dagster_step_failure``         — enriched view with surrogate keys and FKs
     """
     yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()

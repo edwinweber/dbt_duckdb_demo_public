@@ -1,6 +1,6 @@
 # Design Decisions and Trade-offs
 
-Why the project is built the way it is: the problem it targets, the ten
+Why the project is built the way it is: the problem it targets, the thirteen
 architectural decisions (with the alternatives that were considered and what was
 given up), the dependencies and why each is there, the engineering principles
 that recur in the code, and the known limitations.
@@ -57,8 +57,8 @@ bill.
 - **No horizontal scale.** Growth means a bigger machine; far beyond this scale
   the platform would be replaced, not extended.
 - **Single writer.** One process may write the file at a time. This shapes the
-  orchestration (ADR-5): dbt runs serially and Metabase, which holds a read
-  connection, is stopped during dbt runs.
+  orchestration (ADR-5) and is why, in Docker, one server process owns the file
+  and every other container connects to it (ADR-12).
 - **No failover.** A corrupt file means restoring from backup.
 - **DuckDB-specific SQL** (`QUALIFY`, `COLUMNS(lambda)`, `EXCLUDE`,
   `read_json_auto`) would need porting to another engine.
@@ -77,8 +77,8 @@ schema views with English names and surrogate keys.
 replay after a bug fix).
 
 **Gained.** Every layer is queryable, so a wrong Gold number can be traced to
-the raw file. Silver can be rebuilt from Bronze, and Gold re-run without
-touching Silver.
+the raw file. Silver can be replayed from Bronze and its archive (ADR-13), and
+Gold re-run without touching Silver.
 
 **Given up.** More models (generated, see ADR-8). Silver keeps every version of
 every row. Gold is views, so each query recomputes its joins; fine for
@@ -198,8 +198,11 @@ Parquet data can live in object storage.
   databases.
 - Switching moves no data: Silver is the state, so for `duckdb` → `ducklake` run
   `migrate_silver_to_ducklake`.
-- Parquet takes more space than the native format, and BI tools need the
-  `ducklake` extension plus an `ATTACH` (Metabase's image has it built in).
+- Parquet takes more space than the native format. Tools that open the files
+  themselves need the `ducklake` extension plus an `ATTACH` of the catalog. In
+  Docker, Metabase is a quack client of `duckdb_server`, which has the catalog
+  attached; its schema browser does not list the DuckLake Silver tables, so they
+  are queried in SQL as `danish_democracy_data.ducklake_catalog.main_silver.<table>`.
 - The catalog needs occasional maintenance (`ducklake_cleanup_job`).
 
 ---
@@ -292,14 +295,13 @@ durability mechanism.
 **Decision.** The project uses `dbt-core` + `dbt-duckdb` (Python packages,
 pinned as ranges), replacing the earlier `dbt-oss 2.0.8`.
 
-**Why dbt-oss was removed.** `dbt-oss` 2.0.8 bundled DuckDB 1.5.4 inside the
-Rust binary. When the project upgraded to DuckDB ≥ 2.0, dbt-oss could not
-connect to the quack RPC server (the protocol changed between DuckDB versions).
-There is no upgrade path for dbt-oss 2.x to support a newer embedded DuckDB
-without a rebuild of the Rust binary. Additionally, `dbt-oss` ships the `dbt`
-Python namespace; installing it alongside `dagster-dbt` (which also pulls in
-`dbt-core`) causes a `NoneType.enabled` crash in dagster-dbt's NodeSelector
-(issue #34215). `dbt-core` + `dbt-duckdb` do not have this conflict.
+**Why dbt-oss was removed.** `dbt-oss` 2.0.8 ships its own DuckDB, version
+1.5.4, built into its Rust binary. When the project moved to DuckDB 2.0, that
+bundled DuckDB 1.5 could neither open the DuckDB 2.0 database files nor talk to
+the quack server (the protocol changed between the versions), and dbt-oss offers
+no way to use another DuckDB version without rebuilding the binary. `dbt-duckdb`
+uses the Python `duckdb` package, so dbt always runs the DuckDB version the
+project pins.
 
 **Alternatives.** The proprietary `dbt` distribution (same Python packages as
 `dbt-core` under a different license); `dbt-oss` 2.x rebuilt against DuckDB 2.x
@@ -313,10 +315,6 @@ MIT).
 
 **Given up.** The single executable convenience of dbt-oss. The `dbt` binary is
 now the dbt-core CLI entry point.
-
-**Compatibility note.** Do not reinstall `dbt-oss` alongside `dbt-core`; the
-shared `dbt` namespace conflict will crash dagster-dbt. Run `pip check` after
-any dbt-related package change.
 
 ---
 
@@ -361,6 +359,79 @@ connection from Python.
 
 ---
 
+## ADR-13: Silver is the state; Bronze is kept complete through an archive
+
+**Decision.** Silver is the state of the data. A run reads only the Bronze files
+that are newer than the model's bookmark and compares them with Silver's latest
+version of each key. Silver models ignore `--full-refresh`. Processed Bronze files
+are moved to an archive on demand (`bronze_archive_job`), not deleted, so Bronze
+and its archive together still hold every extraction.
+
+**Context.** Until October 2026 the **Bronze layer was the state**. Silver was
+rebuilt from all Bronze files on every run: each version of a key was compared
+with its previous version in Bronze, and a full refresh recreated every Silver
+table from the files. That was the more elegant design. Silver was a function of
+the files, a logic change or a bug fix was just a refresh, and Silver could not
+drift from the files it was built from. In practice it became too expensive:
+
+- **Every run paid for the whole history.** After five months in production each
+  entity had about 172 files (3.2 GB in all), and every daily run read and hashed
+  all of them. Run time and memory grew with time, not with the size of the
+  change.
+- **DuckDB 2.0 reserves 32 MiB of its memory limit for every JSON file a view
+  opens.** With 172 files that is about 5.5 GB for one Bronze view; production ran
+  out of memory, and the memory limit of the server had to be set above the
+  container's own limit.
+- **The design was not entirely pure.** Deletes of incremental entities already
+  carried state from run to run (the `_current_temp` tables), and a full refresh
+  of an incremental entity was only correct after a fresh full extraction.
+- **Bronze could not shrink.** Removing files would have removed history, so the
+  folders could only be pruned back to the last complete extraction.
+- **One odd file affected everything.** Types were inferred over all files ever
+  extracted, so a single unusual value changed a column type for every run.
+
+**Alternatives.** Keeping Bronze as the state and adding more memory (postpones
+the problem, the cost still grows every day); compacting Bronze files into fewer,
+larger files (fewer files, but every run still reads the whole history, and the
+compacted files are no longer the original extractions); Bronze as the state with
+pruning (loses history that cannot be recreated).
+
+**Gained.**
+
+- A run costs what its new files cost. After the first archive in production:
+  10 files per entity instead of 172, about 256 MB per Bronze view instead of
+  5.5 GB, and a Silver run without new files in 51 instead of 72 seconds.
+- The common pattern: an SCD Type 2 table merged with new data, as most warehouse
+  pipelines do, instead of re-reading all raw history every day.
+- No extraction is lost. The archive keeps every processed file, gzip-compressed,
+  checked against its SHA-256 and listed in a manifest, so Silver can still be
+  replayed from the original files. Reproducibility moves from a property of
+  every run to an operation that can be carried out when needed.
+
+**Given up, and how it is covered.** Silver now carries state that a refresh
+cannot recreate: a wrong run writes history that stays until it is repaired from
+a backup or by a replay. The design therefore stops a run rather than write
+doubtful data, and makes the state checkable:
+
+- the bookmark moves only after a successful run, in the same transaction as the
+  insert;
+- the `<model>_files` log stops a run on a late file;
+- the delete guard stops a run that would delete more than 10 % of the live keys
+  (in production it held back 93,434 deletes in `sagstrinaktoer` until the full
+  extraction was checked against the API's row count; they were real);
+- Bronze columns are read as the files are now (`DESCRIBE`) and cast to Silver's
+  types, so archiving does not make keys look changed;
+- Silver is backed up every night (and by hand before a deployment), and a query
+  compares Silver with its Bronze files (runbook §10). After the full extractions of October 2026 it found
+  0 differences in all 25 tables.
+
+The rest of the price: Silver backups matter more than before, and a replay of
+an incremental entity has to process each `_full` file on its own. In short, the
+daily path is cheap and the rare path (a rebuild) remains possible. Details:
+[dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2).
+
+---
+
 ## Dependencies and why each is there
 
 Versions are pinned as ranges in [`pyproject.toml`](../pyproject.toml).
@@ -380,9 +451,7 @@ Versions are pinned as ranges in [`pyproject.toml`](../pyproject.toml).
 
 **dbt-core + dbt-duckdb are installed with pip.** `dbt-core` provides the `dbt`
 CLI; `dbt-duckdb` provides the DuckDB adapter. `dagster-dbt` stays in CLI mode
-(`DbtCliResource`). Do not reinstall `dbt-oss` alongside these packages; they
-share the `dbt` Python namespace and will crash dagster-dbt (issue #34215).
-Why `dbt-core` and not `dbt-oss`: ADR-11.
+(`DbtCliResource`). Why `dbt-core` and not the earlier `dbt-oss`: ADR-11.
 
 **Capped on purpose:** `grpcio-health-checking<1.82` in the `[dagster]` extra,
 because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
@@ -393,7 +462,7 @@ because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
 
 1. **One source of truth.** Entity lists, backup targets and the Danish name
    normalisation each exist once and are imported everywhere else.
-2. **Generate the repetitive models, write the star schema by hand.** 50 Silver and 53
+2. **Generate the repetitive models, write the star schema by hand.** 50 Silver and 28
    Bronze models are one macro call each; the Gold star schema is written by
    hand.
 3. **Business logic lives in SQL.** Python moves data and orchestrates; meaning
@@ -409,8 +478,9 @@ because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
 7. **Defence proportionate to the risk.** Bound SQL parameters, connection
    timeouts, non-root containers and a firewall allowlist; no TLS, because
    nothing is public.
-8. **Test the real thing.** The CDC logic is tested by running SQL in DuckDB on
-   fixture files, and CI runs a real `dbt build` on a committed sample.
+8. **Test the real thing.** The Silver macros are tested with real dbt runs on
+   copies of a committed sample (`test_dbt_silver.py`), parts of the CDC SQL also
+   in DuckDB on fixture files, and CI runs a real `dbt build` on that sample.
 
 ---
 
@@ -424,6 +494,10 @@ Deliberate limits of a single-node reference project:
 - Access control is the firewall plus file permissions; no row-level security.
 - Deletes in incremental entities are only seen at a full extraction (a `_full`
   file), so they are as late as the full extractions are rare (ADR-3).
+- Incremental extraction uses a lookback window (ADR-4). When no extraction runs
+  for longer than the window, the changes in that gap are never extracted, without
+  a warning, until the next full extraction. In production a 95-day gap in 2026
+  hid 87,644 changed `sagstrin` rows until the full extractions of October.
 - Silver is the state, not a function of the Bronze files: a run compares only
   the files newer than the model's bookmark with Silver's latest version of each
   key, and Silver models ignore `--full-refresh`. That keeps a run's cost
@@ -432,30 +506,34 @@ Deliberate limits of a single-node reference project:
   or a replay instead of a rebuild. Bronze plus its archive still holds every
   extract, which is what a replay reads. Because a wrong Silver run cannot be
   undone by a refresh, a run stops on a probable mass delete (the delete guard)
-  and on late files, and Bronze is cast to Silver's column types. Details:
-  [dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2).
+  and on late files, and Bronze is cast to Silver's column types (ADR-13).
+  Details: [dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2).
 
 Improvements worth making, roughly in order of value:
 
 1. **Request-level retries for the OData loop.** Retries are per Dagster asset
    (two attempts, exponential back-off), so a failure on page 47 of 50 restarts
    the whole entity.
-2. **Timeouts on the remaining subprocess calls.** The Metabase scripts and the
-   backup `docker`/`rsync`/`ssh` calls have no `timeout=`, so a hung Docker
-   daemon would block a run (the dbt call already has one).
-3. **Concurrent extraction inside `full_pipeline_job`.** Its in-process executor
-   also serialises extraction, which never touches the `.duckdb` file. A
-   run-level concurrency limit for the dbt steps would remove that.
-4. **Test the backup/restore sequence.** `backup_platform.py` is excluded from
+2. **Close the lookback gap.** Let an incremental extraction reach back to its
+   entity's newest Bronze file when that is older than the window, and schedule
+   full extractions of the incremental entities (they are started by hand now).
+3. **Timeouts on the remaining subprocess calls.** The backup and restore
+   `docker`/`rsync`/`ssh` calls have no `timeout=`, so a hung Docker daemon would
+   block a run (the dbt call already has one).
+4. **Concurrent extraction inside `full_pipeline_job`.** It runs at most two steps
+   at a time (`FULL_PIPELINE_MAX_CONCURRENT`), extraction included, although
+   extraction never touches the database. A concurrency limit on the dbt steps
+   only would let extraction run four-wide.
+5. **Test the backup/restore sequence.** `backup_platform.py` is excluded from
    coverage; a test with a stubbed `subprocess.run` could assert that stopped
    containers always restart.
-5. **Extend the Silver grain test to Rfam.** The singular test
+6. **Extend the Silver grain test to Rfam.** The singular test
    `silver_no_duplicate_id_date_valid_from` covers the 18 DDD tables only, because
    Rfam primary keys vary; `SILVER_TABLE_PRIMARY_KEYS` has the keys it would need.
-6. **A lockfile** (for example `uv.lock`) for reproducible installs.
-7. **Broader secret scrubbing.** `_scrub_secrets` matches four substrings in
+7. **A lockfile** (for example `uv.lock`) for reproducible installs.
+8. **Broader secret scrubbing.** `_scrub_secrets` matches four substrings in
    top-level keys only; keys like `api_key` or nested dictionaries would pass.
-8. **Explicit Rfam column lists** instead of `SELECT *`, so an upstream schema
+9. **Explicit Rfam column lists** instead of `SELECT *`, so an upstream schema
    change is noticed at the boundary.
-9. **Volume and anomaly tests** (row counts within bounds, no empty daily load)
+10. **Volume and anomaly tests** (row counts within bounds, no empty daily load)
    on top of the existing correctness tests.

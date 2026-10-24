@@ -74,12 +74,12 @@ flowchart LR
     DDD["Danish Parliament<br/>OData API"] -->|dlt| B
     RFAM["Rfam<br/>MySQL DB"] -->|dlt| B
     S -.->|SILVER_STORAGE_FORMAT| ST{{"DuckDB tables<br/>· or ·<br/>DuckLake Parquet"}}
-    G --> MB["Metabase<br/>(direct read, no export)"]
+    G --> MB["Metabase<br/>(via duckdb_server, no export)"]
     G -->|Delta export · optional| DL[("Delta Lake<br/>local / S3 / OneLake → Power BI")]
     DAG["Dagster orchestrates every step"] -.-> DUCK
 ```
 
-- **Extract:** dlt · **Transform:** dbt + DuckDB · **Orchestrate:** Dagster · **Export:** deltalake · **BI:** Metabase (direct read).
+- **Extract:** dlt · **Transform:** dbt + DuckDB · **Orchestrate:** Dagster · **Export:** DuckDB reads, deltalake writes · **BI:** Metabase (through the DuckDB server).
 - **dlt** is a Python extract-load library; **Dagster** is the orchestrator, comparable to SQL Agent or ADF but defined in code.
 
 <p align="center">
@@ -157,36 +157,39 @@ what the API returns.
 
 ## Silver, part 1: detecting change with a hash
 
-**Hash each row and compare it with the same key's previous version.** This does not depend on the source's update timestamp and avoids a column-by-column comparison.
+**Hash each new row and compare it with the key's latest version in Silver.** This does not depend on the source's update timestamp and avoids a column-by-column comparison.
 
 - SHA-256 over the *business* columns only. Tracking columns (insert time, file name) are excluded; otherwise every row would look changed on every run.
+- **Silver is the state.** A run reads only the Bronze files newer than the model's bookmark; processed files move to an archive.
 
 ```sql
 -- simplified; the real hash uses a configurable delimiter and NULL token
-with hashed as (                        -- 1) hash the business columns
-    select id, LKHS_filename,
-           sha256(concat_ws('|', navn, parti, rolle)) as hash
+with new_rows as (                      -- 1) hash the new files' business columns
+    select id, LKHS_filename, sha256(concat_ws('|', navn, parti, rolle)) as hash
     from   bronze_ddd_aktoer
+    where  LKHS_filename > '<bookmark>'
 ),
-lagged as (                             -- 2) each key's previous version
-    select *, lag(hash) over (partition by id order by LKHS_filename) as prev
-    from   hashed
+state as (                              -- 2) each key's latest version in Silver
+    select id, sha256(concat_ws('|', navn, parti, rolle)) as hash
+    from   silver_ddd_aktoer
+    qualify row_number() over (partition by id order by LKHS_date_valid_from desc) = 1
 )
-select *,
-       case when prev is null  then 'I'     -- new key      -> insert
-            when hash <> prev   then 'U'     -- hash changed -> update
-       end as LKHS_cdc_operation            -- (deletes: a separate step)
-from   lagged;
+select n.*,
+       case when s.id is null      then 'I'     -- new key      -> insert
+            when n.hash <> s.hash  then 'U'     -- hash changed -> update
+       end as LKHS_cdc_operation                -- (deletes: a separate step)
+from   new_rows n left join state s using (id);
 ```
 
-- **Independent of batch size:** `LAG()` runs over the whole file history, so loading five new files in one run gives the same rows as loading them one at a time. The load can be re-run safely.
+- **Independent of batch size:** with several new files, each file is compared with the one before it, so five files in one run give the same rows as five runs.
 
 <!--
 Excluding the tracking columns from the hash is required; without it every row
-changes on every run. Because change is derived with a window function over all
-files, not with a row-by-row merge, a run that processes 20 missed extractions
-produces the same history as 20 separate daily runs. The configurable delimiter
-and NULL replacement keep the hash deterministic when values are NULL.
+changes on every run. The project first rebuilt Silver from all Bronze files on
+every run; that was the cleaner design, but its cost grew with every day's files
+(ADR-13). Silver now holds the state, so a run costs what its new files cost, and
+the archive keeps every extraction for a replay. A run stops instead of writing
+doubtful data: on a probable mass delete, a late file or a type change.
 -->
 
 ---
@@ -218,13 +221,13 @@ the approach and a good reference for the Data Vault background.
 - Import-time checks and tests keep the lists consistent (counts, subsets, no duplicates), so a missing entry fails at import or in CI.
 
 ```python
-# add an Rfam table: update four lists/dicts, then
+# add an Rfam table: update three lists/dicts, then
 python -m ddd_python.ddd_dbt.generate_dbt_models
 ```
 
 <!--
 With 50+ Silver models, writing them by hand would be error-prone and
-inconsistent. The generator and 10 dbt macros keep the CDC logic in one place.
+inconsistent. The generator and 14 dbt macros keep the CDC logic in one place.
 The configuration tests catch a key added to one list but not to another.
 -->
 
@@ -270,8 +273,9 @@ DuckDB allows **one writing process** per database file. The orchestration accou
 
 <!--
 This is a property of the engine, not something that shaped the whole design.
-Writers (dbt) run serially in one process; extraction and export run in
-parallel; readers (Metabase, people) are disconnected during the run.
+Writers (dbt) run in one process; extraction and export run in parallel; readers
+(Metabase, people) stay connected, because they reach the file through the
+server too.
 -->
 
 ---
@@ -300,24 +304,23 @@ when they look at the data directory.
 
 ## The Delta export and who uses it
 
-**Not Metabase.** Metabase reads the DuckDB file directly and needs no export. The Delta export is an **optional** output for other tools:
+**Not Metabase.** Metabase queries DuckDB through the DuckDB server and needs no export. The Delta export is an **optional** output for other tools:
 
 ```text
-DuckDB  ──►  Metabase            (BI, reads the file directly)
+DuckDB  ──►  Metabase            (BI, through the DuckDB server)
    │
    └──►  Delta Lake export  ──►  tools that read Delta
                                  └─► Fabric OneLake ─► Power BI
 ```
 
 - Silver → Delta (incremental append), Gold → Delta (full overwrite); the target is **local, S3 or OneLake**, set by one environment variable.
-- The dedup read runs inside DuckDB with `delta_scan()`; the **write** uses the `deltalake` library. The pinned DuckDB version can only read Delta; newer versions can write it but have an Azure/OneLake regression, so the write stays on `deltalake` for now.
+- The dedup read runs inside DuckDB with `delta_scan()`; the **write** uses the `deltalake` library. DuckDB 2.0 can write Delta, but its writer has an Azure/OneLake regression, so the write stays on `deltalake` for now.
 - A local-only setup does not need the export. It is for Power BI, Spark, Databricks or other Delta readers.
 
 <!--
 The medallion is complete at Gold in DuckDB; Metabase reports from there. The
 export is for interoperability, with Delta as the common format. Moving the
-write into DuckDB waits for a DuckDB version that writes Delta and works with
-OneLake.
+write into DuckDB waits for a DuckDB Delta writer that works with OneLake.
 -->
 
 ---
@@ -325,7 +328,7 @@ OneLake.
 ## Observability: the pipeline reports on itself
 
 - Dagster stores its run history in SQLite.
-- dbt reads that SQLite database with DuckDB's `sqlite_scan`, together with the step failures exported by the failure sensor.
+- dbt reads those SQLite files with DuckDB's `sqlite_scan`, step failures included.
 - A small **data_engineering** layer models Dagster's runs as tables, shown in Metabase like any other data.
 
 No separate observability stack: the run history is one more dbt source.
@@ -365,14 +368,17 @@ flowchart TB
         FW --> DAGSTER["ddd-dagster :3000"]
         FW --> METABASE["ddd-metabase :3001"]
         RUN["run<br/>one-off jobs"]
+        DUCK["ddd-duckdb-server<br/>the only DuckDB writer (quack)"]
         BACKUP["backup service"]
         subgraph VOL["Block volumes (ext4)"]
-            DATA["/data (live)<br/>DuckDB · DuckLake · Dagster home"]
+            DATA["/data (live)<br/>DuckDB · DuckLake · Bronze · Dagster home"]
             BK["/data_backup (archives)"]
         end
+        DAGSTER -->|quack| DUCK
+        METABASE -->|quack| DUCK
+        RUN -->|quack| DUCK
+        DUCK --- DATA
         DAGSTER --- DATA
-        METABASE --- DATA
-        RUN --- DATA
         BACKUP --- DATA
         BACKUP --> BK
     end

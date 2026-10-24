@@ -19,8 +19,6 @@ dependencies = [
     # Transformation
     # dbt-core is capped at <1.13 — dagster-dbt 0.29.x hard limit.
     # dbt-duckdb 1.11.0 targets dbt-core 1.11 but is compatible with 1.12.
-    # Do not add dbt-oss: installing dbt-core AND dbt-oss together triggers
-    # dagster-dbt issue #34215 (NoneType/enabled crash in DbtCliResource).
     "dbt-core>=1.12.6,<1.13",
     "dbt-duckdb>=1.11.0,<2",
     "duckdb>=2.0.0,<3",

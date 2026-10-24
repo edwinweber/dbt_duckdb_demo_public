@@ -54,6 +54,6 @@
     <line class="msg" x1="355" y1="600" x2="1070" y2="600" />
     <text class="text" x="712" y="588" text-anchor="middle">Run Silver and Gold export assets</text>
     <line class="msg" x1="1070" y1="670" x2="1290" y2="670" />
-    <text class="text" x="1180" y="658" text-anchor="middle">Publish Delta tables and run logs</text>
+    <text class="text" x="1180" y="658" text-anchor="middle">Publish Delta tables</text>
   </g>
 </svg>

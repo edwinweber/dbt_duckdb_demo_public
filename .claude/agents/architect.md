@@ -15,13 +15,16 @@ You are the architectural advisor for **Danish Democracy Data (dbt_duckdb_demo)*
 
 **Medallion pipeline:** Bronze (read_json_auto views) → Silver (incremental CDC tables + `_cv` views) → Gold (star-schema views) → Delta Lake export (local, S3 or OneLake).
 
-**Two orthogonal switches:**
+**Three orthogonal switches:**
+- `RAW_STORAGE_TARGET`: `local` or `s3` — where Bronze files and DuckLake Parquet data live.
 - `SILVER_STORAGE_FORMAT`: `duckdb` (Silver in the `.duckdb` file) or `ducklake` (Silver as Parquet + catalog). Silver is the state (never rebuilt from Bronze), so switching means `migrate_silver_to_ducklake`.
 - `STORAGE_TARGET`: `local`, `s3` or `onelake` — controls only the Delta Lake export destination.
 
-**Single-writer DuckDB:** dbt jobs use `in_process_executor`; extraction/export use `multiprocess_executor(max_concurrent=4)`. This shapes every orchestration decision.
+**Single-writer DuckDB:** dbt jobs use `in_process_executor`; extraction/export use `multiprocess_executor(max_concurrent=4)`; `full_pipeline_job` runs at most 2 steps at a time. In Docker, `duckdb_server` serialises the writes. This shapes every orchestration decision.
 
-**Key pinned versions:** DuckDB ≥2.0.0,<3; dbt-core ≥1.12.6,<1.13 + dbt-duckdb ≥1.11.0 (do NOT reinstall dbt-oss — namespace conflict with dbt-core crashes dagster-dbt, issue #34215); Dagster ≥1.13; dlt ≥1.31; Python ≥3.13. Delta writes stay on `deltalake` + PyArrow — the DuckDB delta writer has an Azure/OneLake regression. In Docker, `duckdb_server` owns the file; all others connect via quack RPC (`QUACK_SERVER_HOST`).
+**Silver is the state** (ADR-13): a run reads only the Bronze files newer than the bookmark; processed Bronze files are archived on demand; repairs go through backups or a replay.
+
+**Key pinned versions:** DuckDB ≥2.0.0,<3; dbt-core ≥1.12.6,<1.13 + dbt-duckdb ≥1.11.0 (dbt-oss is no longer used: it ships DuckDB 1.5); Dagster ≥1.13; dlt ≥1.31; Python ≥3.13. Delta writes stay on `deltalake` + PyArrow — the DuckDB delta writer has an Azure/OneLake regression. In Docker, `duckdb_server` owns the file; all others connect via quack RPC (`QUACK_SERVER_HOST`).
 
 **DuckLake constraint:** the helper tables `_last_file` and `_files` must be fully qualified with `{{ this.database }}` — DuckDB forbids one transaction writing to two databases.
 

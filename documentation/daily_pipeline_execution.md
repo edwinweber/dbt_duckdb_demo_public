@@ -46,7 +46,8 @@ the groups `ingestion_DDD_incremental`, `ingestion_DDD_full_extract`,
 Each asset calls `DltPipelineResource.execute_pipeline()`, the same engine the
 CLI scripts use, and writes one timestamped NDJSON file to
 `Files/Bronze/<SOURCE>/<entity>/<entity>_<YYYYMMDD_HHMMSS>.json` on the local
-filesystem or S3 (`RAW_STORAGE_TARGET`).
+filesystem or S3 (`RAW_STORAGE_TARGET`); a full extraction of an incremental
+entity (`date_to_load_from` `1900-01-01`) is named `…_full.json`.
 
 | Source | Incremental | Full extract |
 | --- | --- | --- |
@@ -63,10 +64,11 @@ overlap; Silver's hash comparison discards the rows that did not change.
 backoff=EXPONENTIAL)`. A malformed `date_to_load_from` is rejected before any
 request is made.
 
-**Concurrency:** inside this job the 25 assets run one after another. Parallel
-extraction happens in the standalone jobs (`danish_parliament_*_job`,
-`rfam_*_job`, `multiprocess_executor` with `max_concurrent=4`) and in the CLI
-scripts (`ThreadPoolExecutor(max_workers=4)`).
+**Concurrency:** inside this job the 25 assets run at most two at a time, like
+every step of `full_pipeline_job`. The standalone extraction jobs
+(`danish_parliament_*_job`, `rfam_*_job`) run four at a time
+(`multiprocess_executor` with `max_concurrent=4`), and so do the CLI scripts
+(`ThreadPoolExecutor(max_workers=4)`).
 
 **Log output:** every pipeline run, successful or not, appends one record to
 `<DLT_PIPELINE_RUN_LOG_DIR>/<SOURCE>/<pipeline>/<pipeline>_log.ndjson`
@@ -128,8 +130,10 @@ or `onelake` → `abfss://…`).
 - **Gold — full overwrite.** Each Gold view is read into Arrow and written with
   `mode="overwrite"`; there is no target read.
 
-The export opens its own read-only DuckDB connection. Each table is its own
-asset, so a failed table shows up as one failed step rather than hiding the others.
+Each export asset opens its own connection (in Docker a quack client of
+`duckdb_server`, otherwise the DuckDB file read-only). DuckDB reads; the
+`deltalake` library writes; dlt is not involved. Each table is its own asset, so a
+failed table shows up as one failed step rather than hiding the others.
 
 ### Step 4 — Observability layer
 
@@ -172,8 +176,9 @@ write or alert is logged as a warning and never fails the sensor tick.
    `error` field holds the traceback. Typical causes: API timeouts, a MySQL
    connection error (30 s connect timeout), S3 credentials.
 3. **dbt failed?** The Dagster step log shows the failing model or test. Common
-   causes: a data test failing on new data, a source schema change, or another
-   process holding the `.duckdb` lock.
+   causes: a data test failing on new data, a source schema change, a Silver
+   safeguard (the delete guard or a late Bronze file, runbook §7), or, outside
+   Docker, another process holding the `.duckdb` lock.
 4. **Export failed?** Usually credentials (`STORAGE_TARGET=s3|onelake`) or a
    paused Fabric capacity (`CapacityNotActive`).
 5. **Rerun.** Every stage is safe to repeat: extraction writes a new

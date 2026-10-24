@@ -28,7 +28,7 @@ They are formatted as **ext4** and mounted at boot via `/etc/fstab`.
 
 | Mount point | Size | Purpose |
 | --- | --- | --- |
-| `/data` | 50 GB | Live operational data (DuckDB, DuckLake, dlt working dir, dbt logs, Dagster home, Metabase state, Bronze files, local Delta exports, run logs) |
+| `/data` | 50 GB | Live operational data (DuckDB, DuckLake, dlt working dir, dbt logs, Dagster home, Metabase state, Bronze files and their archive, local Delta exports, run logs) |
 | `/data_backup` | 50 GB | Local backup archives (per-target retention: 62 days dagster/metabase, 7 days duckdb/ducklake) and structured backup logs |
 
 ### One-time volume setup (run once after attaching each volume in the Hetzner console)
@@ -76,15 +76,16 @@ df -h /data /data_backup
 ```
 /data/
 ├── dlt_pipelines/          # dlt working directory (owned by UID 1000)
-├── duckdb/                 # DuckDB .duckdb file + WAL (owned 1000, o+rwx for Metabase)
+├── duckdb/                 # DuckDB .duckdb file + WAL, DuckLake catalog (owned by UID 1000; only duckdb_server opens them)
 ├── dbt_logs/               # dbt JSON execution logs (owned by UID 1000)
 ├── dagster/                # Dagster home — run history, schedules, SQLite (owned by UID 1000)
-├── ducklake/               # DuckLake Parquet data, ducklake mode only (owned 1000, o+rx for Metabase)
+├── ducklake/               # DuckLake Parquet data, ducklake mode only (owned by UID 1000)
 ├── local/                  # LOCAL_STORAGE_PATH (owned by UID 1000)
 │   ├── Files/
 │   │   ├── Bronze/         # extraction files
 │   │   ├── Silver/         # Delta export (STORAGE_TARGET=local)
 │   │   └── Gold/           # Delta export (STORAGE_TARGET=local)
+│   ├── archive/Bronze/     # processed Bronze files (bronze_archive_job), gzip + MANIFEST.ndjson
 │   └── logs/               # NDJSON run logs
 └── metabase/
     ├── data/               # Metabase application database (owned by UID 2000)
@@ -116,10 +117,9 @@ What this script does:
 1. Creates every sub-directory listed above.
 2. Sets `app` (UID 1000) as owner of pipeline and backup directories.
 3. Sets Metabase user (UID 2000) as owner of `/data/metabase/`.
-4. Applies `o+rwx` to `/data/duckdb/` so Metabase (UID 2000) can write WAL files into the UID-1000-owned directory.
-   Applies `o+rX` to `/data/ducklake/` so Metabase can read the DuckLake Parquet files.
-5. Applies `o+rX` to `/data/metabase/data` so the backup container (UID 1000) can read Metabase state.
-6. Detects the Docker socket GID and writes `DOCKER_GID=<gid>` into `.env`.
+4. Applies `o+rX` to `/data/metabase/data` so the backup container (UID 1000) can read Metabase state.
+   Metabase needs no access to `/data/duckdb/` or `/data/ducklake/`: it connects through `duckdb_server`.
+5. Detects the Docker socket GID and writes `DOCKER_GID=<gid>` into `.env`.
 
 Dry-run mode (prints intended actions, makes no changes):
 
@@ -254,7 +254,10 @@ and NordVPN exit IP. All other inbound traffic is blocked.
 | 3000 | TCP | Dagster UI |
 | 3001 | TCP | Metabase BI |
 
-All other inbound ports are blocked. There is no HTTPS/TLS termination — access
+All other inbound ports are blocked. That includes 9494: Docker publishes the
+quack server's port on the host, but the firewall only lets it through when you
+add a rule for it (remote quack clients, see
+[DOCKER_USAGE.md](../docker/DOCKER_USAGE.md#remote-access-to-the-duckdb-server)). There is no HTTPS/TLS termination — access
 to Dagster and Metabase relies entirely on the IP whitelist.
 
 ### Adding or changing whitelisted IPs
@@ -277,8 +280,9 @@ Five services are configured; `duckdb_server`, `dagster` and `metabase` run pers
 | `run` | `ddd-run` | — | — | none | One-off Python module runner |
 | `backup` | `ddd-backup` | — | — | none | Backup and restore runner |
 
-Both `dagster` and `metabase` have HTTP health checks configured (30 s interval,
-10 s timeout, 3–5 retries).
+`dagster` and `metabase` have HTTP health checks (30 s interval); `duckdb_server`
+has a TCP check on port 9494 (15 s interval); `run`, `dagster` and `metabase` wait
+until it is healthy.
 
 ### Docker socket access
 
@@ -312,7 +316,13 @@ The script:
 2. Runs `git fetch origin main && git reset --hard origin/main` on the server.
 3. Runs `docker compose down --remove-orphans`.
 4. Runs `docker compose build`.
-5. Runs `docker compose up -d dagster metabase`.
+5. Runs `docker compose up -d dagster metabase`, which starts `duckdb_server`
+   first (both depend on it being healthy).
+
+A deploy does not run anything else. When a release needs a one-off step (for
+example renaming old full extractions with `mark_full_extracts`), run it after the
+deploy and before the next Silver run, and take a backup first
+(`docker compose run --rm backup python -m ddd_python.ddd_utils.backup_platform --targets ducklake duckdb`).
 
 The repository on the server must have the GitHub deploy key authorised so that
 `git fetch` succeeds without a password prompt.
@@ -348,6 +358,12 @@ The entry written to crontab:
 Cron output goes to `/data_backup/logs/cron.log`.
 Structured NDJSON run logs go to `/data_backup/logs/backup_log_<timestamp>.ndjson`.
 
+The targets cover the databases (`duckdb`, `ducklake`), Dagster and Metabase. The
+Bronze files and the Bronze archive under `/data/local` are not a backup target.
+Since Silver is the state, the archive is only needed for a replay, but it is then
+the only copy of the original extractions; copy it off the server (for example
+to the StorageBox) if you want to keep that possibility.
+
 ### Backup retention
 
 | Location | Retention |
@@ -378,16 +394,18 @@ Use this checklist when provisioning a new server from scratch.
 [ ] Format and fstab-mount the volumes as /data and /data_backup (see above)
 [ ] Clone the repo: git clone git@github.com:edwinweber/dbt_duckdb_demo.git /opt/dbt_duckdb_demo
 [ ] Generate deploy key on server and register public key in GitHub (read-only)
-[ ] Copy .env.example → .env and fill in all values
+[ ] Copy .env.example → .env and fill in all values, including QUACK_SERVER_TOKEN
 [ ] Copy .env.deploy.example → .env.deploy on your laptop and fill in values
 [ ] sudo scripts/setup_host_permissions.sh   (creates dirs, sets ownership, writes DOCKER_GID)
 [ ] docker compose build
 [ ] docker compose up -d dagster metabase
 [ ] Verify health: curl http://localhost:3000  and  curl http://localhost:3001/api/health
+[ ] Metabase: add the DuckDB database once (path :memory:, init SQL from /data/metabase/data/duckdb-init.sql)
 [ ] Configure Hetzner Firewall — whitelist operator IPs for ports 22, 3000, 3001
 [ ] Attach firewall to the server in Hetzner console
 [ ] Stage StorageBox SSH key for UID 1000 in /data_backup/.ssh (see "Staging the key" above)
 [ ] Set up StorageBox SSH key and verify rsync: docker compose run --rm backup
 [ ] scripts/setup_backup_cron.sh --install   (nightly 02:00 backup)
+[ ] First load: full extractions of the incremental entities (date_to_load_from 1900-01-01), then Silver
 [ ] Verify end-to-end: in the Dagster UI run full_pipeline_job, then enable the schedules
 ```

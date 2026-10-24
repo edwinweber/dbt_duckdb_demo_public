@@ -51,9 +51,11 @@ The pipeline moves data through five stages. Python owns the **bookends** and th
                                   everything above as "assets"
 ```
 
-* **`ddd_dlt`** pulls data out of the API and the MySQL database and lands it as
-  NDJSON files (this is "extraction"). It also pushes the finished tables
-  out to Delta Lake (this is "export").
+* **`ddd_dlt`** pulls data out of the API and the MySQL database with the dlt
+  library and lands it as NDJSON files (this is "extraction"). It also holds the
+  Delta Lake export, which does not use dlt: DuckDB reads the tables and the
+  `deltalake` library writes them (this is "export"). And it holds the quack
+  server that owns the database in Docker.
 * **`ddd_dbt`** writes the dbt SQL model files for you (code generation) and runs
   `dbt build`.
 * **`ddd_dagster`** orchestrates: it turns every step above into a Dagster
@@ -92,8 +94,8 @@ lower ones, never the reverse:
 
 | Package | Role | Entry points you run |
 |---------|------|----------------------|
-| `ddd_utils` | Config, env vars, paths, strings, cloud clients, backup helpers | (mostly imported, not run) |
-| `ddd_dlt` | Extract from sources; export to Delta Lake | `dlt_run_extraction_pipelines_*`, `export_silver`, `export_gold` |
+| `ddd_utils` | Config, env vars, paths, strings, cloud clients, backup and Bronze-archive tools | mostly imported; CLI tools in §8 |
+| `ddd_dlt` | Extract from sources (dlt); export to Delta Lake (DuckDB + `deltalake`); the quack server | `dlt_run_extraction_pipelines_*`, `export_silver`, `export_gold`, `duckdb_quack_server` |
 | `ddd_dbt` | Generate dbt SQL; run `dbt build`; init DuckDB | `generate_dbt_models`, `dbt_build_with_unique_logfile` |
 | `ddd_dagster` | Orchestrate everything as assets/jobs/schedules | `dagster dev -w workspace.yaml` |
 
@@ -192,8 +194,10 @@ imports from here.
 
 [ddd_python/ddd_utils/configuration_variables.py](../ddd_python/ddd_utils/configuration_variables.py)
 
-This file contains only **data**: lists and dictionaries, no functions. The
-rest of the project reads its configuration from it. It declares, for both
+This file contains only **data** (lists, dictionaries and the two concurrency
+settings `MAX_CONCURRENT_WORKERS` and `FULL_PIPELINE_MAX_CONCURRENT`) plus
+import-time checks that every entity has a primary key; no functions. The rest
+of the project reads its configuration from it. It declares, for both
 source systems:
 
 * The full list of entities/tables (`DANISH_DEMOCRACY_FILE_NAMES`,
@@ -250,7 +254,7 @@ join key per table.
 
 [ddd_python/ddd_utils/string_utils.py](../ddd_python/ddd_utils/string_utils.py)
 
-Two small, heavily-used functions:
+Three small, heavily-used functions:
 
 **`normalize_danish_name(name)`** converts Danish characters to ASCII and
 lowercases, so every layer that maps an API name to an identifier calls this:
@@ -260,7 +264,7 @@ normalize_danish_name("Møde")  # -> "moede"
 normalize_danish_name("SagstrinAktør")  # -> "sagstrinaktoer"
 ```
 
-This is not a DuckDB limitation: DuckDB 1.5 accepts `ø/æ/å` in schema, table and
+This is not a DuckDB limitation: DuckDB accepts `ø/æ/å` in schema, table and
 column names, quoted and unquoted, and `read_json_auto` keeps the original
 Danish column names. The normalisation is a **portability/convention** choice: dbt model names become `.sql` filenames, identifiers must round-trip
 cleanly through Delta Lake / Parquet and downstream tools (Power BI / Fabric), and
@@ -278,6 +282,11 @@ validates the format and returns it unchanged (raising `ValueError` on a bad
 format). Passing `reference_time` in (rather than calling `datetime.now()` inside)
 makes the function **deterministic and testable** — the tests can feed a fixed
 clock.
+
+**`is_full_extract(date_to_load_from)`** is true when the start date is on or
+before `FULL_EXTRACT_DATE` (`1900-01-01`). The extraction then names the file
+`<entity>_<timestamp>_full.json`, the marker the Silver layer needs to detect
+deletes of incremental entities.
 
 ### 4.3 `get_variables_from_env.py` — lazy environment loading
 
@@ -343,6 +352,10 @@ Centralises the "local vs S3 vs OneLake" path logic so no call site has to repea
   built by `_make_destination` (§5.1) puts that path under `LOCAL_STORAGE_PATH`
   or under the S3 bucket, depending on `RAW_STORAGE_TARGET`.
 
+* **`build_bronze_file_name(entity_name, timestamp, full=False)`** returns the
+  Bronze file name, `<entity>_<YYYYMMDD_HHMMSS>.json`, with `_full` before the
+  extension for a full extraction of an incremental entity.
+
 * **`build_delta_export_path(layer, table)`** returns a `(path, storage_options)`
   tuple ready for `deltalake.write_deltalake`. Branches on `STORAGE_TARGET`:
   * Local: returns path under `LOCAL_STORAGE_PATH/Files/{Layer}/{table}/` and
@@ -357,11 +370,19 @@ Centralises the "local vs S3 vs OneLake" path logic so no call site has to repea
     fetches a bearer token via lazy import of `get_fabric_onelake_clients`, and
     returns `storage_options` with token + `use_fabric_endpoint=true`.
 
-* **`open_export_connection()`** opens a read-only DuckDB connection for Silver/Gold
-  exports. When `SILVER_STORAGE_FORMAT=ducklake` it attaches the DuckLake catalog
-  read-only. If `DUCKLAKE_DATA_PATH` starts with `s3://` OR `STORAGE_TARGET=s3`,
-  it calls `_configure_s3_secret` to create a session-scoped S3 secret on the
-  connection so DuckLake/delta_scan can reach S3.
+* **`open_export_connection()`** opens the DuckDB connection for the Silver/Gold
+  exports and the other readers (archive script, maintenance). When
+  `QUACK_SERVER_HOST` is set (Docker) it is an in-memory connection that
+  `ATTACH`es the quack server (`_open_quack_connection`); Silver is then
+  `<DUCKDB_DATABASE>.ducklake_catalog.main_silver` in DuckLake mode. Otherwise it
+  opens the DuckDB file read-only and, when `SILVER_STORAGE_FORMAT=ducklake`,
+  attaches the DuckLake catalog read-only. If `DUCKLAKE_DATA_PATH` starts with
+  `s3://` OR `STORAGE_TARGET=s3`, it calls `_configure_s3_secret` to create a
+  session-scoped S3 secret on the connection so DuckLake/delta_scan can reach S3.
+
+* **`open_server_session()`** is the same quack connection plus `CONNECT`, so
+  every statement runs on the server with the server's own catalogs; the DuckLake
+  cleanup uses it. Without a quack server it falls back to `open_export_connection()`.
 
 * **`_configure_s3_secret(conn)`** creates a DuckDB S3 secret using `S3_ENDPOINT`,
   `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_USE_SSL`, and
@@ -404,7 +425,9 @@ versioning and lifecycle policies handle durability instead.
 
 Location: [ddd_python/ddd_dlt/](../ddd_python/ddd_dlt/). "dlt" = the
 [data load tool](https://dlthub.com) library. This package gets data **in** (from
-sources to Bronze files) and **out** (from DuckDB to Delta Lake).
+sources to Bronze files, with dlt) and **out** (from DuckDB to Delta Lake, with
+DuckDB and the `deltalake` library; dlt is not involved). It also contains the
+quack server (§5.6).
 
 ### 5.1 `dlt_pipeline_execution_functions.py` — the extraction engine
 
@@ -458,8 +481,9 @@ the `_TS_MICROSEC` regex (DuckDB/Arrow only want microsecond precision).
 `STORAGE_TARGET` (the Delta Lake *export* destination) is separate and does not
 affect where Bronze files go.
 
-A custom `layout` + `_resolve_path` placeholder forces dlt to write your exact
-timestamped filename instead of dlt's default naming.
+A custom `layout` (`{table_name}/{_resolve_stem}.{ext}`) with the placeholder
+functions `_resolve_stem` and `_resolve_ext` forces dlt to write the exact
+timestamped file name (`build_bronze_file_name`) instead of its default naming.
 
 **Module-level setup** at the top of the file configures dlt:
 
@@ -587,13 +611,14 @@ without its Azure/OneLake regression (ADR-7 in
 [design_decisions.md](design_decisions.md#adr-7-delta-export-reads-with-duckdb-writes-with-deltalake)).
 
 **Storage-format aware (DuckDB vs DuckLake).** The connection comes from the
-shared `open_export_connection()` (`ddd_utils/path_utils.py`): in native `duckdb`
-mode it's a plain read-only connection to the main DuckDB file; in `ducklake`
-mode it also attaches the DuckLake catalog read-only (`ATTACH 'ducklake:…' AS
-ducklake_catalog … (READ_ONLY)`).  `_silver_source_database()` then resolves the
-source to `ducklake_catalog.main_silver.<table>` (DuckLake) or
-`<DUCKDB_DATABASE>.main_silver.<table>` (DuckDB), so the export reads the Silver
-tables from wherever dbt actually wrote them.  The **Gold** export uses the same
+shared `open_export_connection()` (`ddd_utils/path_utils.py`): in Docker a quack
+client attached to `duckdb_server`; otherwise a read-only connection to the main
+DuckDB file, which in `ducklake` mode also attaches the DuckLake catalog
+read-only. `_silver_source_database()` then resolves the source to
+`ducklake_catalog.main_silver.<table>` (DuckLake),
+`<DUCKDB_DATABASE>.ducklake_catalog.main_silver.<table>` (DuckLake through quack)
+or `<DUCKDB_DATABASE>.main_silver.<table>` (DuckDB), so the export reads the
+Silver tables from wherever dbt actually wrote them.  The **Gold** export uses the same
 `open_export_connection()`, so its views (which reference
 `ducklake_catalog.main_silver`) resolve in DuckLake mode too.
 
@@ -619,6 +644,21 @@ not fail the export; the next run prunes again.
 Both export scripts expose `export_single_*_table(connection, table)` functions that
 the Dagster export assets import and call directly (see §7.4) — the same code path
 works both as a CLI script and inside an orchestrated asset.
+
+### 5.6 `duckdb_quack_server.py` — the single DuckDB writer in Docker
+
+[ddd_python/ddd_dlt/duckdb_quack_server.py](../ddd_python/ddd_dlt/duckdb_quack_server.py)
+
+The process behind the `duckdb_server` container (ADR-12 in
+[design_decisions.md](design_decisions.md)). It opens the `.duckdb` file
+read-write, sets `memory_limit` from `QUACK_SERVER_MEMORY_LIMIT` (default `12GB`),
+loads the extensions, attaches the DuckLake catalog in `ducklake` mode, creates
+the persistent secrets (`init_secrets_on_connection`, §6.3), registers the SQL
+function `ducklake_sweep_current_temp` (§7.7b), and then serves the database over
+quack RPC on `QUACK_SERVER_PORT` (default 9494). `QUACK_SERVER_TOKEN` is required
+(at least 4 characters). `SIGTERM`/`SIGINT` stop the server cleanly. Every other
+container (Dagster, dbt, Metabase, the `run` service) connects as a client and
+mounts no database files.
 
 ---
 
@@ -679,7 +719,10 @@ A thin wrapper that runs `dbt build --log-format json` as a subprocess (one-hour
 timeout), capturing stdout to `dbt_build_log_<timestamp>.json` under
 `DBT_LOGS_DIRECTORY`. It fails on a non-zero exit code **and** when the JSON log
 contains failed or errored nodes, because dbt can exit 0 with failing tests. The
-`--models_to_select` CLI arg passes through to `dbt --select`.
+binary is `DBT_EXECUTABLE` (default `dbt`; `dbt-quack` in Docker, §7.6). The
+`--models_to_select` CLI arg passes through to `dbt --select`;
+`--no_silver_delete_guard` and `--skip_late_files` set the Silver switches for one
+run (as `--vars`, built by `silver_vars`).
 
 ### 6.3 `init_duckdb.py` — bootstrapping the database
 
@@ -691,7 +734,7 @@ It opens the database, installs/loads the `httpfs`, `azure`, and `delta`
 extensions, sets the Azure transport option, and creates persistent **secrets**
 for cloud storage.
 
-Two functions:
+Three functions:
 
 * **`init_s3_secret(con)`** creates a persistent S3 secret when either
   `RAW_STORAGE_TARGET=s3` or `STORAGE_TARGET=s3`. The secret includes
@@ -702,11 +745,16 @@ Two functions:
   `delta_scan` in export scripts) can reach S3-backed Bronze, DuckLake,
   or Delta export targets without extra setup.
 
-* **`init_duckdb()`** is the main entry point. It creates the database file
-  if needed, installs/loads extensions, sets Azure transport to `curl`
-  (required for OneLake/ADLS Gen2), creates an Azure service-principal
-  secret when `STORAGE_TARGET=onelake`, and always calls `init_s3_secret`
-  regardless of storage target (it's a no-op when neither S3 switch is active).
+* **`init_secrets_on_connection(con)`** creates the Azure service-principal
+  secret when `STORAGE_TARGET=onelake` and calls `init_s3_secret`, on a connection
+  that is already open. The quack server (§5.6) calls it before it starts serving,
+  so its clients inherit the secrets; the Silver export calls it before
+  `delta_scan` reads a OneLake target.
+
+* **`init_duckdb()`** is the main entry point for a setup without the quack
+  server. It creates the database file if needed, installs/loads extensions, sets
+  Azure transport to `curl` (required for OneLake/ADLS Gen2) and calls
+  `init_secrets_on_connection`.
 
 Security detail: DuckDB's `CREATE SECRET` DDL can't take bound parameters, so the
 credentials *are* interpolated into the SQL string — but that statement is
@@ -733,8 +781,8 @@ that turns the scripts above into a coordinated, observable, retryable pipeline.
 
 [_constants.py](../ddd_python/ddd_dagster/_constants.py) holds the shared
 `_RETRY_POLICY` (2 retries with exponential backoff, 60s → 120s, for transient
-network errors), used by every extraction and export asset, and the Metabase and
-DuckLake-cleanup asset keys. The worker count (`MAX_CONCURRENT_WORKERS`, 4) is in
+network errors), used by every extraction and export asset, and the
+DuckLake-cleanup and Bronze-archive asset keys. The worker count (`MAX_CONCURRENT_WORKERS`, 4) is in
 `configuration_variables.py`, because the extraction pool in `ddd_dlt` uses it too
 and lower layers do not import from `ddd_dagster`.
 
@@ -837,9 +885,12 @@ The custom `DddDbtTranslator` does the important wiring:
 `_dbt_multi_asset(...)` builds a `multi_asset` from the dbt manifest for a given
 `select` string (`bronze`, `silver`, `gold`, `data_engineering`, or
 `resource_type:seed`). The actual execution is `dbt.cli(["build", ...]).stream()`.
-The Silver asset reads a `DbtSilverConfig` so you can tick `full_refresh: true`
-in the UI to pass `--full-refresh`; the Silver models ignore it
-(`full_refresh=false`), because Silver is the state.
+The Silver asset reads a `DbtSilverConfig` from the Launchpad: `delete_guard:
+false` turns the Silver delete guard off for one run with real mass deletes, and
+`skip_late_files: true` logs late Bronze files as skipped
+([dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2)).
+It also has `full_refresh`, which passes `--full-refresh`; the Silver tables
+ignore it (`full_refresh=false`), because Silver is the state.
 
 In Docker mode dbt connects to the quack server (`dbt_quack.py` patches the
 `dbt-duckdb` adapter); `QUACK_SERVER_HOST` triggers the quack code path. Outside
@@ -857,17 +908,26 @@ Dagster's *own* SQLite run history via DuckDB's `sqlite_scan()`. The
 
 In Docker, `duckdb_server` is the sole owner of the `.duckdb` file (ADR-12).
 `dbt-duckdb` normally opens the file directly, which would violate the
-single-writer rule. `dbt_quack.py` monkey-patches the adapter's `DuckDBEnvironment`
-class at import time so that when `QUACK_SERVER_HOST` is set:
+single-writer rule. With `QUACK_SERVER_HOST` set, `dbt/profiles.yml` selects the
+`quack` target: an in-memory DuckDB that `ATTACH`es
+`quack:<host>:<port>` with the token, under the alias `danish_democracy_data`.
 
-1. `_is_available_()` is patched to always return `True` (quack extension is
-   already loaded server-side).
-2. `open` is patched to call `duckdb.connect(f"md:{host}:{port}")` with the
-   quack token secret, returning a standard DuckDB connection object.
-3. The `cursor` property is patched to expose the connection as a cursor.
+`dbt_quack.py` is the `dbt-quack` console script (`[project.scripts]` in
+`pyproject.toml`); Dagster and `dbt_build_with_unique_logfile` run it instead of
+`dbt` through `DBT_EXECUTABLE=dbt-quack`. Before it hands over to dbt's own runner
+(`dbtRunner`), it applies three patches to `dbt-duckdb`:
 
-The module is imported by `dbt_build_with_unique_logfile.py` before invoking dbt.
-Outside Docker the patch is a no-op because `QUACK_SERVER_HOST` is empty.
+1. **`connect`** — every cursor runs `CONNECT danish_democracy_data`, so model and
+   test SQL executes on the server, against the server's catalogs.
+2. **`is_ducklake`** — databases listed in `QUACK_DUCKLAKE_DATABASES` (default
+   `ducklake_catalog`) count as DuckLake, so dbt does not issue the `DROP …
+   CASCADE` that DuckLake refuses.
+3. **`per_thread`** — each dbt thread gets its own connection, so concurrent
+   cursors do not interrupt each other's server session.
+
+`QUACK_SKIP_PATCHES` switches individual patches off to test whether a newer
+DuckDB or dbt-duckdb still needs them. Without `QUACK_SERVER_HOST` the script
+warns and runs plain dbt.
 
 ### 7.7 `jobs.py` — grouping assets into runnable jobs
 
@@ -889,7 +949,7 @@ from the canonical incremental lists, so a new incremental entity needs no chang
 here. The helper functions (`_bronze_selection`, `_silver_selection`, ...) use
 deferred imports inside the function body to avoid a circular import between
 `jobs.py` and `dbt_assets.py`. `full_pipeline_job` unions everything into one
-sequential end-to-end run.
+end-to-end run, ordered by the asset dependencies.
 
 ### 7.7b `ducklake_cleanup_assets.py` — DuckLake catalog maintenance
 
@@ -897,15 +957,18 @@ sequential end-to-end run.
 
 A single asset (`ducklake_cleanup_asset`, group `maintenance`) that vacuums the
 DuckLake catalog when `SILVER_STORAGE_FORMAT=ducklake` (otherwise it logs a skip
-and returns). It attaches the catalog, then:
+and returns). It opens a server session (`open_server_session`, §4.4), then:
 
 1. `CALL ducklake_expire_snapshots(..., older_than=NOW() - INTERVAL '31 days')` —
    expire snapshots older than 31 days (recent ones are kept for time-travel).
 2. `CALL ducklake_delete_orphaned_files(...)` — delete Parquet files no longer
    referenced by the catalog.
-3. A filesystem sweep that removes leftover `*_current_temp` directories from the
-   Silver pre/post-hooks, then re-asserts `o+r`/`o+rx` on the data tree so Metabase
-   (a different UID) can still read it.
+3. A filesystem sweep that removes leftover `*_current_temp` directories, which
+   earlier versions of the Silver macros left behind (the current macros do not
+   create them). In Docker only `duckdb_server` mounts the DuckLake data, so the
+   sweep runs there: `ddd_utils/ducklake_maintenance.py` registers it on the
+   server as the SQL function `ducklake_sweep_current_temp`, and the asset calls
+   that function. Only directories unchanged for 60 minutes are removed.
 
 **Critical invariant:** the sweep **never** touches `*__dbt_tmp` directories —
 DuckLake stores *live* table data there (dbt's incremental-append strategy writes
@@ -913,6 +976,16 @@ staging Parquet into `…__dbt_tmp/` and the main table's snapshot references th
 files). Deleting them corrupts Silver. It runs via `ducklake_cleanup_job`
 (`in_process_executor`), which is a **manual** job — there is no schedule for it
 (run it on demand now and then).
+
+### 7.7c `bronze_archive_assets.py` — archiving processed Bronze files
+
+[ddd_python/ddd_dagster/bronze_archive_assets.py](../ddd_python/ddd_dagster/bronze_archive_assets.py)
+
+`bronze_archive_asset` (group `maintenance`), run by the on-demand
+`bronze_archive_job`, wraps `archive_bronze.run_archive` (§8.5). Its Launchpad
+config is `keep_days` (default 7), `compress` (default `true`) and `dry_run`
+(default `false`). With `RAW_STORAGE_TARGET=s3` it logs and does nothing. There is
+no schedule.
 
 ### 7.8 `schedules.py` — when jobs run
 
@@ -932,19 +1005,17 @@ Two `@run_status_sensor`s (one SUCCESS, one FAILURE) that fire when **any** job
 finishes. They pull run + per-step timing from the Dagster instance, build a
 structured summary, call `dlt_onelake.write_job_run_log(...)` to append it to
 `<DLT_PIPELINE_RUN_LOG_DIR>/DDD/<job_name>_run_log.ndjson`, and send an ntfy.sh
-alert when `NTFY_TOPIC` is set. The failure sensor also restarts Metabase if the
-run had stopped it, and writes the run's `STEP_FAILURE` events to
-`<DLT_PIPELINE_RUN_LOG_DIR>/dagster/step_failures/<run_id>.ndjson` for the
-`dagster_step_failures_raw` dbt model. Write or alert failures are downgraded to
-warnings so they never break the sensor.
+alert when `NTFY_TOPIC` is set. Write or alert failures are downgraded to
+warnings so they never break the sensor. Step-failure details are not exported by
+the sensors: the `dagster_step_failures_raw` dbt model reads them directly from
+Dagster's SQLite run history (`$DAGSTER_HOME/history/runs/*.db`).
 
 ### 7.10 `definitions.py` — the registry
 
 [ddd_python/ddd_dagster/definitions.py](../ddd_python/ddd_dagster/definitions.py)
 
 The entry point Dagster loads (via `workspace.yaml`). It imports every asset, job,
-schedule, and sensor, builds the dynamic `start_metabase_asset`, and assembles the
-single `Definitions(...)` object — registering the two resources:
+schedule, and sensor and assembles the single `Definitions(...)` object — registering the two resources:
 `DltPipelineResource()` under key `"dlt_onelake"` and the `DbtCliResource` under
 `"dbt"`. When an asset declares a `dlt_onelake` or `dbt` parameter, Dagster injects
 these.
@@ -953,8 +1024,9 @@ these.
 
 ## 8. The platform-operations scripts
 
-These four files in `ddd_utils` operate the *platform* (Docker containers, backups,
-the Fabric capacity), not the data. They're standalone CLI tools.
+These files in `ddd_utils` operate the *platform* (Docker containers, backups,
+the Fabric capacity) or move files around the data (archive, renaming, a storage
+migration), rather than transform it. They're standalone CLI tools.
 
 ### 8.1 `backup_common.py` — shared backup config
 
@@ -1006,14 +1078,50 @@ when idle. Gets a token from the shared credential, POSTs to the `/suspend` or
 `/resume` endpoint, then polls (`wait_for_status`) until the capacity reaches the
 target state or times out. Skips the call if already in the desired state.
 
+### 8.5 `archive_bronze.py` — moving processed Bronze files
+
+[ddd_python/ddd_utils/archive_bronze.py](../ddd_python/ddd_utils/archive_bronze.py)
+
+Silver only reads the Bronze files newer than its bookmark, so processed files can
+leave the Bronze folders, which keeps the Bronze views small. Per entity the script
+archives every file older than the newest processed file (read from the model's
+`_last_file` table) and older than `--keep-days` (default 7); the newest processed
+file stays, and so does a late file that is not in the model's `_files` log. Each
+file is copied to `BRONZE_ARCHIVE_DIR/<source>/<entity>/` (optionally gzipped),
+checked against its SHA-256 and listed in `MANIFEST.ndjson` before it is removed;
+`--restore` copies files back. The default is a dry run; `--execute` moves the
+files. Local Bronze only.
+
+### 8.6 `mark_full_extracts.py` — marking old full extractions
+
+[ddd_python/ddd_utils/mark_full_extracts.py](../ddd_python/ddd_utils/mark_full_extracts.py)
+
+A one-off for Bronze files written before the `_full` marker existed: it finds
+the full extractions of incremental entities and renames them to
+`<entity>_<timestamp>_full.json`. The extraction run log decides first (start date
+`1900-01-01`); without a log record the file size decides (`--ratio` times the
+median and `--min-share` of the largest file, default 0.9). Dry run by default,
+`--apply` renames. Rename before the first Silver run of a version that logs Bronze
+files, or the renamed files look late.
+
+### 8.7 `migrate_silver_to_ducklake.py` — moving Silver into DuckLake
+
+[ddd_python/ddd_utils/migrate_silver_to_ducklake.py](../ddd_python/ddd_utils/migrate_silver_to_ducklake.py)
+
+A one-off for switching `SILVER_STORAGE_FORMAT` from `duckdb` to `ducklake`:
+because Silver is the state, its history has to be copied, not rebuilt. The
+script attaches the DuckDB file read-only and the DuckLake catalog, copies every
+Silver table (`CREATE TABLE … AS SELECT *`) and checks the row counts.
+
 ---
 
 ## 9. The test suite
 
 Location: [tests/](../tests/), run with `pytest tests/`. Pure helpers get unit
-tests; the SQL logic of the dbt macros is reproduced and run in an in-memory
-DuckDB against fixture files; the Dagster assets, sensors and export CLIs are
-tested with only the external boundary stubbed. The `mock_fabric_clients`
+tests; parts of the SQL of the dbt macros are reproduced and run in an in-memory
+DuckDB against fixture files, and `test_dbt_silver.py` runs the real Silver
+macros with dbt (`DBT_INTEGRATION_TESTS=1`); the Dagster assets, sensors and
+export CLIs are tested with only the external boundary stubbed. The `mock_fabric_clients`
 fixture in `conftest.py` replaces the OneLake client module, so the whole suite
 runs without credentials or network. What each module covers, and what CI adds
 (a real `dbt build` on a committed sample), is in [testing.md](testing.md).
@@ -1032,16 +1140,20 @@ These choices recur across the codebase:
 3. **Lazy loading** — required env vars and Azure imports are deferred until
    first use, so local mode and tests need no credentials.
 4. **Three storage switches, branched in few places** — `RAW_STORAGE_TARGET`,
-   `SILVER_STORAGE_FORMAT` and `STORAGE_TARGET` are read in `path_utils.py`, the
-   dlt destination builder and `dbt/profiles.yml`, nowhere else.
+   `SILVER_STORAGE_FORMAT` and `STORAGE_TARGET` are read mainly in
+   `path_utils.py`, the dlt destination builder and `dbt/profiles.yml`; the backup
+   targets, the DuckLake cleanup and the Bronze archive check them to decide
+   whether they apply.
 5. **Structured NDJSON logging that never breaks the run** — log writes are wrapped;
    failures become warnings. Logs are queryable with DuckDB.
 6. **Defence in depth on SQL** — bound parameters (`:updated_from`), date-format
    validation, and never logging the `CREATE SECRET` statement.
 7. **Collect-then-raise** — export and extraction loops attempt *every* item, collect
    failures, and raise once at the end, so one bad table doesn't hide the rest.
-8. **Sequential where DuckDB requires it** — dbt and the full pipeline use the
-   in-process executor (single writer); I/O-bound extraction/export run 4-wide.
+8. **Little parallelism where DuckDB writes** — dbt jobs use the in-process
+   executor and dbt runs one thread; `full_pipeline_job` runs at most 2 steps at a
+   time (the quack server serialises the writes); I/O-bound extraction/export run
+   4-wide.
 9. **Barriers for ordering** — no-op assets sequence whole stages without wiring
    every cross edge.
 10. **Same code, two entry points** — `export_single_*_table` and `execute_pipeline`

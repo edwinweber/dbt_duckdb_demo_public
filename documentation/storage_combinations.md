@@ -17,7 +17,8 @@ validated when the configuration is imported, so a typo fails immediately.
 Some things never move:
 
 - The **`.duckdb` file** (Bronze views, Gold views and, in `duckdb` mode, the
-  Silver tables) is always on the local disk of the machine that runs dbt.
+  Silver tables) is always on a local disk: in Docker that of the `duckdb_server`
+  container, which owns it; outside Docker that of the machine that runs dbt.
 - The **DuckLake catalog** (`.ducklake` file) is always local; only its Parquet
   data can go to S3.
 - **Logs** from dlt, dbt and the Dagster sensors are always written locally
@@ -44,9 +45,12 @@ named `ddd-bronze`, `ddd-ducklake` and `ddd-delta`.
 | 11 | s3 | ducklake | s3 | `local_ducklake_s3` | `s3://ddd-bronze/Files/Bronze/…` | `s3://ddd-ducklake/` + catalog | `s3://ddd-delta/Files/{Silver,Gold}/…` |
 | 12 | s3 | ducklake | onelake | `local_ducklake_s3` | `s3://ddd-bronze/Files/Bronze/…` | `s3://ddd-ducklake/` + catalog | `abfss://<ws>@onelake…/<folder>/…` |
 
-`dbt/profiles.yml` picks the target in this order: `ducklake` + raw `s3` →
+The dbt target column applies outside Docker. `dbt/profiles.yml` picks the
+target in this order: `QUACK_SERVER_HOST` set → `quack`; `ducklake` + raw `s3` →
 `local_ducklake_s3`; `ducklake` → `local_ducklake`; export `onelake` →
-`onelake`; otherwise `local`.
+`onelake`; otherwise `local`. In Docker dbt therefore always uses `quack`: it
+connects to `duckdb_server`, which applies the switches itself (it attaches the
+DuckLake catalog and creates the S3 or Azure secrets at start).
 
 ---
 
@@ -95,7 +99,10 @@ and `RFAM_DATA_SOURCE_DOCKER` to the `s3://` URIs instead.
 - Live table data sits in `…/__dbt_tmp/` directories (dbt's append strategy
   stages files there and the catalog references them). Never delete them;
   `ducklake_cleanup_job` deliberately leaves them alone.
-- Querying Silver outside dbt in DuckLake mode needs the extension and an attach:
+- Querying Silver outside dbt in DuckLake mode: in Docker, attach
+  `duckdb_server` as a quack client (runbook, *Recovery commands*) and query
+  `danish_democracy_data.ducklake_catalog.main_silver.<table>`. Without the
+  server, load the extension and attach the catalog:
 
   ```sql
   LOAD ducklake;
@@ -204,9 +211,11 @@ On AWS: `aws s3 mb s3://ddd-bronze --region <region>` and so on.
 
 Changing a switch moves no data.
 
-- **Bronze to S3:** copy the existing `Files/Bronze/` tree into the bucket (for
-  example `aws s3 sync` or `rclone sync`) before the next run, so Silver keeps its
-  file history.
+- **Bronze to S3:** Silver only reads the files newer than its bookmark, so the
+  next run needs only the new files in the bucket. Copy the existing
+  `Files/Bronze/` tree too (for example `aws s3 sync` or `rclone sync`) so that
+  Bronze stays complete for a replay. The archive script works on local Bronze
+  only.
 - **Silver to DuckLake:** copy the history with
   `python -m ddd_python.ddd_utils.migrate_silver_to_ducklake`. Silver is the state:
   a first build in the new location would only derive what the Bronze files still

@@ -36,7 +36,7 @@ dbt transformation jobs
 
 ``dbt_data_engineering_job``
     Refreshes the Dagster observability layer (reads Dagster's SQLite run
-    storage plus the step-failure NDJSON exported by the failure sensor).
+    storage, including the per-run files with the step failures).
 
 Export jobs
 ~~~~~~~~~~
@@ -516,7 +516,7 @@ ducklake_cleanup_job = define_asset_job(
     description=(
         "Vacuums the DuckLake catalog: expires snapshots older than 31 days, deletes orphaned "
         "Parquet files, and removes residual _current_temp directories "
-        "left by Silver pre/post-hooks. __dbt_tmp directories are intentionally preserved — "
+        "left by earlier Silver macro versions. __dbt_tmp directories are intentionally preserved — "
         "DuckLake stores live table data there and removing them would corrupt Silver. "
         "No-op when SILVER_STORAGE_FORMAT != 'ducklake'."
     ),

@@ -1,9 +1,6 @@
-"""Tests for the dbt-quack wrapper (ddd_python.ddd_dbt.dbt_quack).
-
-The metabase stop/start control assets were removed in the DuckDB 2.0 quack
-architecture.  This file replaces the old metabase_control tests with tests
-for the dbt_quack module.
-"""
+"""Tests for the dbt-quack wrapper (ddd_python.ddd_dbt.dbt_quack): the patches are
+applied only with QUACK_SERVER_HOST, the exit code follows dbt's result, and
+QUACK_SKIP_PATCHES is parsed."""
 
 import sys
 from unittest.mock import MagicMock, patch

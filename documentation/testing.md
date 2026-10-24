@@ -86,7 +86,8 @@ A typical Silver-CDC test:
 | `test_serialize_trace.py` | **What:** `_serialize_trace`, which turns a dlt trace object into a JSON-safe dict. **How:** feeds `None` and mocked trace objects and checks the serialised shape (timestamps, steps, failed jobs). **Why:** trace logging must never crash the pipeline. |
 | `test_json_default.py` | **What:** the custom JSON `default` serializer. **How:** round-trips `datetime`/`date`/`time` and other edge-case types. **Why:** extraction writes NDJSON; non-serialisable types would abort a run. |
 | `test_sensors.py` | **What:** the run-status sensors' helpers. **How:** stubs `requests.post` and the Dagster instance; asserts ntfy.sh headers/payload, step counting and that alert or log failures never raise. **Why:** a sensor that crashes hides the very failure it should report. |
-| `test_metabase_control.py` | **What:** the Metabase entrypoint's token rendering logic. **How:** temp directory plus a stubbed `subprocess.run`; asserts the rendered init SQL contains the correct token. **Why:** a wrong token in the rendered file prevents Metabase from connecting to the quack server. |
+| `test_dbt_quack.py` | **What:** the `dbt-quack` wrapper (`dbt_quack.py`). **How:** stubs the patch function and dbt's runner; asserts that the patches are applied only with `QUACK_SERVER_HOST` (with a warning without it), that a dbt failure gives a non-zero exit code, and that `QUACK_SKIP_PATCHES` is parsed. **Why:** in Docker every dbt run goes through these patches. |
+| `test_duckdb_quack_server.py` | **What:** the quack server start-up (`duckdb_quack_server.py`). **How:** unit tests with a mocked DuckDB connection, no server started; assert the token check and its SQL escaping, the DuckLake attach (and the errors for missing catalog or data path) and the signal handling. **Why:** every container depends on this one process. |
 | `test_dbt_build.py` | **What:** the dbt JSON-log check in `dbt_build_with_unique_logfile`. **How:** writes NDJSON log fixtures and asserts that `fail`/`error` nodes raise. **Why:** dbt can exit 0 with failing tests; the run must still fail so the failure sensor fires. |
 | `test_init_duckdb.py` | **What:** S3 secret DDL generation. **How:** mocked connection; asserts endpoint, URL style, SSL and quoting. **Why:** a wrong secret only shows up later as a confusing S3 403. |
 | `test_backup_targets.py` | **What:** backup target assembly and the DuckLake ordering invariant. **How:** asserts that DuckLake data files are backed up before the catalog, that retention ages match, and that the catalog lives in the DuckDB target directory. **Why:** in DuckLake mode the catalog references Parquet files; files-first ordering ensures the catalog snapshot never points at an un-backed-up file. |
@@ -111,6 +112,7 @@ A typical Silver-CDC test:
 | `test_extraction_assets.py` | **What:** the DDD and Rfam extraction assets. **How:** materialises the real Dagster assets with only `DltPipelineResource.execute_pipeline` stubbed; asserts OData filters, SQL params, destination paths and that a malformed date never reaches the API. |
 | `test_export_assets.py` | **What:** the Delta export assets, `write_tables_*` and the export CLIs. **How:** stubbed connection/export functions; asserts every table is attempted before a failure is raised and connections are always closed. |
 | `test_ducklake_cleanup.py` | **What:** the DuckLake vacuum asset. **How:** a real local DuckLake catalog in `tmp_path`; asserts `*_current_temp` directories are removed and live `*__dbt_tmp` data is never touched. |
+| `test_ducklake_maintenance.py` | **What:** the `*_current_temp` sweep and its registration as the SQL function `ducklake_sweep_current_temp`. **How:** real directories in `tmp_path` and an in-memory DuckDB; asserts the age limit and that `__dbt_tmp` stays. |
 | `test_dagster_asset_graph.py` | **What:** the Dagster asset graph structure. **How:** loads the Definitions object with minimal env vars; asserts extraction assets, dbt Bronze/Silver/Gold assets, export assets, schedules, sensors, and key jobs are registered. **Why:** catches graph regressions during refactoring. Tests skip gracefully when `dbt/target/manifest.json` is absent. |
 
 ### 1.4 Shared fixtures
@@ -136,8 +138,7 @@ These are left out of scope on purpose:
   filesystem; the OneLake branch is verified only at the path-construction level
   (`test_path_utils.py`) and via mocks. No test authenticates to Fabric.
 - **Dagster runtime behaviour.** The asset graph, job/schedule/sensor
-  registration, the extraction/export assets, the sensor helpers and the
-  Metabase control helpers are tested, but no test runs a whole job through the
+  registration, the extraction/export assets and the sensor helpers are tested, but no test runs a whole job through the
   Dagster daemon (schedule firing, executor behaviour, sensor ticks). Those are
   validated by running the pipeline.
 - **A full `dbt build`.** The integration tests mirror the macro SQL rather than
@@ -187,14 +188,18 @@ dbt test --select silver --profiles-dir .  # Silver tests only
 ```
 
 dbt tests require a populated database, so run them **after** a pipeline build.
+In Docker run them with `dbt-quack` instead of `dbt` (for example
+`docker compose run --rm run bash -c "cd /app/dbt && dbt-quack test --profiles-dir ."`).
 To browse lineage and model/column documentation, generate the static dbt
 docs site on demand (it is build output and is git-ignored):
 
 ```bash
-dbt docs generate --project-dir dbt --profiles-dir dbt --output-dir documentation/dbt-docs
+dbt docs generate --project-dir dbt --profiles-dir dbt
 ```
 
-Host the resulting folder with any static file server.
+dbt-core writes `index.html`, `manifest.json` and `catalog.json` to `dbt/target/`;
+serve that folder with any static file server (CI publishes the same files to
+GitHub Pages).
 
 ---
 
@@ -249,8 +254,9 @@ performed manually with [`scripts/deploy.sh`](../scripts/deploy.sh), so before a
 deploy:
 
 1. Confirm CI is green on the commit being deployed.
-2. After a pipeline build on a populated database, `dbt test --profiles-dir .`
-   checks the real data. The CI sample tests the logic, not today's data.
+2. After a pipeline build on a populated database, `dbt test` (`dbt-quack test`
+   in Docker) checks the real data. The CI sample tests the logic, not today's
+   data.
 
 CI checks the code and the transformation logic; `dbt test` on production checks
 the data that was loaded. A deploy needs both to pass.

@@ -9,10 +9,9 @@
 #   1. Creates any missing data and backup directories.
 #   2. Sets ownership so the pipeline containers (app, UID 1000) can write to
 #      their directories and Metabase (UID 2000) can write to its own.
-#   3. Sets cross-UID read/write bits so:
-#        - Metabase (UID 2000) can write DuckDB WAL files in a UID-1000 dir.
-#        - Metabase (UID 2000) can read DuckLake Parquet data in a UID-1000 dir.
-#        - backup (UID 1000) can read Metabase data owned by UID 2000.
+#   3. Sets cross-UID read bits so backup (UID 1000) can read Metabase data owned
+#      by UID 2000. Metabase itself never opens /data/duckdb or /data/ducklake: it
+#      connects to duckdb_server (quack), the only process that opens those files.
 #   4. Detects the Docker socket GID and writes DOCKER_GID to .env (once).
 #   5. Prints a summary so you can verify each directory looks right.
 #
@@ -114,18 +113,7 @@ printf '\n'
 
 # ── Step 3: cross-UID access ──────────────────────────────────────────────────
 
-printf 'Step 3: cross-UID access bits\n'
-
-# Metabase (UID 2000) creates WAL/lock files inside the UID-1000-owned DuckDB
-# directory even during read-only queries — o+rwx on the directory and files.
-info "chmod o+rwx  /data/duckdb  (Metabase WAL access)"
-run chmod -R o+rwx /data/duckdb
-
-# Metabase (UID 2000) reads the DuckLake Parquet files behind the Silver tables
-# (SILVER_STORAGE_FORMAT=ducklake). The directory is mounted in every mode, so it
-# is always created; o+rX = read files, traverse directories.
-info "chmod o+rX   /data/ducklake  (Metabase DuckLake read access)"
-run chmod -R o+rX /data/ducklake
+printf 'Step 3: cross-UID read access\n'
 
 # backup (UID 1000) reads Metabase data (UID 2000) to create zip archives.
 # o+rX = read files, traverse directories; no write needed.

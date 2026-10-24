@@ -38,7 +38,7 @@ danish_democracy_data:
   outputs:
     local:
       type: duckdb
-      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (parallel dbt threads make DuckLake commits collide)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -49,7 +49,7 @@ danish_democracy_data:
 
     local_ducklake:
       type: duckdb
-      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (parallel dbt threads make DuckLake commits collide)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs
@@ -66,7 +66,7 @@ danish_democracy_data:
 
     local_ducklake_s3:
       type: duckdb
-      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (dbt-oss defaults to many threads, which breaks DuckLake commits)
+      threads: 1  # must stay 1: concurrency comes from Dagster, not dbt (parallel dbt threads make DuckLake commits collide)
       path: "{{ env_var('DUCKDB_DATABASE_LOCATION') }}"
       extensions:
         - httpfs

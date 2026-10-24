@@ -22,21 +22,21 @@
   <rect class="box accent3" x="40" y="140" width="200" height="100" />
   <rect class="box accent3" x="40" y="260" width="200" height="100" />
   <rect class="box accent3" x="40" y="380" width="200" height="100" />
-  <text class="text" x="140" y="194" text-anchor="middle">Dagster logs</text>
-  <text class="text" x="140" y="314" text-anchor="middle">dbt artifacts</text>
-  <text class="text" x="140" y="434" text-anchor="middle">dlt summaries</text>
+  <text class="text" x="140" y="194" text-anchor="middle">Dagster runs.db</text>
+  <text class="text" x="140" y="314" text-anchor="middle">Dagster index.db</text>
+  <text class="text" x="140" y="434" text-anchor="middle">per-run SQLite files</text>
   <rect class="box accent" x="330" y="200" width="260" height="120" />
-  <text class="text" x="460" y="248" text-anchor="middle">Observability staging</text>
-  <text class="small" x="460" y="280" text-anchor="middle">normalized execution records</text>
+  <text class="text" x="460" y="248" text-anchor="middle">Staging (sqlite_scan)</text>
+  <text class="small" x="460" y="280" text-anchor="middle">runs, events, step failures</text>
   <rect class="box accent2" x="680" y="200" width="260" height="120" />
-  <text class="text" x="810" y="248" text-anchor="middle">Intermediate marts</text>
-  <text class="small" x="810" y="280" text-anchor="middle">durations, status, lineage</text>
+  <text class="text" x="810" y="248" text-anchor="middle">Dimensions</text>
+  <text class="small" x="810" y="280" text-anchor="middle">jobs and assets</text>
   <rect class="box accent" x="1030" y="200" width="260" height="120" />
-  <text class="text" x="1160" y="248" text-anchor="middle">Dashboard facts and dims</text>
-  <text class="small" x="1160" y="280" text-anchor="middle">run and step analytics</text>
+  <text class="text" x="1160" y="248" text-anchor="middle">Facts</text>
+  <text class="small" x="1160" y="280" text-anchor="middle">runs, materializations, failures</text>
   <rect class="box accent2" x="1340" y="200" width="120" height="120" />
-  <text class="text" x="1400" y="248" text-anchor="middle">Power BI</text>
-  <text class="small" x="1400" y="280" text-anchor="middle">dashboard</text>
+  <text class="text" x="1400" y="248" text-anchor="middle">Metabase</text>
+  <text class="small" x="1400" y="280" text-anchor="middle">dashboards</text>
   <line class="arrow" x1="240" y1="190" x2="330" y2="235" />
   <line class="arrow" x1="240" y1="310" x2="330" y2="260" />
   <line class="arrow" x1="240" y1="430" x2="330" y2="285" />

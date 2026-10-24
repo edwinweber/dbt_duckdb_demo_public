@@ -25,7 +25,7 @@ trade-off is simplicity and cost; the patterns still apply on a larger platform.
 | Where is the main SQL? | Hash-based CDC in [`dbt/macros/`](dbt/macros/) ([explained](documentation/dbt_transformations.md)); star schema in [`dbt/models/gold/`](dbt/models/gold/). |
 | Where is the main Python? | One pipeline engine behind both the CLI and Dagster: [`dlt_pipeline_execution_functions.py`](ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py); asset factories in [`ddd_dagster/`](ddd_python/ddd_dagster/). |
 | Can I see it run without credentials? | CI runs a real `dbt build` (105 models, 2 seeds, 314 data tests) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
-| How is it verified? | About 300 pytest tests with an 80% coverage floor, ruff and mypy, `dbt parse` on all three storage targets, real dbt runs of every documented Silver case, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
+| How is it verified? | About 430 pytest tests with an 80% coverage floor (71 of them real dbt runs of every documented Silver case), ruff and mypy, `dbt parse` on all three storage targets, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
 | Why these trade-offs? | [design_decisions.md](documentation/design_decisions.md) lists the alternatives and what was given up. |
 
 ## Quick start (Docker)
@@ -33,7 +33,7 @@ trade-off is simplicity and cost; the patterns still apply on a larger platform.
 ```bash
 git clone https://github.com/edwinweber/dbt_duckdb_demo.git
 cd dbt_duckdb_demo
-cp .env.example .env            # defaults work for a local run
+cp .env.example .env            # set QUACK_SERVER_TOKEN; the other defaults work for a local run
 docker compose build
 
 docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
@@ -41,6 +41,11 @@ docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipe
 docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
 docker compose up dagster       # UI at http://localhost:3000
 ```
+
+`run` starts `duckdb_server` (the single DuckDB writer) first. The extraction above
+loads the last 31 days (365 for Rfam) of the incremental entities; for complete
+data, start with a full extraction (`--date_to_load_from 1900-01-01`, which takes a
+few hours for the largest entity).
 
 The containers use host directories under `/data`; create them once as described
 in [docker/DOCKER_USAGE.md](docker/DOCKER_USAGE.md#one-time-host-setup). For a
@@ -61,7 +66,7 @@ host install without Docker, see [Local setup](#local-setup-without-docker).
  │          in the .duckdb file or DuckLake (SILVER_STORAGE_FORMAT) │
  │ Gold     star schema views: actor, case, meeting, vote, …        │
  └───────────────┬───────────────────────────────┬──────────────────┘
-                 │ read directly                 │ optional Delta Lake export
+                 │ via duckdb_server (quack)     │ optional Delta Lake export
                  ▼                               ▼ (STORAGE_TARGET)
             Metabase                   local disk / S3 / Fabric OneLake → Power BI
 
@@ -76,9 +81,16 @@ export target: Bronze files and logs stay local (or, for Bronze, on S3).
 
 - **Hash-based CDC with SCD Type 2.** Every Silver table keeps every version of
   every row. Changes are found by comparing a SHA-256 hash of the business
-  columns across extraction files. Full-extract tables detect deletes on every
-  run; date-filtered incremental entities detect them when a full extraction
-  (a file named `..._full.json`) is processed on its own ([details](documentation/dbt_transformations.md#3-silver-cdc-into-scd-type-2)).
+  columns of the new extraction files with Silver's latest version of each key.
+  Full-extract tables detect deletes on every run; date-filtered incremental
+  entities detect them when a full extraction (a file named `..._full.json`) is
+  processed on its own ([details](documentation/dbt_transformations.md#3-silver-cdc-into-scd-type-2)).
+- **Silver is the state; Bronze is kept in an archive.** A run reads only the
+  Bronze files newer than the model's bookmark, so its cost does not grow with
+  the history. Processed files are moved to a checksummed archive on demand,
+  which keeps every extraction available for a replay. A run stops instead of
+  writing doubtful data: on a probable mass delete, a late file or a type change
+  ([ADR-13](documentation/design_decisions.md#adr-13-silver-is-the-state-bronze-is-kept-complete-through-an-archive)).
 - **Stateless incremental extraction.** Incremental entities reload a fixed
   lookback window (31 days for the API, 365 for Rfam) instead of keeping a
   cursor. The overlap is harmless because unchanged rows hash the same, so reruns
@@ -96,8 +108,8 @@ export target: Bronze files and logs stay local (or, for Bronze, on S3).
   file, so adding an entity is a list change plus a regeneration; the Gold star
   schema is hand-written.
 - **The pipeline watches itself.** A dbt layer reads Dagster's own SQLite run
-  history and the step failures exported by the failure sensor, and models them
-  as a small star schema for Metabase.
+  history, including the step failures, and models it as a small star schema for
+  Metabase.
 
 ## Is this pattern for you?
 
@@ -182,6 +194,9 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 - **A lookback window works instead of a cursor when the next layer is
   idempotent.** The hash CDC ignores the overlap, and there is no state to
   repair after a failed run.
+- **Re-deriving the history from every raw file on every run does not last.** It
+  was the cleaner design, but its cost grew with each day's files; Silver now
+  carries the state and Bronze moves to an archive once processed.
 - **Deletes need a complete snapshot.** An incremental extract cannot show a
   deletion, so incremental entities record deletes only from a full extraction
   (`..._full.json`); a partial file marked as full records false deletes.
@@ -198,7 +213,7 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 | Read this | For |
 | --- | --- |
 | [project_reference.md](documentation/project_reference.md) | The canonical reference: modules, dbt targets, storage switches, environment variables, conventions |
-| [design_decisions.md](documentation/design_decisions.md) | Why: ten decisions with alternatives and trade-offs, dependencies, principles, known limitations |
+| [design_decisions.md](documentation/design_decisions.md) | Why: thirteen decisions with alternatives and trade-offs, dependencies, principles, known limitations |
 | [dbt_transformations.md](documentation/dbt_transformations.md) | The dbt layers, every macro, the Silver CDC logic in depth, compiled SQL |
 | [python_code_explained.md](documentation/python_code_explained.md) | A guided tour of every Python module |
 | [storage_combinations.md](documentation/storage_combinations.md) | The three storage switches, all 12 combinations, example configurations |
@@ -213,11 +228,11 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 
 | Path | Contents |
 | --- | --- |
-| `ddd_python/` | Python package: `ddd_dlt` (extraction, export), `ddd_dbt` (model generator, dbt runner), `ddd_dagster` (orchestration), `ddd_utils` (configuration, paths, backups) |
+| `ddd_python/` | Python package: `ddd_dlt` (extraction with dlt; Delta export with DuckDB and `deltalake`; the quack server), `ddd_dbt` (model generator, dbt runner), `ddd_dagster` (orchestration), `ddd_utils` (configuration, paths, backups) |
 | `dbt/` | dbt project: models, macros, seeds, tests |
 | `tests/` | pytest suite and the CI data sample |
-| `docker/`, `docker-compose*.yml` | Images and services (`run`, `dagster`, `metabase`, `backup`; RustFS as an override) |
-| `scripts/` | Operator scripts: deploy, backup cron, host setup, CI sample, DuckDB upgrade |
+| `docker/`, `docker-compose*.yml` | Images and services (`duckdb_server`, `dagster`, `metabase`, one-off `run` and `backup`; RustFS as an override) |
+| `scripts/` | Operator scripts: deploy, backup cron, host setup, CI sample, public-repo sync, DuckDB upgrade |
 | `documentation/` | The guides above |
 
 ## License and contact

@@ -106,15 +106,13 @@ COUPLING_NOTES = [
     (
         "dbt-core cap at <1.13",
         "dagster-dbt 0.29.x hard-requires dbt-core <1.13. Do not remove this cap "
-        "until dagster-dbt is upgraded. Do NOT reinstall dbt-oss alongside dbt-core "
-        "— both ship the 'dbt' package namespace and trigger a NoneType/enabled "
-        "crash in dagster-dbt (issue #34215).",
+        "until dagster-dbt is upgraded.",
     ),
     (
         "dbt-duckdb ↔ duckdb server",
-        "dbt-duckdb uses the Python duckdb package (2.0.0) to connect via quack. "
-        "dbt-oss 2.0.8 bundled DuckDB 1.5.4 (Rust) and could not deserialize "
-        "against a DuckDB 2.0 quack server — that is why dbt-oss was replaced.",
+        "dbt-duckdb uses the Python duckdb package, so dbt runs the DuckDB version "
+        "pinned in pyproject.toml; keep it on the same major version as the quack "
+        "server.",
     ),
     (
         "duckdb Delta writer vs deltalake library",

@@ -3,7 +3,7 @@
 Every test of the Silver CDC logic, what it checks, the expected result and the
 result of a run on 2026-10-20. The logic itself is described in
 [dbt_transformations.md §3](dbt_transformations.md#3-silver-cdc-into-scd-type-2);
-section numbers (§3.x) below refer to that document.
+section numbers (§3.x) below refer to that document as it was then.
 
 > **Superseded.** This is the dated record of a run on 2026-10-20 against the
 > macros of commit `498482d`. Since then deletes of incremental entities come from

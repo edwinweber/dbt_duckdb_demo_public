@@ -1,6 +1,6 @@
 # Docker Usage
 
-How to run the pipeline with Docker Compose: host setup, the four services,
+How to run the pipeline with Docker Compose: host setup, the five services,
 pipeline commands, RustFS, and backups. The production server itself is described
 in [hetzner_infrastructure.md](../documentation/hetzner_infrastructure.md).
 
@@ -23,14 +23,15 @@ sudo scripts/setup_host_permissions.sh            # --dry-run to preview
 ```
 
 The script creates the directories, sets ownership (UID 1000 for pipeline and
-backup data, UID 2000 for Metabase), gives `duckdb_server` (UID 1000) write
-access to `/data/duckdb`, gives Metabase read access to `/data/ducklake`, the
-backup user read access to `/data/metabase/data`, and writes `DOCKER_GID` to
-`.env` so the `dagster` and `backup` containers can use the Docker socket.
+backup data, UID 2000 for Metabase), gives the backup user read access to
+`/data/metabase/data`, and writes `DOCKER_GID` to `.env` so the `backup`
+container can use the Docker socket (it stops and starts containers around a
+backup). Metabase needs no access to `/data/duckdb` or `/data/ducklake`: it
+connects through `duckdb_server`, the only process that opens those files.
 
-It also creates `/data/ducklake` (DuckLake Parquet data, readable by Metabase)
-in every mode, because all services mount it. The backup creates its own
-archive directories under `/data_backup`.
+It creates `/data/ducklake` (DuckLake Parquet data) in every mode, because
+`duckdb_server` and `backup` mount it. The backup creates its own archive
+directories under `/data_backup`.
 
 | Host path | Contents |
 | --- | --- |
@@ -84,7 +85,6 @@ Start `duckdb_server` before running any pipeline step or bringing up `dagster`/
 docker compose up -d duckdb_server
 docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_danish_parliament_data
 docker compose run --rm run python -m ddd_python.ddd_dlt.dlt_run_extraction_pipelines_rfam
-docker compose run --rm run python -m ddd_python.ddd_dbt.generate_dbt_models   # only after entity changes
 docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
 docker compose run --rm run python -m ddd_python.ddd_dlt.export_silver         # optional Delta export
 docker compose run --rm run python -m ddd_python.ddd_dlt.export_gold
@@ -92,6 +92,11 @@ docker compose run --rm run python -m ddd_python.ddd_dlt.export_gold
 
 No Metabase stop/start is needed: `duckdb_server` is the sole writer; `run`,
 `dagster` and `metabase` all connect via quack and never hold the file directly.
+
+After changing the entity lists, regenerate the models in the repository (the
+`run` container does not mount `dbt/`) and rebuild the image:
+`DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models`,
+then `docker compose build`.
 
 ### Remote access to the DuckDB server
 
@@ -137,14 +142,18 @@ docker compose down
 
 When Metabase starts, its entrypoint renders `docker/metabase-duckdb-init.sql`
 with the real `QUACK_SERVER_TOKEN` value and writes the result to
-`/data/metabase/duckdb-init.sql` (visible on the host). The admin must paste
-the contents of that rendered file into the Metabase UI once:
+`$METABASE_DATA_DIR/duckdb-init.sql` on the host (default
+`/data/metabase/data/duckdb-init.sql`). The admin must paste the contents of that
+rendered file into the Metabase UI once:
 
 1. Open Metabase at `http://localhost:3001`.
 2. Go to **Admin → Databases → Add database → DuckDB**.
-3. In the **Initialization SQL** field paste the contents of
-   `/data/metabase/duckdb-init.sql`.
-4. Save. Metabase will connect via quack and the database will be available.
+3. Set the database path to `:memory:`.
+4. In the **Initialization SQL** field paste the contents of the rendered
+   `duckdb-init.sql`.
+5. Save. Metabase connects via quack (`ATTACH` + `USE`); the views and tables
+   appear as `main_gold.<view>` and so on. The DuckLake Silver tables are not
+   listed; query them as `danish_democracy_data.ducklake_catalog.main_silver.<table>`.
 
 The rendered file is regenerated on every `metabase` container restart (e.g.
 after a token rotation), so repeat this step if the token changes. Do not paste
@@ -164,7 +173,9 @@ the `s3://` URIs.
 
 With `STORAGE_TARGET=onelake`, the entrypoint (`docker/docker-entrypoint.sh`)
 installs the DuckDB `httpfs`, `azure` and `delta` extensions and creates the
-persistent Azure service-principal secret on start; no separate step is needed.
+persistent Azure service-principal secret on start, and `duckdb_server` creates
+the secrets on its own connection before it starts serving; no separate step is
+needed.
 
 ## RustFS for local S3
 
@@ -221,11 +232,11 @@ Retention and the off-site Hetzner StorageBox upload are described in
 
 ```bash
 docker compose run --rm --entrypoint bash run      # shell in a throw-away container
-docker compose run --rm --entrypoint id run        # expect uid=1000(app) … <DOCKER_GID>(docker)
+docker compose run --rm --entrypoint id backup     # expect uid=1000(app) … <DOCKER_GID>
 ```
 
-**`permission denied` on `/var/run/docker.sock`:** `DOCKER_GID` in `.env` must
-match `stat -c '%g' /var/run/docker.sock` on the host; fix it and restart the
-`dagster` container.
+**`permission denied` on `/var/run/docker.sock` during a backup:** `DOCKER_GID`
+in `.env` must match `stat -c '%g' /var/run/docker.sock` on the host; fix it and
+run the backup again. Only the `backup` service mounts the socket.
 
 More failure scenarios: [runbook.md](../documentation/runbook.md).

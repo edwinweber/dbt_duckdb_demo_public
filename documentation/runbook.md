@@ -45,13 +45,15 @@ drop the `docker compose run --rm run` prefix and use your `.env` paths.
 | dbt cannot find a `bronze_ddd_…` / `silver_ddd_…` model | Models not regenerated after a config change | [§5](#5-models-missing-after-adding-an-entity) |
 | DuckLake attach errors | `DUCKLAKE_CATALOG_LOCATION` / `DUCKLAKE_DATA_PATH` missing or wrong | [§6](#6-ducklake-catalog-misconfigured) |
 | Many unexpected `D` rows in Silver | A `_full` Bronze file that was not complete | [§7](#7-silver-needs-a-rebuild) |
-| A Bronze file was never processed | It arrived after a newer file was processed (its name sorts before the bookmark) | [§7](#7-silver-needs-a-rebuild) |
-| dbt picks the wrong target | Storage switches not what you expect | `profiles.yml` picks `local_ducklake_s3`, `local_ducklake`, `onelake` or `local`, in that order; check `SILVER_STORAGE_FORMAT`, `RAW_STORAGE_TARGET`, `STORAGE_TARGET` |
+| A Silver run stops: "… Bronze file(s) … were never processed" | A late file: it arrived after a newer file was processed | [§7](#7-silver-needs-a-rebuild) |
+| A Silver run stops: "… would delete N of M live keys" | The delete guard: a truncated extraction, or real mass deletes | [§7](#7-silver-needs-a-rebuild) |
+| A Silver run fails with a conversion error | The source changed a column type | [§7](#7-silver-needs-a-rebuild) |
+| dbt picks the wrong target | Storage switches not what you expect | `profiles.yml` picks `quack` (when `QUACK_SERVER_HOST` is set), `local_ducklake_s3`, `local_ducklake`, `onelake` or `local`, in that order; check `QUACK_SERVER_HOST`, `SILVER_STORAGE_FORMAT`, `RAW_STORAGE_TARGET`, `STORAGE_TARGET` |
 | Source freshness warning | No extraction in `DBT_FRESHNESS_WARN_AFTER_DAYS` (default 2) | [§9](#9-source-freshness-warning) |
 | No ntfy.sh alert | `NTFY_TOPIC` unset or ntfy.sh unreachable | [§8](#8-no-ntfysh-alerts) |
 | Silver differs from the source, or the daily runs stopped for weeks | An extraction gap longer than the lookback window; deletes of incremental entities not seen yet | Full extraction of the incremental entities, then [§10](#10-checking-silver-against-the-source) |
 | `FileNotFoundError` on the DuckDB path | `DUCKDB_DATABASE_LOCATION` unset or its directory missing | Set it in `.env` and create the directory |
-| Odd errors after a dependency change | Package versions drifted from the pins | `pip install -e ".[dagster,dev]"` (includes dbt-core and dbt-duckdb; never add dbt-oss) |
+| Odd errors after a dependency change | Package versions drifted from the pins | `pip install -e ".[dagster,dev]"` (includes dbt-core and dbt-duckdb) |
 | Asset shows as unsynced in Dagster | An upstream asset materialised without its downstream | Materialise the downstream asset or run the job |
 
 ---
@@ -63,9 +65,9 @@ the file; all other containers connect via quack RPC, so file-lock conflicts
 should not arise. If you see a lock error outside Docker:
 
 ```bash
-lsof /data/duckdb/danish_democracy_data.duckdb   # anything left? close it
+lsof "$DUCKDB_DATABASE_LOCATION"   # anything left? close it
 # close DBeaver or duckdb_connect.sh sessions, then retry
-docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
+python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile
 ```
 
 In DuckLake mode the catalog file has the same rule.
@@ -81,9 +83,10 @@ docker compose restart metabase          # triggers re-render of duckdb-init.sql
 curl -s http://localhost:3001/api/health # Metabase listens on 3001
 ```
 
-Check that `QUACK_SERVER_TOKEN` is set in `.env` and that
-`/data/metabase/duckdb-init.sql` (rendered by the entrypoint) matches the
-server's token.
+Check that `QUACK_SERVER_TOKEN` is set in `.env` and that the init SQL in
+Metabase's database settings is the rendered file
+`$METABASE_DATA_DIR/duckdb-init.sql` (default
+`/data/metabase/data/duckdb-init.sql`), whose token must match the server's.
 
 ## 3. S3 bucket missing or credentials wrong
 
@@ -117,11 +120,14 @@ not from `.env`; for S3 set `DANISH_DEMOCRACY_DATA_SOURCE_DOCKER` and
 
 ## 5. Models missing after adding an entity
 
-Bronze and Silver model files are generated from `configuration_variables.py`:
+Bronze and Silver model files are generated from `configuration_variables.py`.
+Generate them in the repository (the `run` container does not mount `dbt/`, so
+files it writes are lost), then rebuild the image for Docker:
 
 ```bash
-docker compose run --rm run python -m ddd_python.ddd_dbt.generate_dbt_models
+DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models
 ls dbt/models/bronze/bronze_ddd_<entity>*.sql dbt/models/silver/silver_ddd_<entity>*.sql
+docker compose build
 ```
 
 Gold is not generated per entity; add a dimension or fact by hand if needed.
@@ -256,9 +262,9 @@ no longer sends shows up as a difference. After archiving, the latest `_full` fi
 of an incremental entity is usually in the archive; `expected` then covers only the
 keys in the remaining files. `missing_or_different_in_silver` must still be 0, while
 `extra_or_different_in_silver` counts the keys whose last change is older than the
-files that stayed. The complete comparison needs a fresh full extraction. A difference with the source itself
-only shows after a fresh full extraction: run the query before Silver processes
-the `_full` file, then run Silver to repair it.
+files that stayed. A difference with the source itself only shows after a fresh
+full extraction: run the query before Silver processes the `_full` file, then
+run Silver to repair it.
 
 ---
 
@@ -274,9 +280,12 @@ curl -s http://localhost:3001/api/health
 
 ### dbt
 
+In Docker, dbt is `dbt-quack` (the profile's `quack` target); plain `dbt` only
+works outside Docker.
+
 ```bash
-docker compose run --rm run bash -c "cd /app/dbt && dbt build --select silver_ddd_aktoer --profiles-dir ."
-docker compose run --rm run bash -c "cd /app/dbt && dbt test --profiles-dir ."
+docker compose run --rm run python -m ddd_python.ddd_dbt.dbt_build_with_unique_logfile --models_to_select silver_ddd_aktoer
+docker compose run --rm run bash -c "cd /app/dbt && dbt-quack test --profiles-dir ."
 jq -c '.info | {ts, level, msg}' "$(ls -t /data/dbt_logs/dbt_build_log_*.json | head -1)" | tail -20
 ```
 
@@ -296,9 +305,19 @@ updated to DuckDB 2.0.
 
 ### DuckDB
 
-```bash
-duckdb -readonly /data/duckdb/danish_democracy_data.duckdb   # or scripts/duckdb_connect.sh
+In Docker, `duckdb_server` holds the database file open, so query it as a quack
+client from any DuckDB 2.0 shell (token from `.env`):
+
+```sql
+INSTALL quack; LOAD quack;
+ATTACH 'quack:localhost:9494' AS danish_democracy_data (TOKEN '<QUACK_SERVER_TOKEN>', DISABLE_SSL true);
+USE danish_democracy_data;
 ```
+
+Outside Docker, open the file itself (`duckdb -readonly "$DUCKDB_DATABASE_LOCATION"`
+or `scripts/duckdb_connect.sh`). In DuckLake mode the Silver tables are in
+`ducklake_catalog.main_silver` (through quack:
+`danish_democracy_data.ducklake_catalog.main_silver`).
 
 ```sql
 SELECT LKHS_cdc_operation, COUNT(*) FROM main_silver.silver_ddd_aktoer GROUP BY ALL;

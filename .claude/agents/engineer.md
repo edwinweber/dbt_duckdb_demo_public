@@ -18,19 +18,23 @@ You are the primary implementer for **Danish Democracy Data (dbt_duckdb_demo)** 
 ddd_python/
   ddd_utils/
     configuration_variables.py   ← SINGLE SOURCE OF TRUTH — entity lists, PKs, Rfam SQL
-    string_utils.py              ← normalize_danish_name(), resolve_date_to_load_from()
-    path_utils.py                ← build_bronze_destination_path(), build_delta_export_path(),
-                                    silver_storage_is_ducklake(), open_export_connection()
-    get_variables_from_env.py    ← lazy _LazyEnv wrapper (__getattr__ + sys.modules swap)
-  ddd_dlt/                       ← api_to_file(), sql_to_file(), file_to_file(); extraction + export
-  ddd_dbt/                       ← generate_dbt_models.py, dbt runner, init_duckdb.py
+    string_utils.py              ← normalize_danish_name(), resolve_date_to_load_from(), is_full_extract()
+    path_utils.py                ← build_bronze_destination_path(), build_bronze_file_name(),
+                                    build_delta_export_path(), silver_storage_is_ducklake(),
+                                    open_export_connection(), open_server_session()
+    get_variables_from_env.py    ← lazy env vars: PEP 562 module-level __getattr__
+    archive_bronze.py, mark_full_extracts.py, backup_*.py, ...  ← CLI tools
+  ddd_dlt/                       ← extraction engine (run_api_to_file_pipeline, run_sql_to_file_pipeline,
+                                    run_file_to_file_pipeline), Delta export (DuckDB + deltalake),
+                                    duckdb_quack_server.py
+  ddd_dbt/                       ← generate_dbt_models.py, dbt runner, dbt_quack.py, init_duckdb.py
   ddd_dagster/                   ← assets, jobs, schedules, sensors, resources
 dbt/
-  models/bronze/                 ← 53 read_json_auto views (generated)
-  models/silver/                 ← 50 incremental CDC tables + _cv views (generated)
-  models/gold/                   ← 19 star-schema views (mostly generated)
-  macros/                        ← 9 Jinja macros (model factories, hash, CDC, pre/post hooks)
-tests/                           ← 132 pytest tests across 15 modules
+  models/bronze/                 ← 28 views: 25 read_json_auto views (generated) + 3 utility views
+  models/silver/                 ← 50 models: 25 incremental CDC tables + 25 _cv views (generated)
+  models/gold/                   ← 19 views: 11 hand-written star-schema models + 8 generated _cv views
+  macros/                        ← 14 Jinja macros (model factories, hash, Silver CDC and bookkeeping)
+tests/                           ← about 430 pytest tests across 32 modules
 ```
 
 ## Non-negotiable constraints
@@ -40,11 +44,12 @@ tests/                           ← 132 pytest tests across 15 modules
 - Bronze = `read_json_auto` views only. Never materialise Bronze as tables.
 - Silver = incremental CDC tables + `_cv` current-version views. Use `LKHS_` prefix on all tracking columns.
 - Gold = views only. Never materialise Gold as tables.
-- `LKHS_` prefix: `LKHS_hash_value`, `LKHS_date_valid_from`, `LKHS_cdc_operation`, `LKHS_date_inserted`, `LKHS_filename`, `LKHS_pipeline_execution_inserted`.
+- `LKHS_` prefix: `LKHS_filename`, `LKHS_source_system_code`, `LKHS_hash_value`, `LKHS_date_valid_from`, `LKHS_cdc_operation`, `LKHS_date_inserted`.
+- Silver is the state: it is never rebuilt from Bronze (`full_refresh=false`); a run reads only the Bronze files newer than the bookmark.
 
 **DuckDB single-writer:**
-- dbt jobs + full_pipeline use Dagster's `in_process_executor`. Extraction/export use `multiprocess_executor(max_concurrent=4)`. Never suggest concurrent writes to DuckDB.
-- Export reads use `open_export_connection()` (read-only) from `path_utils`. Never open a second read-write connection.
+- dbt jobs use Dagster's `in_process_executor`; `full_pipeline_job` runs at most 2 steps at a time (`multiprocess_executor`); extraction/export use `multiprocess_executor(max_concurrent=4)`. dbt runs with `threads: 1`.
+- Export reads use `open_export_connection()` from `path_utils` (a quack client in Docker, read-only file access otherwise). Never open a second read-write connection.
 
 **DuckLake mode (`SILVER_STORAGE_FORMAT=ducklake`):**
 - The Silver helper tables `_last_file` and `_files` must be qualified with `{{ this.database }}.{{ this.schema }}.{{ this.name }}_…` — one transaction, one database.
@@ -52,11 +57,10 @@ tests/                           ← 132 pytest tests across 15 modules
 
 **DuckDB version pinned ≥2.0.0, <3:**
 - Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path to the DuckDB delta writer — there is an Azure/OneLake regression in it.
-- Do not reinstall `dbt-oss` alongside `dbt-core`; shared `dbt` namespace crashes dagster-dbt (issue #34215).
 - In Docker, `duckdb_server` is the sole read-write owner; all other containers connect via quack RPC. `QUACK_SERVER_HOST` triggers the quack code path in `path_utils.py` and `dbt_quack.py`.
 
 **Security:**
-- Date params validated with `re.fullmatch(r"\d{4}-\d{2}-\d{2}")` before SQL interpolation. Keep this guard on all Rfam and incremental extraction code.
+- Date params are validated by `resolve_date_to_load_from` (`YYYY-MM-DD`, parsed with `datetime.strptime`) before they reach the OData filter; the Rfam filter is a bound SQLAlchemy parameter. Keep both guards.
 
 **Python style:**
 - Match existing style: type hints where present, f-strings, `pathlib.Path`, `warnings.warn()` for non-fatal errors (not `print()`).

@@ -271,9 +271,9 @@ models:
   # ---------------------------------------------------------------------------
   - name: dagster_step_failures_raw
     description: >
-      One row per failed asset per run. Reads STEP_FAILURE events exported by the
-      run-failure sensor as NDJSON (<DLT_PIPELINE_RUN_LOG_DIR>/dagster/step_failures/{run_id}.ndjson),
-      because Dagster keeps them in per-run SQLite files, not in index.db. Maps step_key to asset
+      One row per failed asset per run. Reads the STEP_FAILURE events directly from
+      Dagster's per-run SQLite files ($DAGSTER_HOME/history/runs/{run_id}.db, one
+      sqlite_scan() per file), because they are not in index.db. Maps step_key to asset
       key(s) via ASSET_MATERIALIZATION_PLANNED events so that each row carries an
       asset_key suitable for joining to dagster_asset. A single step_key can expand
       to multiple rows when a step covers more than one planned asset (e.g. dbt_silver_assets).
