@@ -67,7 +67,6 @@ _CHUNK = 1024 * 1024
 class Entity:
     source: str  # "DDD" or "RFAM"
     name: str  # normalised name, also the Bronze directory name
-    primary_key: str
     incremental: bool
 
     @property
@@ -83,12 +82,12 @@ def list_entities(sources: list[str]) -> list[Entity]:
             normalize_danish_name(n)
             for n in configuration_variables.DANISH_DEMOCRACY_FILE_NAMES_INCREMENTAL
         }
-        for name, pk in configuration_variables.DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS.items():
-            entities.append(Entity("DDD", name, pk, name in incremental))
+        for name in configuration_variables.DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS:
+            entities.append(Entity("DDD", name, name in incremental))
     if "RFAM" in sources:
         incremental = set(configuration_variables.RFAM_TABLE_NAMES_INCREMENTAL)
-        for name, pk in configuration_variables.RFAM_TABLE_PRIMARY_KEYS.items():
-            entities.append(Entity("RFAM", name, pk, name in incremental))
+        for name in configuration_variables.RFAM_TABLE_PRIMARY_KEYS:
+            entities.append(Entity("RFAM", name, name in incremental))
     return entities
 
 

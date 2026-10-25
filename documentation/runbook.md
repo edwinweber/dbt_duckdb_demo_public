@@ -125,7 +125,7 @@ Generate them in the repository (the `run` container does not mount `dbt/`, so
 files it writes are lost), then rebuild the image for Docker:
 
 ```bash
-DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models
+DBT_PROJECT_DIRECTORY=dbt DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models
 ls dbt/models/bronze/bronze_ddd_<entity>*.sql dbt/models/silver/silver_ddd_<entity>*.sql
 docker compose build
 ```
@@ -256,7 +256,10 @@ FROM  (SELECT COLUMNS(lambda c: c != 'side'), SUM(side) AS n FROM both_sides
 ```
 
 For a full-extract entity, `expected` is the newest file only
-(`WHERE LKHS_filename = (SELECT MAX(LKHS_filename) FROM …)`, no `QUALIFY`). Both
+(`WHERE LKHS_filename = (SELECT MAX(LKHS_filename) FROM …)`, no `QUALIFY`). For a
+table with a key of several columns, partition by `LKHS_primary_key_1_column`
+instead of `id`; `COLUMNS(lambda c: NOT starts_with(c, 'LKHS_'))` leaves that
+column out on both sides. Both
 counts are 0 when Silver is consistent with its Bronze files; a column the source
 no longer sends shows up as a difference. After archiving, the latest `_full` file
 of an incremental entity is usually in the archive; `expected` then covers only the

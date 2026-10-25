@@ -17,8 +17,8 @@ from ddd_python.ddd_dagster.bronze_archive_assets import bronze_archive_asset
 from ddd_python.ddd_utils import archive_bronze
 from ddd_python.ddd_utils.archive_bronze import Entity
 
-INCREMENTAL = Entity("DDD", "aktoer", "id", incremental=True)
-FULL = Entity("DDD", "periode", "id", incremental=False)
+INCREMENTAL = Entity("DDD", "aktoer", incremental=True)
+FULL = Entity("DDD", "periode", incremental=False)
 NOW = datetime(2026, 2, 1, tzinfo=UTC)
 DB = "memory"
 
@@ -120,7 +120,7 @@ def test_read_bookmark(silver):
         "INSERT INTO main_silver.silver_ddd_aktoer_last_file VALUES ('b.json', 'b.json')"
     )
     assert archive_bronze.read_bookmark(silver, DB, INCREMENTAL) == "b.json"
-    assert archive_bronze.read_bookmark(silver, DB, Entity("DDD", "sag", "id", True)) is None
+    assert archive_bronze.read_bookmark(silver, DB, Entity("DDD", "sag", True)) is None
 
 
 def test_read_logged_files(silver):
@@ -255,4 +255,4 @@ def test_list_entities_follows_the_configuration():
         "sagstrinaktoer",
         "stemme",
     ]
-    assert Entity("DDD", "aktoer", "id", True).silver_table == "silver_ddd_aktoer"
+    assert Entity("DDD", "aktoer", True).silver_table == "silver_ddd_aktoer"

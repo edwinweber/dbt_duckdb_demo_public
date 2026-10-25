@@ -227,7 +227,7 @@ python -m ddd_python.ddd_dbt.generate_dbt_models
 
 <!--
 With 50+ Silver models, writing them by hand would be error-prone and
-inconsistent. The generator and 14 dbt macros keep the CDC logic in one place.
+inconsistent. The generator and 16 dbt macros keep the CDC logic in one place.
 The configuration tests catch a key added to one list but not to another.
 -->
 

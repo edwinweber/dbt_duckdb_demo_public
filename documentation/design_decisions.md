@@ -332,14 +332,17 @@ read-write server interface. A dedicated server container that holds the one
 write connection removes the stop/start cycle entirely.
 
 **Rationale.**
-- `duckdb_server` container: mounts `/data/duckdb` and `/data/dagster`; all
-  other services connect via `QUACK_SERVER_HOST=duckdb_server`.
-- `dbt_quack.py` monkey-patches `dbt-duckdb`'s environment class to open a
-  quack connection when `QUACK_SERVER_HOST` is set, leaving the local-file code
-  path unchanged for non-Docker use.
+- `duckdb_server` container: mounts `/data/duckdb`, `/data/ducklake`,
+  `/data/dagster` and `/data/local` (read-only, for the Bronze files); all other
+  services connect via `QUACK_SERVER_HOST=duckdb_server`.
+- With `QUACK_SERVER_HOST` set, `profiles.yml` selects the `quack` target (an
+  in-memory DuckDB that attaches the server), and `dbt_quack.py` patches
+  `dbt-duckdb`'s `Environment.initialize_cursor` so every cursor runs `CONNECT`
+  and its SQL executes on the server. Without it the local-file code path is
+  unchanged.
 - `QUACK_SERVER_TOKEN` is required (≥ 4 chars) and SQL-escaped with
-  `token.replace("'", "''")` before interpolation (quack's `CREATE SECRET` does
-  not accept bound parameters).
+  `token.replace("'", "''")` before it is interpolated into the
+  `CALL quack_serve(...)` statement.
 - `dagster_step_failures_raw` switches from NDJSON files to a `sqlite_scan` of
   `$DAGSTER_HOME/history/runs/*.db`, which the server already mounts; the
   failure sensor no longer exports step-failure NDJSON files.
@@ -462,9 +465,9 @@ because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
 
 1. **One source of truth.** Entity lists, backup targets and the Danish name
    normalisation each exist once and are imported everywhere else.
-2. **Generate the repetitive models, write the star schema by hand.** 50 Silver and 28
-   Bronze models are one macro call each; the Gold star schema is written by
-   hand.
+2. **Generate the repetitive models, write the star schema by hand.** The 25
+   Bronze and 25 Silver entity models are one macro call each and their `_cv`
+   views are generated too; the Gold star schema is written by hand.
 3. **Business logic lives in SQL.** Python moves data and orchestrates; meaning
    is defined in dbt models, not in Python or in the BI tool.
 4. **Deterministic and re-runnable.** Content hashes, `run_started_at` instead
@@ -528,8 +531,9 @@ Improvements worth making, roughly in order of value:
    coverage; a test with a stubbed `subprocess.run` could assert that stopped
    containers always restart.
 6. **Extend the Silver grain test to Rfam.** The singular test
-   `silver_no_duplicate_id_date_valid_from` covers the 18 DDD tables only, because
-   Rfam primary keys vary; `SILVER_TABLE_PRIMARY_KEYS` has the keys it would need.
+   `silver_no_duplicate_id_date_valid_from` covers the 18 DDD tables only. The
+   generator already writes each table's own key into the test, so Rfam needs
+   only a small change there (its table names have another prefix).
 7. **A lockfile** (for example `uv.lock`) for reproducible installs.
 8. **Broader secret scrubbing.** `_scrub_secrets` matches four substrings in
    top-level keys only; keys like `api_key` or nested dictionaries would pass.

@@ -16,8 +16,15 @@ from ddd_python.ddd_dbt.generate_dbt_models import (
     generate_dbt_models_bronze,
     generate_dbt_models_gold_cv,
     generate_dbt_models_silver,
+    generate_dbt_test_silver_no_duplicate,
 )
 from ddd_python.ddd_utils import configuration_variables as cv
+from ddd_python.ddd_utils.primary_keys import (
+    PRIMARY_KEY_COLUMN,
+    is_composite,
+    key_columns,
+    stored_key_column,
+)
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 _PATCH_TARGET = "ddd_python.ddd_dbt.generate_dbt_models.get_variables_from_env"
@@ -266,3 +273,88 @@ def test_bronze_rfam_generates_one_view_per_entity(dbt_models_tmpdir: Path):
     main_content = (bronze_dir / "bronze_rfam_family.sql").read_text()
     assert "generate_model_bronze" in main_content
     assert "'RFAM'" in main_content
+
+
+# ===========================================================================
+# Primary keys of several columns
+# ===========================================================================
+
+_COMPOSITE = {"stemme": ["afstemningid", "aktoerid"], "aktoer": "id", "sag": ["id"]}
+
+
+def test_primary_key_helpers():
+    assert key_columns("id") == ["id"]
+    assert key_columns(["a", "b"]) == ["a", "b"]
+    assert not is_composite("id") and not is_composite(["id"]) and is_composite(["a", "b"])
+    assert stored_key_column("rfam_acc") == "rfam_acc"
+    assert stored_key_column(["id"]) == "id"
+    assert stored_key_column(["a", "b"]) == PRIMARY_KEY_COLUMN == "LKHS_primary_key_1_column"
+    for bad in ([], "", ["a", ""], [1]):
+        with pytest.raises(ValueError):
+            key_columns(bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("entity", ["aktoer", "sag"])
+def test_a_key_of_one_column_adds_no_key_column(dbt_models_tmpdir: Path, entity: str):
+    """A key of one column, also written as a list of one, generates the models as before:
+    no LKHS_primary_key_1_column in Bronze or Silver."""
+    generate_dbt_models_bronze([f"bronze_ddd_{entity}"], primary_key_map=_COMPOSITE)
+    generate_dbt_models_silver([f"silver_ddd_{entity}"], primary_key_map=_COMPOSITE)
+    bronze = (dbt_models_tmpdir / "bronze" / f"bronze_ddd_{entity}.sql").read_text()
+    silver = (dbt_models_tmpdir / "silver" / f"silver_ddd_{entity}.sql").read_text()
+    silver_cv = (dbt_models_tmpdir / "silver" / f"silver_ddd_{entity}_cv.sql").read_text()
+    assert bronze.endswith("generate_model_bronze(this.name,'DDD','danish_parliament') }}")
+    for content in (bronze, silver, silver_cv):
+        assert PRIMARY_KEY_COLUMN not in content
+    assert "unique_key=['id','LKHS_date_valid_from']" in silver
+    assert "primary_key_columns=\"'id'\"" in silver
+    assert "primary_key_columns='id'" in silver
+    assert "key_source_columns" not in silver
+
+
+def test_a_key_of_several_columns(dbt_models_tmpdir: Path):
+    """Bronze computes LKHS_primary_key_1_column, Silver keys on it and leaves it and its
+    source columns out of the hash."""
+    generate_dbt_models_bronze(["bronze_ddd_stemme"], primary_key_map=_COMPOSITE)
+    generate_dbt_models_silver(["silver_ddd_stemme"], primary_key_map=_COMPOSITE)
+    bronze = (dbt_models_tmpdir / "bronze" / "bronze_ddd_stemme.sql").read_text()
+    silver = (dbt_models_tmpdir / "silver" / "silver_ddd_stemme.sql").read_text()
+    silver_cv = (dbt_models_tmpdir / "silver" / "silver_ddd_stemme_cv.sql").read_text()
+    assert "primary_key_columns=['afstemningid', 'aktoerid']) }}" in bronze
+    assert f"unique_key=['{PRIMARY_KEY_COLUMN}','LKHS_date_valid_from']" in silver
+    assert f"primary_key_columns=\"'afstemningid','aktoerid','{PRIMARY_KEY_COLUMN}'\"" in silver
+    assert f"primary_key_columns='{PRIMARY_KEY_COLUMN}'" in silver
+    assert "key_source_columns=['afstemningid', 'aktoerid']" in silver
+    assert "generate_model_silver_incr_extraction" in silver
+    assert f"PARTITION BY src.LKHS_source_system_code,src.{PRIMARY_KEY_COLUMN} " in silver_cv
+
+
+def test_grain_test_groups_by_the_key_silver_uses(dbt_models_tmpdir: Path):
+    with patch(_PATCH_TARGET) as mock_env:
+        mock_env.DBT_PROJECT_DIRECTORY = str(dbt_models_tmpdir)
+        generate_dbt_test_silver_no_duplicate(
+            ["silver_ddd_stemme", "silver_ddd_aktoer"], primary_key_map=_COMPOSITE
+        )
+    content = (
+        dbt_models_tmpdir / "tests" / "silver_no_duplicate_id_date_valid_from.sql"
+    ).read_text()
+    assert "    ('silver_ddd_aktoer', 'id'),\n" in content
+    assert f"    ('silver_ddd_stemme', '{PRIMARY_KEY_COLUMN}'),\n" in content
+    assert "GROUP BY {{ key }}, LKHS_date_valid_from" in content
+
+
+def test_committed_models_match_the_configured_keys():
+    """The models in dbt/models get LKHS_primary_key_1_column only for a configured key of
+    several columns, so an existing Silver table with a key of one column never gets it."""
+    models = Path(__file__).resolve().parents[1] / "dbt" / "models"
+    keys = [
+        ("ddd", normalize_danish_name(n), pk)
+        for n, pk in cv.DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS.items()
+    ]
+    keys += [("rfam", n, pk) for n, pk in cv.RFAM_TABLE_PRIMARY_KEYS.items()]  # fmt: skip
+    for source, name, pk in keys:
+        bronze = (models / "bronze" / f"bronze_{source}_{name}.sql").read_text()
+        silver = (models / "silver" / f"silver_{source}_{name}.sql").read_text()
+        assert ("primary_key_columns=" in bronze) == is_composite(pk), name
+        assert (PRIMARY_KEY_COLUMN in silver) == is_composite(pk), name
+        assert f"primary_key_columns='{stored_key_column(pk)}'" in silver, name

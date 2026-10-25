@@ -196,7 +196,8 @@ imports from here.
 
 This file contains only **data** (lists, dictionaries and the two concurrency
 settings `MAX_CONCURRENT_WORKERS` and `FULL_PIPELINE_MAX_CONCURRENT`) plus
-import-time checks that every entity has a primary key; no functions. The rest
+import-time checks that every entity has a primary key of one or more column
+names; no functions. The rest
 of the project reads its configuration from it. It declares, for both
 source systems:
 
@@ -206,8 +207,26 @@ source systems:
   (`..._INCREMENTAL` subsets).
 * The derived dbt model names for Bronze and Silver (built with list
   comprehensions, so they can never drift out of sync with the entity list).
-* Primary keys per table (`..._TABLE_PRIMARY_KEYS`).
+* Primary keys per table (`..._TABLE_PRIMARY_KEYS`): a column name, or a list
+  of column names for a key of several columns.
 * For Rfam: the SQL query templates (`RFAM_TABLE_QUERIES`).
+
+**Primary keys of several columns.** Silver keys on one column. The helpers in
+[ddd_utils/primary_keys.py](../ddd_python/ddd_utils/primary_keys.py) turn a
+configured key into that column:
+
+```python
+key_columns("id")  # -> ["id"]
+key_columns(["afstemningid", "aktoerid"])  # -> ["afstemningid", "aktoerid"]
+stored_key_column("id")  # -> "id"
+stored_key_column(["id"])  # -> "id"  (a list of one is a key of one column)
+stored_key_column(["afstemningid", "aktoerid"])  # -> "LKHS_primary_key_1_column"
+```
+
+The model generator and the Delta export use `stored_key_column`. Only a list of two or more columns makes the Bronze view
+compute `LKHS_primary_key_1_column`; every key that is configured now is one
+column, so the models are the same as without this feature
+([dbt_transformations.md §3.1](dbt_transformations.md#31-shared-building-blocks) has the SQL).
 
 **Worked example — how a name becomes three model names.** Take the API entity
 `"Aktør"`:
@@ -416,8 +435,8 @@ These are **operational** utilities, not part of the data pipeline itself. They'
 covered in [§8](#8-the-platform-operations-scripts). Note: `backup_common.py`
 defines a helper function `_ducklake_data_is_local()` that checks whether DuckLake
 Parquet data lives on the local filesystem or on S3. When `RAW_STORAGE_TARGET=s3`
-and DuckLake is active, the local DuckLake backup target is skipped — S3 bucket
-versioning and lifecycle policies handle durability instead.
+and DuckLake is active, the local DuckLake backup target is skipped; the bucket's
+versioning provides durability instead.
 
 ---
 
@@ -623,9 +642,10 @@ Silver tables from wherever dbt actually wrote them.  The **Gold** export uses t
 `ducklake_catalog.main_silver`) resolve in DuckLake mode too.
 
 Per-table failures are collected and re-raised as one `RuntimeError` after *all*
-tables are attempted, so one bad table doesn't silently skip the rest. The PK comes
-from `SILVER_TABLE_PRIMARY_KEYS` (DDD entities use `id`, Rfam tables vary). DuckDB is
-opened `read_only=True` for safety.
+tables are attempted, so one bad table doesn't silently skip the rest. The key comes
+from `SILVER_TABLE_PRIMARY_KEYS` through `stored_key_column` (DDD entities use `id`,
+Rfam tables vary, a key of several columns is `LKHS_primary_key_1_column`). Outside
+Docker the connection is read-only; in Docker it is a quack client of the server.
 
 ### 5.5 `export_gold.py` — Gold → Delta Lake
 
@@ -654,7 +674,7 @@ The process behind the `duckdb_server` container (ADR-12 in
 read-write, sets `memory_limit` from `QUACK_SERVER_MEMORY_LIMIT` (default `12GB`),
 loads the extensions, attaches the DuckLake catalog in `ducklake` mode, creates
 the persistent secrets (`init_secrets_on_connection`, §6.3), registers the SQL
-function `ducklake_sweep_current_temp` (§7.7b), and then serves the database over
+function `ducklake_sweep_current_temp` (§7.7), and then serves the database over
 quack RPC on `QUACK_SERVER_PORT` (default 9494). `QUACK_SERVER_TOKEN` is required
 (at least 4 characters). `SIGTERM`/`SIGINT` stop the server cleanly. Every other
 container (Dagster, dbt, Metabase, the `run` service) connects as a client and
@@ -698,7 +718,8 @@ Three generators:
   handcrafted models without versions (`date`, `individual_votes`).
 
 It also writes the singular dbt test that checks the Silver grain (no duplicate
-`id` + `LKHS_date_valid_from`) over the DDD Silver tables.
+key + `LKHS_date_valid_from`, the key being `id` or `LKHS_primary_key_1_column`)
+over the DDD Silver tables.
 
 The string-building uses `PREFIX = '{{'` / `SUFFIX = '}}'` constants so the
 generated text contains literal Jinja `{{ ... }}` and `{%- ... -%}` blocks without
@@ -707,9 +728,12 @@ logic lives in the dbt macros (documented in
 [dbt_transformations.md](dbt_transformations.md)); Python just decides *which* macro each model calls
 and with *what* parameters (primary key, source system).
 
-The `if __name__ == "__main__":` block at the bottom is the actual recipe: it calls
-the three generators for DDD, then again for Rfam with Rfam's config (different
-prefix, different env var, different incremental set).
+The `if __name__ == "__main__":` block at the bottom is the actual recipe: for DDD
+it calls the Bronze, Silver and Gold `_cv` generators and writes the grain test;
+for Rfam it calls the Bronze and Silver generators with Rfam's config (different
+prefix, different env var, different incremental set). Every call passes the
+primary-key map, so a key of several columns reaches the Bronze view, the Silver
+model and the grain test (§4.1).
 
 ### 6.2 `dbt_build_with_unique_logfile.py` — running dbt
 
@@ -719,7 +743,7 @@ A thin wrapper that runs `dbt build --log-format json` as a subprocess (one-hour
 timeout), capturing stdout to `dbt_build_log_<timestamp>.json` under
 `DBT_LOGS_DIRECTORY`. It fails on a non-zero exit code **and** when the JSON log
 contains failed or errored nodes, because dbt can exit 0 with failing tests. The
-binary is `DBT_EXECUTABLE` (default `dbt`; `dbt-quack` in Docker, §7.6). The
+binary is `DBT_EXECUTABLE` (default `dbt`; `dbt-quack` in Docker, §6.4). The
 `--models_to_select` CLI arg passes through to `dbt --select`;
 `--no_silver_delete_guard` and `--skip_late_files` set the Silver switches for one
 run (as `--vars`, built by `silver_vars`).
@@ -761,6 +785,33 @@ credentials *are* interpolated into the SQL string — but that statement is
 deliberately **never logged**, and only the secret's metadata (name/type) is
 printed back for verification.
 
+### 6.4 `dbt_quack.py` — quack adapter for Docker mode
+
+[ddd_python/ddd_dbt/dbt_quack.py](../ddd_python/ddd_dbt/dbt_quack.py)
+
+In Docker, `duckdb_server` is the sole owner of the `.duckdb` file (ADR-12).
+`dbt-duckdb` normally opens the file directly, which would violate the
+single-writer rule. With `QUACK_SERVER_HOST` set, `dbt/profiles.yml` selects the
+`quack` target: an in-memory DuckDB that `ATTACH`es
+`quack:<host>:<port>` with the token, under the alias `danish_democracy_data`.
+
+`dbt_quack.py` is the `dbt-quack` console script (`[project.scripts]` in
+`pyproject.toml`); Dagster and `dbt_build_with_unique_logfile` run it instead of
+`dbt` through `DBT_EXECUTABLE=dbt-quack`. Before it hands over to dbt's own runner
+(`dbtRunner`), it applies three patches to `dbt-duckdb`:
+
+1. **`connect`** — every cursor runs `CONNECT danish_democracy_data`, so model and
+   test SQL executes on the server, against the server's catalogs.
+2. **`is_ducklake`** — databases listed in `QUACK_DUCKLAKE_DATABASES` (default
+   `ducklake_catalog`) count as DuckLake, so dbt does not issue the `DROP …
+   CASCADE` that DuckLake refuses.
+3. **`per_thread`** — each dbt thread gets its own connection, so concurrent
+   cursors do not interrupt each other's server session.
+
+`QUACK_SKIP_PATCHES` switches individual patches off to test whether a newer
+DuckDB or dbt-duckdb still needs them. Without `QUACK_SERVER_HOST` the script
+warns and runs plain dbt.
+
 ---
 
 ## 7. `ddd_dagster` — orchestration
@@ -794,7 +845,7 @@ now always written locally). It's a thin wrapper around
 Why inject it as a resource instead of importing the function directly? Three
 reasons stated in the docstring: dependency injection, **testability** (you can swap
 in a mock), and auditability in the UI. It also has `write_job_run_log` for the
-sensors (§7.7).
+sensors (§7.10).
 
 ### 7.2 `assets.py` — DDD extraction assets
 
@@ -833,8 +884,8 @@ structure matches `assets.py`, so both source systems are built the same way.
 
 One export asset per Silver table (25) and per Gold table (10, from
 `DANISH_DEMOCRACY_MODELS_GOLD`), each calling the
-`export_single_*_table` functions from §5.4–5.5. Each opens its own read-only DuckDB
-connection in a `try/finally` so the connection always closes.
+`export_single_*_table` functions from §5.4–5.5. Each opens its own connection with
+`open_export_connection()` (§4.4) in a `try/finally` so the connection always closes.
 
 The ordering is done by **barrier assets**: no-op assets that exist only to
 sequence the graph:
@@ -902,34 +953,7 @@ Dagster's *own* SQLite run history via DuckDB's `sqlite_scan()`. The
 `sqlite_scan` — Dagster writes one SQLite file per run and DuckDB can glob them
 — so no step-failure export from the sensor is needed.
 
-### 7.6 `dbt_quack.py` — quack adapter for Docker mode
-
-[ddd_python/ddd_dbt/dbt_quack.py](../ddd_python/ddd_dbt/dbt_quack.py)
-
-In Docker, `duckdb_server` is the sole owner of the `.duckdb` file (ADR-12).
-`dbt-duckdb` normally opens the file directly, which would violate the
-single-writer rule. With `QUACK_SERVER_HOST` set, `dbt/profiles.yml` selects the
-`quack` target: an in-memory DuckDB that `ATTACH`es
-`quack:<host>:<port>` with the token, under the alias `danish_democracy_data`.
-
-`dbt_quack.py` is the `dbt-quack` console script (`[project.scripts]` in
-`pyproject.toml`); Dagster and `dbt_build_with_unique_logfile` run it instead of
-`dbt` through `DBT_EXECUTABLE=dbt-quack`. Before it hands over to dbt's own runner
-(`dbtRunner`), it applies three patches to `dbt-duckdb`:
-
-1. **`connect`** — every cursor runs `CONNECT danish_democracy_data`, so model and
-   test SQL executes on the server, against the server's catalogs.
-2. **`is_ducklake`** — databases listed in `QUACK_DUCKLAKE_DATABASES` (default
-   `ducklake_catalog`) count as DuckLake, so dbt does not issue the `DROP …
-   CASCADE` that DuckLake refuses.
-3. **`per_thread`** — each dbt thread gets its own connection, so concurrent
-   cursors do not interrupt each other's server session.
-
-`QUACK_SKIP_PATCHES` switches individual patches off to test whether a newer
-DuckDB or dbt-duckdb still needs them. Without `QUACK_SERVER_HOST` the script
-warns and runs plain dbt.
-
-### 7.7 `jobs.py` — grouping assets into runnable jobs
+### 7.6 `jobs.py` — grouping assets into runnable jobs
 
 [ddd_python/ddd_dagster/jobs.py](../ddd_python/ddd_dagster/jobs.py)
 
@@ -951,7 +975,7 @@ deferred imports inside the function body to avoid a circular import between
 `jobs.py` and `dbt_assets.py`. `full_pipeline_job` unions everything into one
 end-to-end run, ordered by the asset dependencies.
 
-### 7.7b `ducklake_cleanup_assets.py` — DuckLake catalog maintenance
+### 7.7 `ducklake_cleanup_assets.py` — DuckLake catalog maintenance
 
 [ddd_python/ddd_dagster/ducklake_cleanup_assets.py](../ddd_python/ddd_dagster/ducklake_cleanup_assets.py)
 
@@ -977,7 +1001,7 @@ files). Deleting them corrupts Silver. It runs via `ducklake_cleanup_job`
 (`in_process_executor`), which is a **manual** job — there is no schedule for it
 (run it on demand now and then).
 
-### 7.7c `bronze_archive_assets.py` — archiving processed Bronze files
+### 7.8 `bronze_archive_assets.py` — archiving processed Bronze files
 
 [ddd_python/ddd_dagster/bronze_archive_assets.py](../ddd_python/ddd_dagster/bronze_archive_assets.py)
 
@@ -987,7 +1011,7 @@ config is `keep_days` (default 7), `compress` (default `true`) and `dry_run`
 (default `false`). With `RAW_STORAGE_TARGET=s3` it logs and does nothing. There is
 no schedule.
 
-### 7.8 `schedules.py` — when jobs run
+### 7.9 `schedules.py` — when jobs run
 
 [ddd_python/ddd_dagster/schedules.py](../ddd_python/ddd_dagster/schedules.py)
 
@@ -995,9 +1019,9 @@ Two cron schedules, both **defaulting to STOPPED** (you enable them in the UI):
 the full pipeline at 06:00 and the Data Engineering refresh at 08:00, both
 Europe/Copenhagen. Ordering within the pipeline is enforced by asset
 dependencies, not by spacing the cron times. (`ducklake_cleanup_job` is
-deliberately left unscheduled — see §7.7b.)
+deliberately left unscheduled — see §7.7.)
 
-### 7.9 `sensors.py` — run-status logging
+### 7.10 `sensors.py` — run-status logging
 
 [ddd_python/ddd_dagster/sensors.py](../ddd_python/ddd_dagster/sensors.py)
 
@@ -1010,7 +1034,7 @@ warnings so they never break the sensor. Step-failure details are not exported b
 the sensors: the `dagster_step_failures_raw` dbt model reads them directly from
 Dagster's SQLite run history (`$DAGSTER_HOME/history/runs/*.db`).
 
-### 7.10 `definitions.py` — the registry
+### 7.11 `definitions.py` — the registry
 
 [ddd_python/ddd_dagster/definitions.py](../ddd_python/ddd_dagster/definitions.py)
 
@@ -1177,6 +1201,13 @@ These choices recur across the codebase:
 
 **Add a new Rfam table:** update `RFAM_TABLE_NAMES`, `RFAM_TABLE_PRIMARY_KEYS`,
 and `RFAM_TABLE_QUERIES`, then regenerate.
+
+**Use a primary key of several columns:** write the key as a list in the
+`..._TABLE_PRIMARY_KEYS` entry (`"stemme": ["afstemningid", "aktoerid"]`) and
+regenerate. Bronze then computes `LKHS_primary_key_1_column` and Silver keys on it
+(§4.1). Change the table's data tests in `models/silver/__models*.yml` to that
+column, and migrate an existing Silver table first
+([dbt_transformations.md §3.1](dbt_transformations.md#31-shared-building-blocks)).
 
 **Change CDC / hashing logic:** that's in the dbt macros
 ([dbt_transformations.md](dbt_transformations.md)), not Python. Python only decides which macro a

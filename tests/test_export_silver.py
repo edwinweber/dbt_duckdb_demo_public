@@ -161,6 +161,17 @@ def test_default_tables_include_ddd_and_rfam():
     assert len(default) == len(ddd) + len(rfam)
 
 
+def test_export_keys_on_the_column_silver_keys_on():
+    """The anti-join uses the configured key column, or LKHS_primary_key_1_column for a key
+    of several columns."""
+    keys = {"silver_ddd_stemme": ["afstemningid", "aktoerid"], "silver_ddd_sag": ["id"]}
+    with patch.dict(configuration_variables.SILVER_TABLE_PRIMARY_KEYS, keys):
+        assert silver_mod._get_primary_key("silver_ddd_stemme") == "LKHS_primary_key_1_column"
+        assert silver_mod._get_primary_key("silver_ddd_sag") == "id"
+    assert silver_mod._get_primary_key("silver_rfam_family") == "rfam_acc"
+    assert silver_mod._get_primary_key("silver_unknown") == "id"
+
+
 # ── Rfam-specific tests (non-id primary key) ─────────────────────────
 
 

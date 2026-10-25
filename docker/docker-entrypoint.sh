@@ -16,8 +16,9 @@ if [ "$STORAGE" = "onelake" ]; then
 
     if command -v duckdb &>/dev/null; then
         echo "[entrypoint] Creating/updating DuckDB Azure secret..."
-        mkdir -p "$(dirname "$DB_PATH")"
-        duckdb "$DB_PATH" <<SQL
+        # In memory: a persistent secret is stored under ~/.duckdb, not in a database
+        # file, and the .duckdb file belongs to duckdb_server (backup mounts it too).
+        duckdb <<SQL
 INSTALL httpfs; INSTALL azure; INSTALL delta;
 LOAD httpfs; LOAD azure; LOAD delta;
 CREATE OR REPLACE PERSISTENT SECRET azure_sp (

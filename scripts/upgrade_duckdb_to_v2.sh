@@ -5,8 +5,8 @@
 # upgrade is one-way. This script makes it reversible by backing up first.
 #
 # What it does:
-#   1. Stops the containers that hold the files (Dagster, Metabase) and checks that
-#      no other process has them open.
+#   1. Stops the containers that hold the files (duckdb_server, and Dagster and Metabase
+#      from before the quack server) and checks that no other process has them open.
 #   2. Backs up the main .duckdb file, the DuckLake catalog (ducklake mode) and the
 #      Azure secret file to a timestamped directory, with SHA-256 checksums.
 #   3. Creates a throw-away venv with duckdb==2.0.0 and copies each file into a new
@@ -110,7 +110,7 @@ fi
 
 # 1. Stop whatever holds the files (a dry run only reads, so it leaves everything running)
 if [[ "$DRY_RUN" -eq 0 && "$STOP_CONTAINERS" -eq 1 ]] && command -v docker >/dev/null 2>&1; then
-    for name in "${DAGSTER_CONTAINER_NAME:-ddd-dagster}" "${METABASE_CONTAINER_NAME:-ddd-metabase}"; do
+    for name in "${DUCKDB_SERVER_CONTAINER_NAME:-ddd-duckdb-server}" "${DAGSTER_CONTAINER_NAME:-ddd-dagster}" "${METABASE_CONTAINER_NAME:-ddd-metabase}"; do
         if [[ "$(docker_cmd inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" == "true" ]]; then
             echo "Stopping $name ..."
             docker_cmd stop "$name" >/dev/null

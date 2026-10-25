@@ -12,6 +12,12 @@ import logging
 from pathlib import Path
 
 from ddd_python.ddd_utils import configuration_variables, get_variables_from_env
+from ddd_python.ddd_utils.primary_keys import (
+    PrimaryKey,
+    is_composite,
+    key_columns,
+    stored_key_column,
+)
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 logger = logging.getLogger(__name__)
@@ -36,6 +42,8 @@ def generate_dbt_models_bronze(
     table_names: list[str],
     source_system_code: str = "DDD",
     source_name: str = "danish_parliament",
+    primary_key_map: dict[str, PrimaryKey] | None = None,
+    bronze_prefix: str = "bronze_ddd_",
 ) -> None:
     """Generate dbt Bronze model files (one view per entity).
 
@@ -43,6 +51,9 @@ def generate_dbt_models_bronze(
         table_names: Bronze model names (e.g. ``["bronze_ddd_aktoer", ...]``).
         source_system_code: Short code for the source system (e.g. ``"DDD"``).
         source_name: dbt source name matching ``__sources*.yml``.
+        primary_key_map: Mapping from file/table name to its primary key.  A key of
+            several columns makes the view add ``LKHS_primary_key_1_column``.
+        bronze_prefix: Prefix to strip from the model name to get the file name.
     """
     models_dir = get_variables_from_env.DBT_MODELS_DIRECTORY
     if models_dir is None:
@@ -54,7 +65,9 @@ def generate_dbt_models_bronze(
         model_name = table_name.lower()
         model_path = target_dir / model_name
         source_tag = source_system_code.lower()
-        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze(this.name,'{source_system_code}','{source_name}') {SUFFIX}"  # noqa: E501 — SQL template string
+        pk = (primary_key_map or {}).get(model_name.replace(bronze_prefix, "", 1), "id")
+        pk_arg = f",primary_key_columns={key_columns(pk)!r}" if is_composite(pk) else ""
+        query = f"{PREFIX} config(tags=['{source_tag}']) {SUFFIX}\n{PREFIX} generate_model_bronze(this.name,'{source_system_code}','{source_name}'{pk_arg}) {SUFFIX}"  # noqa: E501 — SQL template string
         with open(f"{model_path}.sql", "w") as f:
             f.write(query)
         logger.info("Generated Bronze model %s.sql", model_name)
@@ -65,7 +78,7 @@ def generate_dbt_models_silver(
     incremental_models: frozenset[str] | None = None,
     data_source_env_var: str = "DANISH_DEMOCRACY_DATA_SOURCE",
     bronze_prefix: str = "silver_ddd_",
-    primary_key_map: dict[str, str] | None = None,
+    primary_key_map: dict[str, PrimaryKey] | None = None,
     source_system_code: str = "DDD",
 ) -> None:
     """Generate dbt Silver model files (incremental table + ``_cv`` view per entity).
@@ -78,8 +91,9 @@ def generate_dbt_models_silver(
         bronze_prefix: Prefix to strip from Silver model name to get the Bronze
             file name.  Default ``"silver_ddd_"`` works for DDD; for Rfam use
             ``"silver_rfam_"``.
-        primary_key_map: Mapping from file/table name to its PK column name.
-            When ``None``, all tables default to ``id``.
+        primary_key_map: Mapping from file/table name to its primary key: a column
+            name, or a list of columns for a key of several columns, which Silver keys
+            on ``LKHS_primary_key_1_column``.  When ``None``, all tables default to ``id``.
         source_system_code: Short code for the source system (e.g. ``"DDD"``).
             Used to assign a source-system tag to each generated model.
     """
@@ -99,9 +113,13 @@ def generate_dbt_models_silver(
         # Derive the Bronze file name from the Silver model name.
         file_name = model_name.replace(bronze_prefix, "", 1)
 
-        # Resolve the primary key for this table.
-        pk = primary_key_map.get(file_name, "id") if primary_key_map else "id"
-        pk_columns_bronze = f"'{pk}'"
+        # Resolve the primary key for this table: the CDC keys on one column, the
+        # column itself or LKHS_primary_key_1_column for a key of several columns.
+        # The hash leaves out every key column.
+        primary_key = primary_key_map.get(file_name, "id") if primary_key_map else "id"
+        pk = stored_key_column(primary_key)
+        hash_excluded = key_columns(primary_key) + ([pk] if is_composite(primary_key) else [])
+        pk_columns_bronze = ",".join(f"'{c}'" for c in hash_excluded)
 
         # Select the correct macro based on the canonical incremental list.
         if model_name in incremental_models:
@@ -113,6 +131,10 @@ def generate_dbt_models_silver(
         dsev_arg = ""
         if data_source_env_var != "DANISH_DEMOCRACY_DATA_SOURCE":
             dsev_arg = f",data_source_env_var='{data_source_env_var}'"
+        # A key of several columns: Silver builds the key again from the columns cast to
+        # its own types (silver_bronze_columns); a key of one column gets no argument.
+        if is_composite(primary_key):
+            dsev_arg += f",key_source_columns={key_columns(primary_key)!r}"
 
         query = (
             f"{PREFIX_STMT} set bronze_table_name = this.name.replace('silver', 'bronze', 1) {SUFFIX_STMT}\n"  # noqa: E501 — SQL template string
@@ -168,6 +190,8 @@ def generate_dbt_models_gold_cv(table_names: list[str]) -> None:
 def generate_dbt_test_silver_no_duplicate(
     table_names: list[str],
     test_name: str = "silver_no_duplicate_id_date_valid_from",
+    primary_key_map: dict[str, PrimaryKey] | None = None,
+    bronze_prefix: str = "silver_ddd_",
 ) -> None:
     """Generate the singular test asserting Silver SCD2 keys are unique.
 
@@ -181,8 +205,10 @@ def generate_dbt_test_silver_no_duplicate(
 
     Args:
         table_names: DDD Silver base-model names (e.g. ``["silver_ddd_aktoer", ...]``).
-            Rfam tables are intentionally excluded by the caller because their
-            primary keys vary per table, so a ``GROUP BY id`` would be wrong.
+            Rfam tables are excluded by the caller; their key is tested per model.
+        primary_key_map: Mapping from file name to its primary key; each table is grouped
+            by the column its CDC keys on (``id``, or ``LKHS_primary_key_1_column``).
+        bronze_prefix: Prefix to strip from the model name to get the file name.
     """
     project_dir = get_variables_from_env.DBT_PROJECT_DIRECTORY
     if project_dir is None:
@@ -190,29 +216,37 @@ def generate_dbt_test_silver_no_duplicate(
     target_dir = Path(project_dir) / "tests"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    list_lines = "\n".join(f"    '{name.lower()}'," for name in sorted(table_names))
+    def _key(name: str) -> str:
+        pk = (primary_key_map or {}).get(name.lower().replace(bronze_prefix, "", 1), "id")
+        return stored_key_column(pk)
+
+    list_lines = "\n".join(
+        f"    ('{name.lower()}', '{_key(name)}')," for name in sorted(table_names)
+    )
 
     header = (
         "-- AUTO-GENERATED by ddd_python.ddd_dbt.generate_dbt_models — do not edit by hand.\n"
         "-- Regenerate with: python -m ddd_python.ddd_dbt.generate_dbt_models\n"
         "--\n"
-        "-- Verify the SCD2 unique key constraint: no duplicate (id, LKHS_date_valid_from)\n"
-        "-- pairs across the DDD Silver tables (test passes when it returns no rows).\n"
+        "-- Verify the SCD2 unique key constraint: no duplicate (key, LKHS_date_valid_from)\n"
+        "-- pairs across the DDD Silver tables (test passes when it returns no rows). The key\n"
+        "-- is the column the CDC keys on: id, or LKHS_primary_key_1_column for a key of\n"
+        "-- several columns.\n"
         "--\n"
         "-- The table list is a static literal (from\n"
         "-- configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER) so dbt can infer the\n"
         "-- test's ref() dependencies at parse time; graph.nodes is only populated at run\n"
-        "-- time. Rfam Silver tables are excluded: their primary keys vary per table, so a\n"
-        "-- GROUP BY id would be incorrect for them.\n"
+        "-- time. Rfam Silver tables are excluded; their keys are tested per model.\n"
     )
     body = (
         "{% set silver_ddd_tables = [\n"
         f"{list_lines}\n"
         "] %}\n\n"
-        "{% for table in silver_ddd_tables %}\n"
-        "SELECT '{{ table }}' AS table_name, id, LKHS_date_valid_from, COUNT(*) AS cnt\n"
+        "{% for table, key in silver_ddd_tables %}\n"
+        "SELECT '{{ table }}' AS table_name, CAST({{ key }} AS VARCHAR) AS key_value,"
+        " LKHS_date_valid_from, COUNT(*) AS cnt\n"
         "FROM {{ ref(table) }}\n"
-        "GROUP BY id, LKHS_date_valid_from\n"
+        "GROUP BY {{ key }}, LKHS_date_valid_from\n"
         "HAVING COUNT(*) > 1\n"
         "    {% if not loop.last %}UNION ALL{% endif %}\n"
         "{% endfor %}\n"
@@ -231,6 +265,7 @@ if __name__ == "__main__":
         configuration_variables.DANISH_DEMOCRACY_MODELS_BRONZE,
         "DDD",
         "danish_parliament",
+        primary_key_map=configuration_variables.DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS,
     )
     generate_dbt_models_silver(
         configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER,
@@ -238,13 +273,18 @@ if __name__ == "__main__":
     )
     generate_dbt_models_gold_cv(configuration_variables.DANISH_DEMOCRACY_MODELS_GOLD)
     # Singular test over the DDD Silver tables (Rfam excluded — see docstring).
-    generate_dbt_test_silver_no_duplicate(configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER)
+    generate_dbt_test_silver_no_duplicate(
+        configuration_variables.DANISH_DEMOCRACY_MODELS_SILVER,
+        primary_key_map=configuration_variables.DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS,
+    )
 
     # ── Rfam ─────────────────────────────────────────────────────────────
     generate_dbt_models_bronze(
         configuration_variables.RFAM_MODELS_BRONZE,
         "RFAM",
         "rfam",
+        primary_key_map=configuration_variables.RFAM_TABLE_PRIMARY_KEYS,
+        bronze_prefix="bronze_rfam_",
     )
     generate_dbt_models_silver(
         configuration_variables.RFAM_MODELS_SILVER,

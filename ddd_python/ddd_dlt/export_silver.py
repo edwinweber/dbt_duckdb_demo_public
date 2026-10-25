@@ -24,13 +24,15 @@ from ddd_python.ddd_utils.path_utils import (
     open_export_connection,
     silver_storage_is_ducklake,
 )
+from ddd_python.ddd_utils.primary_keys import stored_key_column
 
 logger = logging.getLogger(__name__)
 
 
 def _get_primary_key(table: str) -> str:
-    """Return the primary key column for a Silver model name."""
-    return configuration_variables.SILVER_TABLE_PRIMARY_KEYS.get(table, "id")
+    """Return the key column of a Silver model: its primary key column, or
+    LKHS_primary_key_1_column for a key of several columns."""
+    return stored_key_column(configuration_variables.SILVER_TABLE_PRIMARY_KEYS.get(table, "id"))
 
 
 def _silver_source_database() -> str:

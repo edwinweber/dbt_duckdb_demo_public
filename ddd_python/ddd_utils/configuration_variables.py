@@ -10,6 +10,7 @@ derives its configuration from these lists.
 # DANISH_DEMOCRACY_BASE_URL and DANISH_DEMOCRACY_DEFAULT_DAYS_TO_LOAD are
 # defined in .env and loaded via get_variables_from_env.
 
+from ddd_python.ddd_utils.primary_keys import PrimaryKey, key_columns
 from ddd_python.ddd_utils.string_utils import normalize_danish_name
 
 # Maximum concurrent extraction / export workers.  Used by the ThreadPoolExecutor
@@ -65,10 +66,15 @@ DANISH_DEMOCRACY_MODELS_SILVER: list[str] = [
     m.replace("bronze_", "silver_", 1) for m in DANISH_DEMOCRACY_MODELS_BRONZE
 ]
 
-# Primary key column name per DDD table.  Used by the dbt model generator
-# to parameterize the Silver macros and _cv views.
+# Primary key per DDD table.  Used by the dbt model generator to parameterize the
+# Silver macros and _cv views.  A key of several columns is a list, e.g.
+# ["afstemningid", "aktoerid"]: the Bronze view then computes one character column,
+# LKHS_primary_key_1_column, and Silver's CDC keys on it (ddd_utils/primary_keys.py).
+# Only a list of two or more columns adds that column; a key of one column (a string,
+# or a list of one) is used as it is, so its Bronze and Silver models stay unchanged.
+# Changing the key of an existing Silver table needs a migration (dbt_transformations.md).
 # All 18 entities expose "id" as their primary key.
-DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS: dict[str, str] = {
+DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS: dict[str, PrimaryKey] = {
     "afstemning": "id",
     "afstemningstype": "id",
     "aktoer": "id",
@@ -134,9 +140,9 @@ RFAM_MODELS_BRONZE: list[str] = [f"bronze_rfam_{name}" for name in RFAM_TABLE_NA
 # Derived from RFAM_MODELS_BRONZE — parallel Silver models.
 RFAM_MODELS_SILVER: list[str] = [m.replace("bronze_", "silver_", 1) for m in RFAM_MODELS_BRONZE]
 
-# Primary key column name per Rfam table.  Used by the dbt model generator
-# to parameterize the Silver macros and _cv views.
-RFAM_TABLE_PRIMARY_KEYS: dict[str, str] = {
+# Primary key per Rfam table (a column name, or a list for a key of several columns).
+# Used by the dbt model generator to parameterize the Silver macros and _cv views.
+RFAM_TABLE_PRIMARY_KEYS: dict[str, PrimaryKey] = {
     "family": "rfam_acc",
     "genome": "upid",
     "clan": "clan_acc",
@@ -146,10 +152,10 @@ RFAM_TABLE_PRIMARY_KEYS: dict[str, str] = {
     "dead_family": "rfam_acc",
 }
 
-# Combined mapping of Silver model name → primary key column.
+# Combined mapping of Silver model name → primary key.
 # Used by the Silver Delta Lake export to build the correct LEFT JOIN for
 # incremental appends (each source system may have different PK columns).
-SILVER_TABLE_PRIMARY_KEYS: dict[str, str] = {
+SILVER_TABLE_PRIMARY_KEYS: dict[str, PrimaryKey] = {
     **{f"silver_ddd_{entity}": pk for entity, pk in DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS.items()},
     **{f"silver_rfam_{entity}": pk for entity, pk in RFAM_TABLE_PRIMARY_KEYS.items()},
 }
@@ -180,3 +186,5 @@ if set(DANISH_DEMOCRACY_TABLE_PRIMARY_KEYS) != _expected_dd_pk_keys:
     )
 if set(RFAM_TABLE_PRIMARY_KEYS) != set(RFAM_TABLE_NAMES):
     raise ValueError("RFAM_TABLE_PRIMARY_KEYS keys must match RFAM_TABLE_NAMES")
+for _primary_key in SILVER_TABLE_PRIMARY_KEYS.values():
+    key_columns(_primary_key)  # raises ValueError for an empty key or a non-string column

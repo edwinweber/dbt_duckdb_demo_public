@@ -23,10 +23,16 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 import duckdb
+from ddd_python.ddd_dbt.generate_dbt_models import (
+    generate_dbt_models_bronze,
+    generate_dbt_models_silver,
+)
+from ddd_python.ddd_utils.primary_keys import PrimaryKey, stored_key_column
 
 pytestmark = [
     pytest.mark.dbt_integration,
@@ -56,15 +62,43 @@ ENTITIES: dict[str, dict[str, Any]] = {
 }
 
 
-class SilverProject:
-    """dbt on an isolated copy of the sample Bronze files, for one Silver model."""
+def _dbt_project_with_key(root: Path, entity: str, primary_key: list[str]) -> Path:
+    """A copy of the dbt project whose models of the DDD ``entity`` key on ``primary_key``,
+    regenerated as ``generate_dbt_models`` writes them for a key of several columns."""
+    dbt_dir = root / "dbt"
+    shutil.copytree(DBT_DIR, dbt_dir, ignore=shutil.ignore_patterns("target", "logs"))
+    _generate_models(dbt_dir, entity, primary_key)
+    return dbt_dir
 
-    def __init__(self, root: Path, storage_format: str, entity: str) -> None:
+
+def _generate_models(dbt_dir: Path, entity: str, primary_key: PrimaryKey) -> None:
+    """Write the Bronze and Silver models of the DDD ``entity`` for ``primary_key``."""
+    key_map: dict[str, PrimaryKey] = {entity: primary_key}
+    with patch("ddd_python.ddd_dbt.generate_dbt_models.get_variables_from_env") as env:
+        env.DBT_MODELS_DIRECTORY = str(dbt_dir / "models")
+        generate_dbt_models_bronze([f"bronze_ddd_{entity}"], primary_key_map=key_map)
+        generate_dbt_models_silver([f"silver_ddd_{entity}"], primary_key_map=key_map)
+
+
+class SilverProject:
+    """dbt on an isolated copy of the sample Bronze files, for one Silver model.
+
+    ``primary_key`` gives a DDD entity a key of several columns: the project then runs on a
+    copy of the dbt project with that entity's models regenerated, and Silver keys on
+    ``LKHS_primary_key_1_column``."""
+
+    def __init__(
+        self, root: Path, storage_format: str, entity: str, primary_key: list[str] | None = None
+    ) -> None:
         self.root = root
         self.format = storage_format
         self.entity = entity
         e = ENTITIES[entity]
-        self.pk: str = e["pk"]
+        self.key_columns: list[str] = primary_key or [e["pk"]]
+        self.pk: str = stored_key_column(self.key_columns)
+        self.dbt_dir = (
+            DBT_DIR if primary_key is None else _dbt_project_with_key(root, entity, primary_key)
+        )
         self.code: str = e["source"]
         self.change: Callable[[dict], dict] = e["change"]
         self.model = f"silver_{e['source'].lower()}_{entity}"
@@ -90,6 +124,15 @@ class SilverProject:
         """``full`` marks a full extraction of an incremental entity (``..._full.json``)."""
         return f"{self.entity}_202601{day:02d}_000000{'_full' if full else ''}{suffix}"
 
+    def key(self, row: dict) -> Any:
+        """The Silver key of a Bronze row: its key column, or for a key of several columns
+        the text the Bronze view computes, e.g. ``'10605]##[<NULL>]##['``."""
+        if len(self.key_columns) == 1:
+            return row[self.pk]
+        return "".join(
+            ("<NULL>" if row[c] is None else str(row[c])) + "]##[" for c in self.key_columns
+        )
+
     def base_rows(self) -> list[dict]:
         text = (self.entity_dir / self.file_name(1)).read_text()
         return [json.loads(line) for line in text.splitlines() if line.strip()]
@@ -106,7 +149,7 @@ class SilverProject:
     # -- dbt -----------------------------------------------------------------------
     def dbt(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["dbt", *args, "--project-dir", str(DBT_DIR), "--profiles-dir", str(DBT_DIR),
+            ["dbt", *args, "--project-dir", str(self.dbt_dir), "--profiles-dir", str(self.dbt_dir),
              "--target-path", str(self.root / "target"), "--log-path", str(self.root / "logs")],
             env=self.env, capture_output=True, text=True, check=False,
         )  # fmt: skip
@@ -256,15 +299,24 @@ def _violations(project: SilverProject) -> dict[str, int]:
 
 @pytest.fixture()
 def project(tmp_path) -> Callable[..., SilverProject]:
-    """Factory: project("stemme") or project("sagskategori", "ducklake")."""
+    """Factory: project("stemme"), project("sagskategori", "ducklake") or
+    project("stemme", primary_key=["afstemningid", "aktoerid"])."""
     counter = iter(range(100))
 
-    def make(entity: str, storage_format: str = "duckdb") -> SilverProject:
+    def make(
+        entity: str, storage_format: str = "duckdb", primary_key: list[str] | None = None
+    ) -> SilverProject:
         root = tmp_path / f"{entity}_{storage_format}_{next(counter)}"
         root.mkdir()
-        return SilverProject(root, storage_format, entity)
+        return SilverProject(root, storage_format, entity, primary_key)
 
     return make
+
+
+def _lifecycle_project(root: Path, combination: tuple[str, ...]) -> SilverProject:
+    """(storage format, entity[, key columns joined by '+']) -> SilverProject."""
+    storage_format, entity, *key = combination
+    return SilverProject(root, storage_format, entity, key[0].split("+") if key else None)
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -308,6 +360,86 @@ def test_hash_null_token_and_delimiter(project):
     p.run()
     histories = p.histories({a["id"]: "a", b["id"]: "b", c["id"]: "c"})
     assert histories == {"a": "I1", "b": "I1 U2", "c": "I1"}
+
+
+@pytest.mark.parametrize("storage_format", ["duckdb", "ducklake"])
+def test_key_of_several_columns(project, storage_format):
+    """A key of several columns is the character column LKHS_primary_key_1_column: computed
+    in the Bronze view as COALESCE(col::VARCHAR, '<NULL>') || ']##[' per key column, stored
+    in Silver, and left out of the hash together with its source columns."""
+    key = ["afstemningid", "aktoerid"]
+    p = project("stemme", storage_format, primary_key=key)
+    rows = p.base_rows()
+    rows[0] = {**rows[0], "aktoerid": None}
+    p.write(1, rows)
+    p.build()
+    assert p.pk == "LKHS_primary_key_1_column"
+    bronze_types = dict((c[0], c[1]) for c in p.sql("DESCRIBE {bronze}"))
+    assert bronze_types[p.pk] == "VARCHAR"
+    assert dict((c[0], c[1]) for c in p.sql("DESCRIBE {t}"))[p.pk] == "VARCHAR"
+    assert p.key(rows[0]) == f"{rows[0]['afstemningid']}]##[<NULL>]##["
+    assert sorted(r[0] for r in p.sql(f"SELECT {p.pk} FROM {{t}}")) == sorted(map(p.key, rows))
+
+    excluded = {*key, p.pk, "LKHS_filename", "LKHS_date_inserted"}
+    hashed = [c for c in bronze_types if c not in excluded]
+    assert "id" in hashed  # the source's own id is an ordinary column now
+    expression = (
+        "CONCAT(" + ", ".join(f"COALESCE({c}::VARCHAR, '<NULL>'), ']##['" for c in hashed) + ")"
+    )
+    mismatches = p.sql(
+        f"SELECT COUNT(*) FROM {{t}} s JOIN (SELECT {p.pk}, sha256({expression}) AS h "
+        f"FROM {{bronze}}) b USING ({p.pk}) WHERE s.LKHS_hash_value <> b.h"
+    )[0][0]
+    assert mismatches == 0
+
+    # A change of a key column is a new key: the old key keeps its history, and only a
+    # full file deletes it.
+    moved = {**rows[1], "aktoerid": -1, "id": -1}  # own id: the YAML tests id unique in _cv
+    p.write(2, [moved])
+    p.run()
+    p.write(3, [moved, *rows[2:]], full=True)
+    p.run()
+    histories = p.histories({p.key(rows[1]): "old", p.key(moved): "new", p.key(rows[0]): "null"})
+    assert histories == {"old": "I1 D3", "new": "I2", "null": "I1 D3"}
+    assert not _violations(p)
+    assert p.data_tests_pass()
+
+
+@pytest.mark.parametrize("migrated", [True, False], ids=["migrated", "not migrated"])
+def test_changing_to_a_key_of_several_columns(project, migrated):
+    """An existing Silver table keyed on id gets a key of several columns.  After the
+    ALTER TABLE and UPDATE of dbt_transformations.md §3.1 the next run writes only the real
+    change; without them the run stops, because Silver has no key column yet."""
+    key = ["afstemningid", "aktoerid"]
+    p = project("stemme", primary_key=key)
+    _generate_models(p.dbt_dir, "stemme", "id")
+    rows = p.base_rows()
+    p.build()
+    assert p.pk not in [c[0] for c in p.sql("DESCRIBE {t}")]
+    _generate_models(p.dbt_dir, "stemme", key)
+    if migrated:
+        con = duckdb.connect(str(p.root / "test.duckdb"))
+        try:
+            con.execute(f"ALTER TABLE test.main_silver.{p.model} ADD COLUMN {p.pk} VARCHAR")
+            con.execute(
+                f"UPDATE test.main_silver.{p.model} SET {p.pk} = "
+                "CONCAT(COALESCE(afstemningid::VARCHAR, '<NULL>'), ']##[', "
+                "COALESCE(aktoerid::VARCHAR, '<NULL>'), ']##[')"
+            )
+        finally:
+            con.close()
+    p.write(2, [p.change(rows[0]), *rows[1:]])
+    if not migrated:
+        p.run_fails(f"Referenced column {p.pk} not found")
+        assert p.pk not in [c[0] for c in p.sql("DESCRIBE {t}")]
+        assert p.sql("SELECT COUNT(*) FROM {t}")[0][0] == len(rows)
+        return
+    p.build()
+    assert p.operations_on(2) == {"U": 1}
+    p.write(3, rows[1:], full=True)
+    p.run()
+    assert p.operations_on(3) == {"D": 1}
+    assert not _violations(p)
 
 
 def test_file_name_variants_and_bookmark(project):
@@ -391,14 +523,18 @@ FULL_EXPECTED = {
 
 FULL_PATHS = ["one run per file", "days 2-5 in one normal run", "first build with all files"]
 
+# The last one keys on two columns: Silver keys on LKHS_primary_key_1_column.
+FULL_COMBINATIONS = [("duckdb", "sagskategori"), ("ducklake", "sagskategori"),
+                     ("duckdb", "periode", "id+kode")]  # fmt: skip
+
 
 def _full_extract_files(p: SilverProject) -> tuple[dict[int, list[dict]], dict[Any, str]]:
     rows = p.base_rows()
-    keys = [r[p.pk] for r in rows[:8]]
+    keys = [p.key(r) for r in rows[:8]]
     names = dict(zip(keys, "ABCDEGJN", strict=True))
     a, b, c, d, e, g, j, n = keys
-    state = {r[p.pk]: r for r in rows}
-    order = [r[p.pk] for r in rows]
+    state = {p.key(r): r for r in rows}
+    order = [p.key(r) for r in rows]
 
     def complete(missing: set) -> list[dict]:
         return [state[k] for k in order if k not in missing]
@@ -414,12 +550,13 @@ def _full_extract_files(p: SilverProject) -> tuple[dict[int, list[dict]], dict[A
     return files, names
 
 
-@pytest.fixture(scope="module", params=["duckdb", "ducklake"])
+@pytest.fixture(scope="module", params=FULL_COMBINATIONS, ids="-".join)
 def full_lifecycle(request, tmp_path_factory) -> dict[str, dict[str, Any]]:
     results = {}
     for path in FULL_PATHS:
-        root = tmp_path_factory.mktemp(f"full_{request.param}_{path.replace(' ', '_')}")
-        p = SilverProject(root, request.param, "sagskategori")
+        label = "_".join(request.param).replace("+", "_")
+        root = tmp_path_factory.mktemp(f"full_{label}_{path.replace(' ', '_')}")
+        p = _lifecycle_project(root, request.param)
         files, names = _full_extract_files(p)
         record: dict[str, Any] = {"histories": {}, "violations": {}}
         p.write(1, files[1])
@@ -445,8 +582,9 @@ def full_lifecycle(request, tmp_path_factory) -> dict[str, dict[str, Any]]:
             p.build()
         record["histories"][5] = p.histories(names)
         record["violations"][5] = _violations(p)
-        record["cv"] = dict(p.sql("SELECT id, LKHS_cdc_operation FROM {cv}"))
+        record["cv"] = dict(p.sql(f"SELECT {p.pk}, LKHS_cdc_operation FROM {{cv}}"))
         record["names"] = names
+        record["entity"] = p.entity
         record["d_row_of_D"] = p.versions(next(k for k, v in names.items() if v == "D"))[-1]
         before = p.snapshot()
         p.run(full_refresh=True)
@@ -470,9 +608,10 @@ def test_full_extract_invariants(full_lifecycle, path):
 
 
 def test_full_extract_delete_row_takes_the_file_without_the_key(full_lifecycle):
-    d_row = full_lifecycle["one run per file"]["d_row_of_D"]
+    record = full_lifecycle["one run per file"]
+    d_row = record["d_row_of_D"]
     assert d_row["op"] == "D" and d_row["day"] == 2
-    assert d_row["filename"] == "sagskategori_20260102_000000.json"
+    assert d_row["filename"] == f"{record['entity']}_20260102_000000.json"
 
 
 def test_full_extract_cv_shows_deleted_keys(full_lifecycle):
@@ -526,18 +665,21 @@ INCR_EXPECTED = {
               "E": "I1 U3", "G": "I1 D2 I3 U5", "H": "I1", "J": "I1 D2 I3 D4 I5"},
 }  # fmt: skip
 
-INCR_COMBINATIONS = [("duckdb", "stemme"), ("ducklake", "stemme"), ("duckdb", "family")]
+# The last two key on two columns: Silver keys on LKHS_primary_key_1_column.
+INCR_COMBINATIONS = [("duckdb", "stemme"), ("ducklake", "stemme"), ("duckdb", "family"),
+                     ("duckdb", "stemme", "afstemningid+aktoerid"),
+                     ("ducklake", "stemme", "afstemningid+aktoerid")]  # fmt: skip
 
 FULL_DAYS = {2, 4, 5}  # the full extractions of the incremental lifecycle
 
 
 def _incremental_files(p: SilverProject) -> tuple[dict[int, list[dict]], dict[Any, str]]:
     rows = p.base_rows()
-    keys = [r[p.pk] for r in rows[:8]]
+    keys = [p.key(r) for r in rows[:8]]
     names = dict(zip(keys, "ABCDEGHJ", strict=True))
     a, b, c, d, e, g, _h, j = keys
-    state = {r[p.pk]: r for r in rows}
-    order = [r[p.pk] for r in rows]
+    state = {p.key(r): r for r in rows}
+    order = [p.key(r) for r in rows]
 
     def complete(missing: set) -> list[dict]:
         return [state[k] for k in order if k not in missing]
@@ -577,11 +719,10 @@ def _run_incremental_lifecycle(p: SilverProject) -> dict[str, Any]:
     return record
 
 
-@pytest.fixture(scope="module", params=INCR_COMBINATIONS, ids=lambda c: f"{c[0]}-{c[1]}")
+@pytest.fixture(scope="module", params=INCR_COMBINATIONS, ids="-".join)
 def incremental_lifecycle(request, tmp_path_factory) -> dict[str, Any]:
-    storage_format, entity = request.param
-    root = tmp_path_factory.mktemp(f"incr_{storage_format}_{entity}")
-    return _run_incremental_lifecycle(SilverProject(root, storage_format, entity))
+    root = tmp_path_factory.mktemp("incr_" + "_".join(request.param).replace("+", "_"))
+    return _run_incremental_lifecycle(_lifecycle_project(root, request.param))
 
 
 def test_incremental_histories(incremental_lifecycle):
@@ -849,6 +990,25 @@ def test_a_type_bronze_infers_differently_after_archiving_gives_no_false_updates
     silver_type = dict((c[0], c[1]) for c in p.sql("DESCRIBE {t}"))["typeid"]
     assert (bronze_type, silver_type) == ("BIGINT", "DOUBLE")
     assert p.histories({k["id"]: "k", other["id"]: "other"}) == {"k": "I1 U2", "other": "I1 U3"}
+    assert not _violations(p)
+
+
+def test_a_key_column_bronze_infers_differently_keeps_its_key(project):
+    """A key of several columns: a decimal value makes aktoerid DOUBLE in Silver, so the key
+    text has '206.0'.  After archiving Bronze reads aktoerid as BIGINT; the key is built from
+    the columns cast to Silver's type, so an unchanged key keeps its key text and gets no row."""
+    p = project("stemme", primary_key=["afstemningid", "aktoerid"])
+    rows = p.base_rows()
+    k, other = rows[0], rows[2]
+    p.write(1, [k, {**rows[1], "aktoerid": 7.5}, *rows[2:]])
+    p.build()
+    stored = p.sql(f"SELECT {p.pk} FROM {{t}} WHERE id = ?", [k["id"]])[0][0]
+    assert stored == f"{k['afstemningid']}]##[{k['aktoerid']}.0]##["
+    p.remove(1)  # archived: Bronze now reads aktoerid as BIGINT
+    p.write(2, [k, p.change(other)])  # k unchanged, the other key changed
+    p.run()
+    assert p.sql(f"SELECT DISTINCT {p.pk} FROM {{t}} WHERE id = ?", [k["id"]]) == [(stored,)]
+    assert p.operations_on(2) == {"U": 1}
     assert not _violations(p)
 
 

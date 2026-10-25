@@ -8,8 +8,8 @@ import pytest
 from ddd_python.ddd_utils import mark_full_extracts as mfe
 from ddd_python.ddd_utils.archive_bronze import Entity
 
-AKTOER = Entity("DDD", "aktoer", "id", incremental=True)
-FAMILY = Entity("RFAM", "family", "rfam_acc", incremental=True)
+AKTOER = Entity("DDD", "aktoer", incremental=True)
+FAMILY = Entity("RFAM", "family", incremental=True)
 
 
 def _files(directory: Path, entity: Entity, sizes: dict[str, int]) -> list[Path]:
@@ -134,7 +134,7 @@ def test_read_run_log_ddd_and_rfam_and_failures(tmp_path):
 
     assert mfe.read_run_log(tmp_path, AKTOER) == {"a.json": "1900-01-01"}
     assert mfe.read_run_log(tmp_path, FAMILY) == {"f.json": "2025-03-31"}
-    assert mfe.read_run_log(tmp_path, Entity("DDD", "sag", "id", True)) == {}  # no log at all
+    assert mfe.read_run_log(tmp_path, Entity("DDD", "sag", True)) == {}  # no log at all
 
 
 def test_apply_renames_only_full_files_and_never_overwrites(tmp_path):

@@ -1,4 +1,4 @@
-{%- macro generate_model_silver_full_extraction(file_name,bronze_table_name,primary_key_columns,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE') -%}
+{%- macro generate_model_silver_full_extraction(file_name,bronze_table_name,primary_key_columns,base_for_hash,data_source_env_var='DANISH_DEMOCRACY_DATA_SOURCE',key_source_columns=none) -%}
 {#- Silver is the state: it is never rebuilt from Bronze (full_refresh=false), and a run only reads
     the Bronze files newer than the bookmark.  Every file of a full-extract entity is a complete
     snapshot.  The first new file is compared with Silver's latest version of every key, each
@@ -25,7 +25,7 @@ WITH CTE_FILES AS (
 ,CTE_BRONZE AS (
                SELECT src.*
                ,      sha256({{ base_for_hash }}) AS LKHS_hash_value
-               FROM  (SELECT {{ silver_bronze_columns(bronze_table_name) }}
+               FROM  (SELECT {{ silver_bronze_columns(bronze_table_name, key_source_columns) }}
                       FROM   {{ ref(bronze_table_name) }}
                       WHERE  LKHS_filename > '{{ files.processed }}' AND LKHS_filename <= '{{ files.newest }}'
                      ) src

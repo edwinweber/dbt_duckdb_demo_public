@@ -125,18 +125,36 @@ ORDER BY position
     archived files is read as BIGINT); without the cast the text a hash is computed from (3 instead
     of 3.0) would change with them and every key would get a false U.  A first build reads Bronze as it is.  A cast that
     fails stops the run: the source really changed the type, and Silver's column must be altered
-    by hand (runbook). -#}
-{%- macro silver_bronze_columns(bronze_table_name) -%}
+    by hand (runbook).
+    key_source_columns: only for a primary key of several columns.  The Bronze view computes
+    LKHS_primary_key_1_column from the types it infers, so the key is built again here from the
+    key columns cast to Silver's types; otherwise a drifted type (3 instead of 3.0) would turn an
+    unchanged key into a new one. -#}
+{%- macro silver_bronze_columns(bronze_table_name, key_source_columns=none) -%}
 {%- if execute and is_incremental() -%}
 {%- set silver_types = silver_column_types() -%}
 {%- set drifted = [] -%}
-{%- for row in silver_bronze_column_types(bronze_table_name) -%}
+{%- set expressions = {} -%}
+{%- set rows = silver_bronze_column_types(bronze_table_name) -%}
+{%- for row in rows -%}
 {%- set silver_type = silver_types.get(row['column_name'] | lower) -%}
 {%- if silver_type and silver_type != row['data_type'] | upper -%}
 {%- do drifted.append(row['column_name'] ~ ' ' ~ row['data_type'] ~ ' -> ' ~ silver_type) -%}
-CAST("{{ row['column_name'] }}" AS {{ silver_type }}) AS "{{ row['column_name'] }}"
+{%- do expressions.update({row['column_name']: 'CAST("' ~ row['column_name'] ~ '" AS ' ~ silver_type ~ ')'}) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- for row in rows -%}
+{%- set name = row['column_name'] -%}
+{%- if name == 'LKHS_primary_key_1_column' and key_source_columns -%}
+{%- set key_parts = [] -%}
+{%- for column in key_source_columns -%}
+{%- do key_parts.append(expressions.get(column, '"' ~ column ~ '"')) -%}
+{%- endfor -%}
+{{ concat_with_null_token(key_parts) }} AS "{{ name }}"
+{%- elif name in expressions -%}
+{{ expressions[name] }} AS "{{ name }}"
 {%- else -%}
-"{{ row['column_name'] }}"
+"{{ name }}"
 {%- endif -%}
 {{ ', ' if not loop.last }}
 {%- endfor -%}

@@ -95,7 +95,7 @@ No Metabase stop/start is needed: `duckdb_server` is the sole writer; `run`,
 
 After changing the entity lists, regenerate the models in the repository (the
 `run` container does not mount `dbt/`) and rebuild the image:
-`DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models`,
+`DBT_PROJECT_DIRECTORY=dbt DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models`,
 then `docker compose build`.
 
 ### Remote access to the DuckDB server

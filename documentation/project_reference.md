@@ -69,7 +69,8 @@ cleanup is a manual job.
 ├── tests/                       pytest suite; fixtures/bronze_sample = CI data sample
 ├── docker/                      Dockerfiles (app, Metabase), entrypoints, Metabase init SQL, DOCKER_USAGE.md
 ├── scripts/                     deploy, backup cron, host setup, CI sample,
-│                                public-repo sync, upgrade check, DuckDB 2.0 upgrade
+│                                public-repo sync, upgrade check, DuckDB 2.0 upgrade,
+│                                DuckDB shell
 ├── duckdb/                      host-shell DuckDB init (extensions + Azure secret)
 ├── documentation/               guides (this file, design decisions, …), diagrams
 ├── .github/workflows/ci.yml     CI: pytest, S3 tests, ruff/mypy, dbt parse/build, docker build, dbt docs
@@ -121,7 +122,8 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
 ### `ddd_utils/`
 
 - **configuration_variables.py** — the single source of truth: entity lists,
-  incremental subsets, primary keys and Rfam queries. Model-name
+  incremental subsets, primary keys (a column, or a list for a key of several
+  columns) and Rfam queries. Model-name
   lists are derived from them; import-time checks raise `ValueError` on a
   missing primary key. Adding an entity means updating this
   file and regenerating the models (Gold is hand-modelled).
@@ -137,6 +139,9 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
   attached read-only in `ducklake` mode, S3 secret when needed),
   `open_server_session` (quack with `CONNECT`, for DuckLake maintenance),
   `silver_storage_is_ducklake`.
+- **primary_keys.py** — `key_columns`, `is_composite` and `stored_key_column`: the
+  column Silver keys on is the key column itself, or `LKHS_primary_key_1_column` for a
+  list of two or more columns (none is configured now; a key of one column adds no column).
 - **string_utils.py** — `normalize_danish_name` (ø→oe, æ→ae, å→aa, lowercase),
   `resolve_date_to_load_from` (default window or validated `YYYY-MM-DD`) and
   `is_full_extract` (start date on or before `FULL_EXTRACT_DATE`, `1900-01-01`).
@@ -213,6 +218,8 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
 - **definitions.py** — the `Definitions` entry point; resources
   `DltPipelineResource` (key `dlt_onelake`, a legacy name; logs are local) and
   `DbtCliResource` (key `dbt`).
+- **resources.py** — `DltPipelineResource`, a `ConfigurableResource` around
+  `execute_pipeline` and the run log, injected into the extraction assets.
 - **assets.py**, **rfam_assets.py** — extraction asset factories (keys
   `ingestion/DDD/<entity>`, `ingestion/RFAM/<table>`), retry policy 2 × with
   exponential back-off, `date_to_load_from` overridable in the Launchpad.
@@ -286,6 +293,7 @@ Details, macros and the CDC logic: [dbt_transformations.md](dbt_transformations.
 | `LKHS_date_valid_from` | SCD Type 2 validity start (file-name timestamp) |
 | `LKHS_cdc_operation` | `I`, `U` or `D` |
 | `LKHS_date_inserted` | dbt run start that wrote the row |
+| `LKHS_primary_key_1_column` | only for a primary key of several columns: the key as one text (same NULL token and delimiter as the hash), computed in Bronze (on a normal Silver run again from the key columns cast to Silver's types), stored in Silver, Silver's key |
 
 ## Storage switches
 
@@ -436,7 +444,10 @@ overrides the path variables with container paths.
 
 Backup settings (`*_BACKUP_DIR`, `*_BACKUP_MAX_AGE_DAYS`, `BACKUP_LOG_DIR`,
 `FLUSH_WAIT_SECONDS`, `HETZNER_STORAGEBOX_*`) are documented in `.env.example`
-and the docstring of `ddd_utils/backup_platform.py`.
+and the docstring of `ddd_utils/backup_platform.py`. The Docker Compose settings
+`DOCKER_GID`, `HOST_SSH_DIR` and `METABASE_DATA_DIR` are explained in
+[docker/DOCKER_USAGE.md](../docker/DOCKER_USAGE.md) and
+[hetzner_infrastructure.md](hetzner_infrastructure.md).
 
 ## DuckDB initialisation
 
@@ -502,6 +513,11 @@ What each test module covers and how CI runs: [testing.md](testing.md).
   export assets follow automatically; Gold modelling is manual.
 - **Add an Rfam table:** update `RFAM_TABLE_NAMES`, `RFAM_TABLE_PRIMARY_KEYS`,
   `RFAM_TABLE_QUERIES`, then regenerate.
+- **Use a key of several columns:** write the key as a list in the
+  `..._TABLE_PRIMARY_KEYS` entry and regenerate; Silver then keys on
+  `LKHS_primary_key_1_column`. Change the table's YAML tests to that column, and
+  migrate an existing Silver table first
+  ([dbt_transformations.md §3.1](dbt_transformations.md#31-shared-building-blocks)).
 - **Change CDC logic:** edit the Silver macros in `dbt/macros/`; keep helper
   tables qualified with `{{ this.database }}`.
 - **Repair or rebuild Silver:** Silver is the state and ignores `--full-refresh`;

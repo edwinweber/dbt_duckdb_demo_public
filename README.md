@@ -25,7 +25,7 @@ trade-off is simplicity and cost; the patterns still apply on a larger platform.
 | Where is the main SQL? | Hash-based CDC in [`dbt/macros/`](dbt/macros/) ([explained](documentation/dbt_transformations.md)); star schema in [`dbt/models/gold/`](dbt/models/gold/). |
 | Where is the main Python? | One pipeline engine behind both the CLI and Dagster: [`dlt_pipeline_execution_functions.py`](ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py); asset factories in [`ddd_dagster/`](ddd_python/ddd_dagster/). |
 | Can I see it run without credentials? | CI runs a real `dbt build` (105 models, 2 seeds, 314 data tests) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
-| How is it verified? | About 430 pytest tests with an 80% coverage floor (71 of them real dbt runs of every documented Silver case), ruff and mypy, `dbt parse` on all three storage targets, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
+| How is it verified? | About 475 pytest tests with an 80% coverage floor (96 of them real dbt runs of every documented Silver case), ruff and mypy, `dbt parse` on all three storage targets, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
 | Why these trade-offs? | [design_decisions.md](documentation/design_decisions.md) lists the alternatives and what was given up. |
 
 ## Quick start (Docker)
@@ -232,7 +232,7 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 | `dbt/` | dbt project: models, macros, seeds, tests |
 | `tests/` | pytest suite and the CI data sample |
 | `docker/`, `docker-compose*.yml` | Images and services (`duckdb_server`, `dagster`, `metabase`, one-off `run` and `backup`; RustFS as an override) |
-| `scripts/` | Operator scripts: deploy, backup cron, host setup, CI sample, public-repo sync, DuckDB upgrade |
+| `scripts/` | Operator scripts: deploy, backup cron, host setup, CI sample, public-repo sync, upgrade check, DuckDB 2.0 upgrade, DuckDB shell |
 | `documentation/` | The guides above |
 
 ## License and contact

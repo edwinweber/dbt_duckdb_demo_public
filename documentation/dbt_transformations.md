@@ -38,6 +38,7 @@ behind the design see [design_decisions.md](design_decisions.md).
 | `LKHS_date_valid_from` | SCD Type 2 validity start = timestamp in the file name |
 | `LKHS_cdc_operation` | `I` insert, `U` update, `D` delete |
 | `LKHS_date_inserted` | dbt run start (`run_started_at`) that wrote the row |
+| `LKHS_primary_key_1_column` | only for a primary key of several columns: the key columns as one text, computed in the Bronze view (on a normal run again from the key columns cast to Silver's types) and stored in Silver; Silver's key (§3.1) |
 
 - **Storage.** In `SILVER_STORAGE_FORMAT=ducklake` mode the Silver tables are
   created in the attached `ducklake_catalog` database instead of the main
@@ -59,7 +60,9 @@ The macro reads the dbt source (defined in `models/bronze/__sources*.yml` as
 `read_json_auto('<DATA_SOURCE>/<entity>/<entity>_*.json*', filename=True, union_by_name=true, timestampformat='iso')`)
 and returns every column except dlt's `_dlt_*` columns, plus `LKHS_filename`
 and `LKHS_source_system_code`. `DISTINCT` removes exact duplicate rows within a
-file.
+file. For a primary key of several columns the generator adds the key columns as
+an argument (`generate_model_bronze(this.name,'DDD','danish_parliament',primary_key_columns=['afstemningid', 'aktoerid'])`),
+and the view also computes `LKHS_primary_key_1_column` (§3.1).
 
 Because Bronze models are **views**, a new extraction file is visible to Silver
 immediately; re-running Bronze only redeploys the view definitions. A view opens
@@ -239,6 +242,94 @@ A NULL and an empty string hash differently. A NULL and the literal text
 `<NULL>` hash the same, and so do two adjacent values that differ only in where
 `]##[` falls (`'x]##['`, `'y'` and `'x'`, `']##[y'`).
 
+**The key.** Silver keys on one column. A table's primary key in
+`configuration_variables.py` is a column name (`"id"`), or a list of column names
+for a key of several columns. For a list of two or more columns the Bronze view
+adds the character column `LKHS_primary_key_1_column`
+(`generate_primary_key_column`), built like the hash input: each key column as
+`COALESCE(col::VARCHAR, '<NULL>')` followed by `]##[`. For a key
+`["afstemningid", "aktoerid"]` that is:
+
+```sql
+CONCAT(COALESCE(afstemningid::VARCHAR, '<NULL>'), ']##[',
+       COALESCE(aktoerid::VARCHAR, '<NULL>'), ']##[') AS LKHS_primary_key_1_column
+-- 10605, 18713 -> '10605]##[18713]##['     10605, NULL -> '10605]##[<NULL>]##['
+```
+
+The generator writes the key columns into both model files; a key of one column
+gets neither argument:
+
+```sql
+-- bronze_ddd_stemme.sql
+{{ generate_model_bronze(this.name,'DDD','danish_parliament',primary_key_columns=['afstemningid', 'aktoerid']) }}
+-- silver_ddd_stemme.sql (the macro call)
+{{ generate_model_silver_incr_extraction(file_name='stemme',bronze_table_name=bronze_table_name,
+   primary_key_columns='LKHS_primary_key_1_column',base_for_hash=base_for_hash,
+   key_source_columns=['afstemningid', 'aktoerid']) }}
+```
+
+**The key's text depends on the column types.** `::VARCHAR` turns every key column
+into text, but the text of a number depends on its type: a DOUBLE `18713.0` gives
+`'18713.0'`, a BIGINT `18713` gives `'18713'`. `read_json_auto` infers the types from
+the files in the folder, so after archiving a key column can be read with another
+type than Silver has (see *Column types* below). On a normal run Silver therefore
+does not take the key from the Bronze view: `silver_bronze_columns` builds it again
+from the key columns cast to Silver's types (`key_source_columns`), so an unchanged
+key keeps its text. A first build takes the Bronze view's key as it is.
+
+Silver stores the column like any other Bronze column, and every key comparison of
+the CDC uses it: the `unique_key`, the partitions of `LAG` and `ROW_NUMBER`, the join
+with Silver's state, the deletes, the `_cv` view and the Delta export's anti-join.
+The hash leaves out the key columns and `LKHS_primary_key_1_column`. A change in a
+key column is therefore a new key: it gets an `I`, and the old key keeps its history
+until a full extraction deletes it. A key of one column, written as a string or as a
+list of one, is used as it is and adds no column, so its Bronze and Silver models do
+not change. The data tests in `models/silver/__models*.yml` are written by hand:
+for a key of several columns, test `LKHS_primary_key_1_column` there instead of the
+old key column. No source has a key of several columns yet; `tests/test_dbt_silver.py`
+gives `stemme` and `periode` one on copies of the CI sample.
+
+*Example from those tests:* `stemme` keyed on `afstemningid` + `aktoerid`. Day 1 has
+two votes of `afstemningid` 10605, one with `aktoerid` 206 and one with a NULL
+`aktoerid`; on day 2 an incremental file has the first of them with `aktoerid` -1
+(and its own `id`); day 3 is a `_full` file without both original keys.
+
+| `LKHS_filename` | `afstemningid` | `aktoerid` | `id` | `LKHS_primary_key_1_column` | `LKHS_cdc_operation` | Why |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stemme_20260101_000000.json` | 10605 | 206 | 2368245 | `10605]##[206]##[` | `I` | new key |
+| `stemme_20260103_000000_full.json` | 10605 | 206 | 2368245 | `10605]##[206]##[` | `D` | missing from the full file |
+| `stemme_20260102_000000.json` | 10605 | -1 | -1 | `10605]##[-1]##[` | `I` | a changed key column is a new key |
+| `stemme_20260101_000000.json` | 10605 | NULL | 2368244 | `10605]##[<NULL>]##[` | `I` | NULL in a key column is the NULL token |
+| `stemme_20260103_000000_full.json` | 10605 | NULL | 2368244 | `10605]##[<NULL>]##[` | `D` | missing from the full file |
+
+`id` is an ordinary business column here, because it is not in the key: it is
+part of the hash, and `afstemningid`, `aktoerid` and `LKHS_primary_key_1_column`
+are not.
+
+The key column is written as a real column and not as an expression such as
+`CONCAT(a, b)` because the macros prefix the key with a table alias
+(`state.<key>`), and DuckDB reads `state.CONCAT(a, b)` as the method call
+`CONCAT(state, a, b)`: the SQL compiles and the CDC silently compares the wrong values.
+
+Changing an existing Silver table to a key of several columns needs one manual
+step. The table has no `LKHS_primary_key_1_column` yet, so the first run with the
+new key stops with `Binder Error: Referenced column LKHS_primary_key_1_column not
+found` and writes nothing. Add and fill the column with the same expression, then
+run again:
+
+```sql
+ALTER TABLE main_silver.silver_ddd_stemme ADD COLUMN LKHS_primary_key_1_column VARCHAR;
+UPDATE main_silver.silver_ddd_stemme
+SET    LKHS_primary_key_1_column = CONCAT(COALESCE(afstemningid::VARCHAR, '<NULL>'), ']##[',
+                                          COALESCE(aktoerid::VARCHAR, '<NULL>'), ']##[');
+```
+
+The stored `LKHS_hash_value` of the old rows was computed without the old key
+column. That does not cause false updates, because Silver's latest version is
+hashed again on every run (below), but the stored hashes of rows before and after
+the change are not comparable. Check first that the new key is unique in Silver's
+latest versions; otherwise the history needs a replay (§3.7).
+
 **Silver's state.** `CTE_SILVER_LATEST` is the latest version of every key in the
 Silver table. Its hash is computed again with the same expression, over the
 Bronze view's current columns (`silver_state_columns`): a column that Silver does
@@ -250,7 +341,8 @@ are in the folder at the time. Archiving can therefore change a type: a DOUBLE
 column whose decimal values were all in archived files is read as BIGINT, and
 `3` would no longer hash like Silver's `3.0`. On a normal run `CTE_BRONZE`
 therefore casts every column that Silver already has to Silver's type
-(`silver_bronze_columns`) before hashing, and dbt logs a warning that names the
+(`silver_bronze_columns`) before hashing, and builds a key of several columns again
+from the cast key columns (*The key* above). dbt logs a warning that names the
 columns whose types differ. A value that does not fit Silver's type (text in a
 BIGINT column) stops the run: that is a real type change, handled by hand
 (§3.9). With `timestampformat='iso'` the DDD dates are text in Bronze and Silver,
@@ -438,10 +530,13 @@ Archiving is a separate step that runs on demand, not in the daily schedule:
   bookmark points at a file that exists. Unprocessed files are never touched.
 - The command line defaults to a dry run that prints the plan; `--execute` moves
   the files. The Dagster job moves them unless `dry_run` is set in its config.
-- Each file is copied to `BRONZE_ARCHIVE_DIR/<source>/<entity>/` (optionally
-  gzip-compressed), checked against its SHA-256 and listed in `MANIFEST.ndjson`
-  before it is removed from Bronze. `--restore` copies archived files back,
-  checked against the manifest.
+- Each file is copied to `BRONZE_ARCHIVE_DIR/<source>/<entity>/`, checked against
+  its SHA-256 and listed in `MANIFEST.ndjson` before it is removed from Bronze. The
+  command line compresses with `--compress`; the Dagster job compresses unless
+  `compress: false` is set. `--restore` copies archived files back, checked against
+  the manifest.
+- Only local Bronze folders are archived. With `RAW_STORAGE_TARGET=s3` the command
+  line stops with an error and the Dagster job does nothing.
 - Silver now holds the only complete history outside the archive. Back up Silver
   (the platform backup does) and keep the archive off the server.
 
@@ -545,8 +640,9 @@ the building blocks of §3.1, for both macros:
 | --- | --- |
 | Hash: columns, order, NULL token, delimiter | `test_hash_is_sha256_of_the_business_columns_in_bronze_order`, `test_hash_null_token_and_delimiter` |
 | File names, bookmark, file log, duplicate rows, `LKHS_` columns | `test_file_name_variants_and_bookmark`, `test_identical_rows_in_one_file_are_one_version`, `test_source_system_code_and_date_inserted` |
-| Full-extract lifecycle (`sagskategori`): new, unchanged, changed, missing, missing twice in a row, back unchanged and changed, two delete cycles; one run per file, four files in one normal run, a first build with all files, an ignored full refresh; DuckDB and DuckLake | `test_full_extract_*` |
-| Incremental lifecycle (`stemme`, Rfam `family`): the same with deletes from `_full` files, each processed on its own, a repeated run and an ignored full refresh; DuckDB and DuckLake | `test_incremental_*` |
+| A key of several columns: `LKHS_primary_key_1_column` in Bronze and Silver, its format and NULL token, left out of the hash with its source columns, a changed key column is a new key; DuckDB and DuckLake; an existing table changed to such a key, with and without the migration; a key column Bronze infers with another type keeps its key | `test_key_of_several_columns`, `test_changing_to_a_key_of_several_columns`, `test_a_key_column_bronze_infers_differently_keeps_its_key` |
+| Full-extract lifecycle (`sagskategori`, and `periode` keyed on `id` + `kode`): new, unchanged, changed, missing, missing twice in a row, back unchanged and changed, two delete cycles; one run per file, four files in one normal run, a first build with all files, an ignored full refresh; DuckDB and DuckLake | `test_full_extract_*` |
+| Incremental lifecycle (`stemme`, Rfam `family`, and `stemme` keyed on `afstemningid` + `aktoerid`): the same with deletes from `_full` files, each processed on its own, a repeated run and an ignored full refresh; DuckDB and DuckLake | `test_incremental_*` |
 | Incremental deletes: a first build writes none, a plain file never deletes, the file name and content of a delete, a key back before the next `_full` file, several plain files in one run with returning keys, a `_full` file new together with another file stops the run, a `_full` file marked by mistake | `test_a_first_build_writes_no_deletes`, `test_a_plain_file_never_deletes_even_when_it_is_complete`, `test_new_delete_has_the_full_file_and_the_deleted_content`, `test_a_key_that_is_back_before_the_next_full_file_is_not_deleted`, `test_several_plain_files_in_one_run`, `test_a_full_file_with_other_files_to_process_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
 | Delete guard (§3.1): a truncated snapshot on its own and after a good file in the same run, the guard turned off | `test_a_truncated_snapshot_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
 | Late files (§3.7): the run stops, then skips them with `silver_skip_late_files` | `test_a_late_file_stops_the_run_until_it_is_skipped` |
@@ -610,14 +706,16 @@ All macros live in [`dbt/macros/`](../dbt/macros/).
 
 | Macro | Used by | What it does |
 | --- | --- | --- |
-| `generate_model_bronze(table_name, source_system_code, source_name)` | every Bronze model | `SELECT DISTINCT` all columns except `filename`/`_dlt_*`, plus `LKHS_filename` and `LKHS_source_system_code` |
-| `generate_base_for_hash(table_name, columns_to_exclude, primary_key_columns)` | Silver models | builds the `CONCAT(COALESCE(col::VARCHAR,'<NULL>'),']##[', …)` expression from the Bronze view's current columns (`DESCRIBE`) |
-| `generate_model_silver_full_extraction(file_name, bronze_table_name, primary_key_columns, base_for_hash, data_source_env_var)` | full-extract Silver models | compares the new snapshots with Silver's state and with each other: I/U/D (§3.2); `full_refresh=false` |
+| `generate_model_bronze(table_name, source_system_code, source_name, primary_key_columns=none)` | every Bronze model | `SELECT DISTINCT` all columns except `filename`/`_dlt_*`, plus `LKHS_filename` and `LKHS_source_system_code`; for a key of several columns also `LKHS_primary_key_1_column` |
+| `concat_with_null_token(columns)` | the two macros below | `CONCAT(COALESCE(col::VARCHAR,'<NULL>'),']##[', …)` over a list of columns (variables `hash_null_replacement`, `hash_delimiter`) |
+| `generate_primary_key_column(primary_key_columns)` | `generate_model_bronze` | `, <concatenation> AS LKHS_primary_key_1_column` for a list of two or more columns, nothing otherwise (§3.1) |
+| `generate_base_for_hash(table_name, columns_to_exclude, primary_key_columns)` | Silver models | the concatenation of the Bronze view's current columns (`DESCRIBE`) without the excluded and key columns |
+| `generate_model_silver_full_extraction(file_name, bronze_table_name, primary_key_columns, base_for_hash, data_source_env_var, key_source_columns)` | full-extract Silver models | compares the new snapshots with Silver's state and with each other: I/U/D (§3.2); `full_refresh=false` |
 | `generate_model_silver_incr_extraction(…same…)` | incremental Silver models | compares a key's first new version with its latest Silver version and later ones with the version before them: I/U; deletes from a `_full` file that is the only new file, and stops the run when it is not (§3.3–3.4); `full_refresh=false` |
 | `silver_files(file_name, data_source_env_var)` | both Silver macros | at compile time: reads the bookmark, stops on late files, lists the newer Bronze files, notes the newest as pending and logs the files (§3.1) |
 | `silver_bookmark_post_hook()`, `silver_files_post_hook()` | both Silver macros (post-hooks) | after a successful run: move the pending file to the bookmark, mark the pending files processed |
 | `silver_bronze_column_types(bronze_table_name)`, `silver_column_types()` | the two macros below | the Bronze view's columns and types as the files are now (`DESCRIBE`), and the Silver table's types by column name |
-| `silver_bronze_columns(bronze_table_name)` | both Silver macros | select list over the Bronze view that casts the columns Silver already has to Silver's type (normal runs) |
+| `silver_bronze_columns(bronze_table_name, key_source_columns=none)` | both Silver macros | select list over the Bronze view that casts the columns Silver already has to Silver's type, and for a key of several columns builds `LKHS_primary_key_1_column` again from the cast key columns (normal runs) |
 | `silver_state_columns(bronze_table_name)` | both Silver macros | select list over the Silver table with the Bronze view's columns (missing ones as NULL), to hash Silver's latest version |
 | `silver_delete_guard()` | both Silver macros | the condition that stops a normal run when a file deletes too many keys (§3.1) |
 | `parse_filename_ts(col)` | Silver macros | `strptime(regexp_extract(col, '([0-9]{8}_[0-9]{6})', 1), '%Y%m%d_%H%M%S')` |
@@ -625,6 +723,10 @@ All macros live in [`dbt/macros/`](../dbt/macros/).
 
 Notes:
 
+- For a key of several columns the Silver models pass
+  `primary_key_columns='LKHS_primary_key_1_column'` (the column the CDC keys on) and
+  `key_source_columns` (the columns it is built from); with a key of one column
+  `primary_key_columns` is that column and `key_source_columns` is not passed.
 - `data_source_env_var` defaults to `DANISH_DEMOCRACY_DATA_SOURCE`; Rfam models
   pass `RFAM_DATA_SOURCE`.
 - The file glob is `<entity>_*.json*`, which matches `.json` and the
@@ -765,7 +867,7 @@ WHERE  LKHS_status = 'pending';
 `CTE_FILES`, `CTE_BRONZE`, `CTE_SILVER_LATEST` and the post-hook are as above.
 The delete branch is only generated when the only new file is a `_full` file (here
 `aktoer_20261101_020000_full.json`); a `_full` file among other new files stops
-the run before any SQL runs.
+the run at compile time, before the model's query runs.
 
 ```sql
 ,CTE_NEW AS (                           -- each key's versions in the new files
