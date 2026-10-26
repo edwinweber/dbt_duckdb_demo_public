@@ -74,9 +74,21 @@ WITH CTE_FILES AS (
                 AND        prev.{{ primary_key_columns }} = cur.{{ primary_key_columns }}
                 WHERE      LKHS_cdc_operation IN ('I','U')
                 )
--- Deletes between two new files: the key is in a new file but not in the next one
+-- The versions a delete between two new files can close: the I and U rows of this run and the
+-- latest Silver version of every live key, as stored
+,CTE_VERSIONS AS (
+                 SELECT * EXCLUDE (LKHS_filename,LKHS_date_inserted,LKHS_cdc_operation) FROM CTE_CHANGES
+{%- if is_incremental() %}
+                 UNION ALL BY NAME
+                 SELECT * EXCLUDE (LKHS_filename,LKHS_date_inserted,LKHS_cdc_operation) FROM CTE_SILVER_LATEST
+                 WHERE  LKHS_cdc_operation != 'D'
+{%- endif %}
+                 )
+-- Deletes between two new files: the key is in a new file but not in the next one, with the
+-- content of the version it closes.  Not the key's Bronze row: that is hashed with the current
+-- columns, which after a new or dropped source column differ from the stored version's.
 ,CTE_DELETES AS (
-                SELECT cur.* EXCLUDE (LKHS_filename)
+                SELECT ver.* EXCLUDE (LKHS_date_valid_from)
                 ,      chain.LKHS_filename_next AS LKHS_filename
                 ,      chain.LKHS_date_valid_from_next AS LKHS_date_valid_from
                 ,      {{ run_started }} AS LKHS_date_inserted
@@ -84,6 +96,9 @@ WITH CTE_FILES AS (
                 FROM       CTE_BRONZE cur
                 INNER JOIN CTE_CHAIN chain
                 ON         chain.LKHS_filename = cur.LKHS_filename
+                ASOF JOIN  CTE_VERSIONS ver
+                ON         ver.{{ primary_key_columns }} = cur.{{ primary_key_columns }}
+                AND        ver.LKHS_date_valid_from <= chain.LKHS_date_valid_from
                 WHERE      chain.LKHS_filename_next IS NOT NULL
                 AND        NOT EXISTS (SELECT 1 FROM CTE_BRONZE nxt
                                        WHERE  nxt.LKHS_filename = chain.LKHS_filename_next

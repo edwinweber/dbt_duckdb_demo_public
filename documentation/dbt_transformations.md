@@ -354,7 +354,7 @@ so they do not drift.
 | --- | --- | --- | --- |
 | `LKHS_filename` | file of the version | the new file without the key | the next file, without the key |
 | `LKHS_date_valid_from` | timestamp of that file | timestamp of that file | timestamp of that file |
-| business columns, `LKHS_hash_value` | that version | the latest Silver version's, as stored | the version in the previous new file |
+| business columns, `LKHS_hash_value` | that version | the latest Silver version's, as stored | the version it closes: an `I` or `U` of this run, or the latest Silver version, as stored |
 | `LKHS_date_inserted` | start of the dbt run that wrote it | same | same |
 
 **Idempotency guard.** `NOT EXISTS (pk, LKHS_date_valid_from)` against the
@@ -588,6 +588,11 @@ with the current columns (§3.1), so:
   column only into files where a row has a value (`folketingstidendeurl` of
   `sagstrin` after the first production archive). It comes back with the first
   file that has a value again.
+- **A `D` after a new or dropped field** copies the version it closes, never the
+  key's Bronze row. The Bronze row is hashed with the current columns, the stored
+  version with the columns of its own time, so the two hashes differ although the
+  key is unchanged. Copying the stored version keeps a `D` between two new files
+  of one run equal to the `D` of one run per file (§3.5).
 - **A type that Bronze infers differently** (for example after archiving): Bronze
   is cast to Silver's type, so no key looks changed (§3.1).
 - Renamed columns and real type changes need a deliberate change of the Silver
@@ -649,7 +654,7 @@ the building blocks of §3.1, for both macros:
 | A Silver table from an older version: old `_last_file` columns converted, the log seeded | `test_a_silver_table_from_an_older_version_is_migrated` |
 | Column types (§3.1): a type Bronze infers differently after archiving, a value that does not fit | `test_a_type_bronze_infers_differently_after_archiving_gives_no_false_updates`, `test_a_value_that_does_not_fit_silvers_type_stops_the_run` |
 | Archiving (§3.6): processed files removed, later files compared with Silver, deleted keys back with old or changed content, an ignored full refresh; DuckDB and DuckLake | `test_processed_files_can_be_archived` |
-| Source column changes (§3.9), also in a `D` row read from Silver | `test_new_source_column_then_full_refresh`, `test_dropped_source_field`, `test_a_delete_lines_up_with_a_new_source_column` |
+| Source column changes (§3.9), also in a `D` row read from Silver | `test_new_source_column_then_full_refresh`, `test_dropped_source_field`, `test_a_delete_lines_up_with_a_new_source_column`, `test_a_delete_between_new_files_copies_the_version_it_closes` |
 | A key twice in one file | `test_same_key_twice_in_one_file` |
 
 Besides the expected histories, the tests assert these invariants of a Silver

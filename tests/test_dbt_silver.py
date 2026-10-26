@@ -1105,6 +1105,42 @@ def test_a_delete_lines_up_with_a_new_source_column(project):
     assert not _violations(p)
 
 
+@pytest.mark.parametrize("change", ["added", "dropped"])
+def test_a_delete_between_new_files_copies_the_version_it_closes(project, change):
+    """A key unchanged in one new file and missing from the next one of the same run: its D
+    copies the stored version, not the Bronze row, which is hashed with the current columns.
+    After a new field (added) or a field that left the Bronze view (dropped and archived) the
+    two hashes differ; one run and one run per file must give the same table."""
+
+    def lifecycle(run_per_file: bool) -> list[tuple]:
+        p = project("sagskategori")
+        rows = p.base_rows()
+        k, m = rows[0], rows[1]
+        marked = [{**r, "_test_marker": "x"} if r["id"] == m["id"] else r for r in rows]
+        if change == "added":
+            p.build()
+            p.write(2, marked)  # new column, k unchanged (NULL in it)
+            new_files = {2: marked, 3: [r for r in marked if r["id"] != k["id"]]}
+        else:
+            p.write(1, marked)
+            p.build()
+            p.write(2, rows)  # the source stops sending the column: U2 for m
+            p.run()
+            p.remove(1)  # archived: the column leaves the Bronze view
+            new_files = {3: rows, 4: [r for r in rows if r["id"] != k["id"]]}
+        for day, file_rows in new_files.items():
+            p.write(day, file_rows)
+            if run_per_file:
+                p.run()
+        if not run_per_file:
+            p.run()
+        assert p.histories({k["id"]: "k"})["k"] == f"I1 D{max(new_files)}"
+        assert not _violations(p)
+        return p.snapshot()
+
+    assert lifecycle(run_per_file=False) == lifecycle(run_per_file=True)
+
+
 # ═════════════════════════════════════════════════════════════════════════════════
 # Changes to the source columns (§3.9)
 # ═════════════════════════════════════════════════════════════════════════════════
