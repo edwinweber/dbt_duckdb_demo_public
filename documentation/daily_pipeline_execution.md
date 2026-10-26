@@ -113,6 +113,9 @@ Dagster runs `dbt build` (models **and** their tests) through
   ([dbt_transformations.md](dbt_transformations.md#34-deletes-of-incremental-entities-_full-files)); run a full extraction with `--date_to_load_from 1900-01-01` to find them.
 - **Gold (views).** Handcrafted star schema (`actor`, `case`, `meeting`, `vote`,
   `individual_votes`, the `date`/`time` dimensions, …) plus generated `_cv` views.
+  The step runs `dbt build --select gold --exclude data_engineering`: the
+  `data_engineering` tests that reference `date` and `time` run in Step 4, after
+  their own models are built.
 
 With `SILVER_STORAGE_FORMAT=ducklake` the Silver tables are written to the
 attached `ducklake_catalog` instead of the main file; everything else is the same.

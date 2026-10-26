@@ -388,9 +388,15 @@ def dbt_gold_assets(
 
     This asset set must run **after** ``dbt_silver_assets`` — the job
     sequencing in ``jobs.py`` enforces this order.
+
+    ``--exclude data_engineering``: dbt selects every test that references a
+    selected model, so the data_engineering relationship tests to ``date`` and
+    ``time`` would run here, before ``dbt_data_engineering_assets`` has built
+    (or refreshed) the models they test.  They run in that step instead.
     """
     dbt.cli(["run", "--select", "bronze_dates", "--log-path", _DBT_LOG_PATH]).wait()
-    yield from dbt.cli(["build", "--log-path", _DBT_LOG_PATH], context=context).stream()
+    args = ["build", "--exclude", "data_engineering", "--log-path", _DBT_LOG_PATH]
+    yield from dbt.cli(args, context=context).stream()
 
 
 # ---------------------------------------------------------------------------
