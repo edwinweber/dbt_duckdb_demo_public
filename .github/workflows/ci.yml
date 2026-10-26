@@ -235,8 +235,9 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      # dagster: the dbt tests also check the Dagster side (row counts, data_engineering)
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dagster,dev]"
 
       - name: dbt deps
         run: dbt deps --project-dir dbt --profiles-dir dbt
