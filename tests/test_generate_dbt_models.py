@@ -13,6 +13,7 @@ import pytest
 from ddd_python.ddd_dbt.generate_dbt_models import (
     _INCREMENTAL_SILVER_MODELS_DDD,
     _INCREMENTAL_SILVER_MODELS_RFAM,
+    generate_dbt_model_silver_load_history,
     generate_dbt_models_bronze,
     generate_dbt_models_gold_cv,
     generate_dbt_models_silver,
@@ -358,3 +359,22 @@ def test_committed_models_match_the_configured_keys():
         assert ("primary_key_columns=" in bronze) == is_composite(pk), name
         assert (PRIMARY_KEY_COLUMN in silver) == is_composite(pk), name
         assert f"primary_key_columns='{stored_key_column(pk)}'" in silver, name
+
+
+def test_silver_load_history_lists_every_silver_table(dbt_models_tmpdir: Path):
+    generate_dbt_model_silver_load_history(
+        [("silver_ddd_aktoer", "DDD"), ("silver_rfam_family", "RFAM")]
+    )
+    content = (dbt_models_tmpdir / "data_engineering" / "silver_load_history.sql").read_text()
+    assert "    ('silver_ddd_aktoer', 'DDD'),\n    ('silver_rfam_family', 'RFAM'),\n" in content
+    assert "{{ silver_load_history(silver_tables) }}" in content
+
+
+def test_committed_silver_load_history_covers_the_configured_tables():
+    """The committed view lists every configured Silver table with its source system."""
+    view = Path(__file__).resolve().parents[1] / "dbt" / "models" / "data_engineering"
+    content = (view / "silver_load_history.sql").read_text()
+    tables = [(n, "DDD") for n in cv.DANISH_DEMOCRACY_MODELS_SILVER]
+    tables += [(n, "RFAM") for n in cv.RFAM_MODELS_SILVER]
+    listed = [line.strip() for line in content.splitlines() if line.strip().startswith("('silver_")]
+    assert listed == [f"('{n}', '{code}')," for n, code in sorted(tables)]

@@ -27,9 +27,15 @@ models:
     description: >
       One row per ASSET_MATERIALIZATION event, read from the Dagster consolidated
       SQLite event index at $DAGSTER_HOME/history/runs/index.db. Metadata fields
-      (records_written, duration_seconds, etc.) are extracted and flattened from
-      the nested JSON event payload via a generate_series lateral join.
+      (records_written, duration_seconds, the silver_* row counts, etc.) are extracted by
+      label and flattened from the nested JSON event payload via a generate_series
+      lateral join.
     columns:
+      - name: event_id
+        description: Dagster event_logs PK (id column) — joins dagster_asset_materialization.materialization_id.
+        data_tests:
+          - not_null
+          - unique
       - name: run_id
         description: Dagster run UUID — foreign key to dagster_pipeline_runs.
         data_tests:
@@ -52,6 +58,21 @@ models:
         description: Last path segment — the specific asset name.
       - name: asset_key_full
         description: Full asset key path joined with '/'.
+      - name: rows_processed
+        description: >
+          Rows the step reports: records_written (extraction), rows_written (export) or
+          silver_rows_written (Silver tables). NULL for assets that report none (Bronze,
+          Gold, the _cv views).
+      - name: silver_rows_inserted
+        description: "Silver tables only (NULL otherwise): I rows written to the Silver table (metadata silver_rows_inserted)."
+      - name: silver_rows_updated
+        description: "Silver tables only (NULL otherwise): U rows written to the Silver table."
+      - name: silver_rows_deleted
+        description: "Silver tables only (NULL otherwise): D rows written to the Silver table."
+      - name: silver_rows_written
+        description: "Silver tables only (NULL otherwise): All rows written to the Silver table (I + U + D)."
+      - name: silver_files_processed
+        description: "Silver tables only (NULL otherwise): Bronze files the Silver run processed."
 
   # ---------------------------------------------------------------------------
   # Staging — Dagster pipeline runs (VIEW)
@@ -143,9 +164,19 @@ models:
       - name: duration_seconds
         description: Wall-clock duration from start to end in seconds.
       - name: rows_processed
-        description: Total rows across all ASSET_MATERIALIZATION events in the run.
+        description: Sum of rows_processed over the run's ASSET_MATERIALIZATION events (see dagster_event_logs).
       - name: assets_materialized
         description: Count of ASSET_MATERIALIZATION events within the run.
+      - name: silver_rows_inserted
+        description: "Summed over the run's Silver tables (NULL for a run without them): I rows written to the Silver table (metadata silver_rows_inserted)."
+      - name: silver_rows_updated
+        description: "Summed over the run's Silver tables (NULL for a run without them): U rows written to the Silver table."
+      - name: silver_rows_deleted
+        description: "Summed over the run's Silver tables (NULL for a run without them): D rows written to the Silver table."
+      - name: silver_rows_written
+        description: "Summed over the run's Silver tables (NULL for a run without them): All rows written to the Silver table (I + U + D)."
+      - name: silver_files_processed
+        description: "Summed over the run's Silver tables (NULL for a run without them): Bronze files the Silver run processed."
 
   # ---------------------------------------------------------------------------
   # Dimension — Asset (v2, Dagster storage/ layout)
@@ -262,9 +293,75 @@ models:
       - name: duration_seconds
         description: Wall-clock step duration in seconds.
       - name: rows_processed
-        description: Row count from dagster/row_count metadata, if emitted.
+        description: Rows the step reports, from dagster_event_logs (records_written, rows_written or silver_rows_written).
+      - name: silver_rows_inserted
+        description: "Silver tables only (NULL otherwise): I rows written to the Silver table (metadata silver_rows_inserted)."
+      - name: silver_rows_updated
+        description: "Silver tables only (NULL otherwise): U rows written to the Silver table."
+      - name: silver_rows_deleted
+        description: "Silver tables only (NULL otherwise): D rows written to the Silver table."
+      - name: silver_rows_written
+        description: "Silver tables only (NULL otherwise): All rows written to the Silver table (I + U + D)."
+      - name: silver_files_processed
+        description: "Silver tables only (NULL otherwise): Bronze files the Silver run processed."
       - name: step_outcome
         description: Step terminal event — STEP_SUCCESS | STEP_FAILURE | STEP_SKIPPED.
+
+  # ---------------------------------------------------------------------------
+  # Fact — Silver load history (generated VIEW, reads Silver itself)
+  # ---------------------------------------------------------------------------
+  - name: silver_load_history
+    description: >
+      One row per Silver table and dbt run that wrote rows to it or processed Bronze files
+      for it, counted from Silver itself (LKHS_date_inserted and LKHS_cdc_operation) and the
+      table's _files log, so the history goes back to the first load and covers runs
+      outside Dagster. Generated by generate_dbt_models (macro silver_load_history).
+      A run that the delete guard stopped wrote nothing and is not here; see dagster_step_failure.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - silver_table
+              - loaded_at
+    columns:
+      - name: silver_table
+        description: Silver model name, e.g. silver_ddd_aktoer.
+        data_tests:
+          - not_null
+      - name: source_system_code
+        description: DDD or RFAM.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['DDD', 'RFAM']
+      - name: loaded_at
+        description: Start of the dbt run (LKHS_date_inserted of its rows, LKHS_date_inserted of its processed files).
+        data_tests:
+          - not_null
+      - name: load_date_sk
+        description: FK to gold.date (date_day) of loaded_at.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('date')
+                field: date_day
+      - name: load_time_sk
+        description: FK to gold.time (time_key = 100*hour + minute) of loaded_at.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('time')
+                field: time_key
+      - name: rows_inserted
+        description: I rows the run wrote to the table.
+      - name: rows_updated
+        description: U rows the run wrote to the table.
+      - name: rows_deleted
+        description: D rows the run wrote to the table.
+      - name: rows_written
+        description: All rows the run wrote (I + U + D); 0 for a run that read files without a change.
+      - name: files_processed
+        description: Bronze files the run marked processed in the table's _files log; 0 for runs before the log existed.
 
   # ---------------------------------------------------------------------------
   # Staging — Step failure raw events (SQL model, TABLE)

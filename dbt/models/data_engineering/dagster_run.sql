@@ -8,11 +8,17 @@ WITH runs AS (
 ),
 
 run_stats AS (
-    -- rows_processed: ingestion assets report records_written, export assets rows_written.
+    -- rows_processed: per asset records_written (extraction), rows_written (export) or
+    -- silver_rows_written (Silver tables), see dagster_event_logs.
     SELECT
         run_id
-    ,   SUM(COALESCE(records_written, rows_written, 0))  AS rows_processed
+    ,   SUM(COALESCE(rows_processed, 0))                  AS rows_processed
     ,   COUNT(*)                                          AS assets_materialized
+    ,   SUM(silver_rows_inserted)                         AS silver_rows_inserted
+    ,   SUM(silver_rows_updated)                          AS silver_rows_updated
+    ,   SUM(silver_rows_deleted)                          AS silver_rows_deleted
+    ,   SUM(silver_rows_written)                          AS silver_rows_written
+    ,   SUM(silver_files_processed)                       AS silver_files_processed
     FROM {{ ref('dagster_event_logs') }}
     GROUP BY run_id
 )
@@ -50,6 +56,12 @@ SELECT
 ,   r.run_duration_seconds                                                        AS duration_seconds
 ,   COALESCE(rs.rows_processed,      0)                                           AS rows_processed
 ,   COALESCE(rs.assets_materialized, 0)                                           AS assets_materialized
+    -- Silver measures: NULL for a run without Silver tables
+,   rs.silver_rows_inserted
+,   rs.silver_rows_updated
+,   rs.silver_rows_deleted
+,   rs.silver_rows_written
+,   rs.silver_files_processed
 
 FROM      runs      r
 LEFT JOIN run_stats rs ON r.run_id = rs.run_id

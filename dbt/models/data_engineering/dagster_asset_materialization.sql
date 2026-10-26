@@ -12,6 +12,9 @@
 -- asset materializations are always successful by definition (no ASSET_MATERIALIZATION
 -- event is written for a failed step).
 --
+-- rows_processed and the silver_* measures come from dagster_event_logs, which reads
+-- the metadata entries by label (joined on the event id).
+--
 -- Date FK joins gold.date (date_day = DATE).
 -- Time FK joins gold.time (time_key = integer 100*hour + minute).
 
@@ -91,14 +94,12 @@ SELECT
             CAST(EXTRACT('epoch' FROM e.timestamp - sp.step_planned_ts) AS DOUBLE), 1
         )
     END                                                                           AS duration_seconds
-,   COALESCE(
-        TRY_CAST(
-            json_extract_string(e.event, '$.dagster_event.event_specific_data.materialization.metadata."dagster/row_count".value')
-        AS BIGINT),
-        TRY_CAST(
-            json_extract_string(e.event, '$.dagster_event.event_specific_data.materialization.metadata_entries[0].entry_data.value')
-        AS BIGINT)
-    )                                                                             AS rows_processed
+,   el.rows_processed
+,   el.silver_rows_inserted
+,   el.silver_rows_updated
+,   el.silver_rows_deleted
+,   el.silver_rows_written
+,   el.silver_files_processed
 
     -- Run outcome (the asset itself was always materialized successfully;
     -- run_status reflects whether the overall run completed without failures)
@@ -111,3 +112,4 @@ LEFT JOIN  step_planned      sp ON e.run_id   = sp.run_id
                                AND e.asset_key = sp.asset_key
 LEFT JOIN  {{ ref('dagster_pipeline_runs') }} pr ON e.run_id = pr.run_id
 LEFT JOIN  run_failures      rf ON e.run_id   = rf.run_id
+LEFT JOIN  {{ ref('dagster_event_logs') }} el ON e.id = el.event_id

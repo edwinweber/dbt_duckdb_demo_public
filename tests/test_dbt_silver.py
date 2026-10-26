@@ -495,6 +495,74 @@ def test_source_system_code_and_date_inserted(project):
     assert p.sql("SELECT DISTINCT LKHS_source_system_code FROM {t}") == [("DDD",)]
 
 
+def _logged_row_counts(p: SilverProject, *args: str) -> dict[str, int]:
+    """Run dbt and return the counts the Silver post-hook logged for the model."""
+    result = p.dbt(*args)
+    assert result.returncode == 0, result.stdout[-3000:]
+    lines = [line for line in result.stdout.splitlines() if "silver_row_counts " in line]
+    assert len(lines) == 1, result.stdout[-3000:]
+    return json.loads(lines[0].split("silver_row_counts ", 1)[1])
+
+
+def test_the_row_counts_post_hook_logs_what_the_run_wrote(project):
+    """silver_row_counts_post_hook logs the I, U and D rows and the Bronze files of the run,
+    which Dagster attaches to the materialization: for a first build, a run, a run over two
+    files, a run of an incremental entity with a _full file and a run without new files."""
+    p = project("sagskategori")
+    rows = p.base_rows()
+    first_files = len(list(p.entity_dir.glob("*.json*")))
+    build = ["run", "--select", f"+{p.model}"]
+    assert _logged_row_counts(p, *build) == {"I": len(rows), "U": 0, "D": 0, "files": first_files}
+    day2 = [p.change(rows[0]), *rows[2:]]  # rows[0] changed, rows[1] deleted
+    p.write(2, day2)
+    assert _logged_row_counts(p, *p._run_args()) == {"I": 0, "U": 1, "D": 1, "files": 1}
+    p.write(3, [*day2, rows[1]])  # rows[1] back
+    p.write(4, [r for r in [*day2, rows[1]] if r["id"] != rows[2]["id"]])  # rows[2] deleted
+    assert _logged_row_counts(p, *p._run_args()) == {"I": 1, "U": 0, "D": 1, "files": 2}
+    assert _logged_row_counts(p, *p._run_args()) == {"I": 0, "U": 0, "D": 0, "files": 0}
+
+    s = project("stemme")
+    rows = s.base_rows()
+    s.build()
+    s.write(2, [s.change(rows[0])])
+    assert _logged_row_counts(s, *s._run_args()) == {"I": 0, "U": 1, "D": 0, "files": 1}
+    s.write(3, [s.change(rows[0]), *rows[2:]], full=True)  # rows[1] deleted
+    assert _logged_row_counts(s, *s._run_args()) == {"I": 0, "U": 0, "D": 1, "files": 1}
+
+
+def test_dagster_attaches_the_row_counts_to_the_materialization(project, monkeypatch):
+    """dbt_silver_assets streams through stream_with_silver_row_counts: the Silver table's
+    materialization carries the counts as int metadata, the Bronze view's carries none."""
+    from dagster import AssetMaterialization
+    from dagster_dbt import DbtCliResource
+
+    from ddd_python.ddd_dagster.dbt_assets import stream_with_silver_row_counts
+
+    p = project("sagskategori")
+    rows = p.base_rows()
+    p.build()
+    p.write(2, [p.change(rows[0]), *rows[2:]])  # rows[0] changed, rows[1] deleted
+    for name, value in p.env.items():
+        monkeypatch.setenv(name, value)
+    dbt = DbtCliResource(project_dir=str(p.dbt_dir), profiles_dir=str(p.dbt_dir))
+    invocation = dbt.cli(
+        [*p._run_args(), "--log-path", str(p.root / "logs")],
+        manifest=p.root / "target" / "manifest.json",
+        target_path=p.root / "target",
+    )
+    events = {
+        e.metadata["unique_id"].value: e.metadata
+        for e in stream_with_silver_row_counts(invocation)
+        if isinstance(e, AssetMaterialization)
+    }
+    silver = events[f"model.danish_democracy_data.{p.model}"]
+    labels = ["silver_rows_inserted", "silver_rows_updated", "silver_rows_deleted",
+              "silver_rows_written", "silver_files_processed"]  # fmt: skip
+    assert [silver[label].value for label in labels] == [0, 1, 1, 2, 1]
+    bronze = events[f"model.danish_democracy_data.{p.model.replace('silver_', 'bronze_', 1)}"]
+    assert not set(labels) & set(bronze)
+
+
 # ═════════════════════════════════════════════════════════════════════════════════
 # Full-extract entities: lifecycle (§3.2, §3.5)
 # ═════════════════════════════════════════════════════════════════════════════════

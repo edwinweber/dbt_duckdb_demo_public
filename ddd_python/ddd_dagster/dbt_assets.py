@@ -59,13 +59,25 @@ produce this file automatically.  During local development::
     cd dbt && dbt parse
 """
 
+import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from dagster import AssetExecutionContext, AssetKey, Config, multi_asset
-from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject
+from dagster import (
+    AssetCheckEvaluation,
+    AssetCheckResult,
+    AssetExecutionContext,
+    AssetKey,
+    AssetMaterialization,
+    AssetObservation,
+    Config,
+    MetadataValue,
+    Output,
+    multi_asset,
+)
+from dagster_dbt import DagsterDbtTranslator, DbtCliInvocation, DbtCliResource, DbtProject
 from dagster_dbt.asset_utils import (
     DAGSTER_DBT_EXCLUDE_METADATA_KEY,
     DAGSTER_DBT_SELECT_METADATA_KEY,
@@ -96,6 +108,65 @@ class DbtSilverConfig(Config):
     full_refresh: bool = False
     delete_guard: bool = True
     skip_late_files: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Silver row counts
+# ---------------------------------------------------------------------------
+
+# Every Silver table logs one line 'silver_row_counts {"I": .., "U": .., "D": .., "files": ..}'
+# (dbt macro silver_row_counts_post_hook); dbt-duckdb reports no rows_affected itself.
+SILVER_ROW_COUNTS_PREFIX = "silver_row_counts "
+_SILVER_ROW_COUNT_LABELS = {
+    "I": "silver_rows_inserted",
+    "U": "silver_rows_updated",
+    "D": "silver_rows_deleted",
+    "files": "silver_files_processed",
+}
+
+DbtEvent = (
+    Output | AssetMaterialization | AssetObservation | AssetCheckResult | AssetCheckEvaluation
+)
+
+
+def silver_row_count_metadata(counts: Mapping[str, int]) -> dict[str, MetadataValue]:
+    """Materialization metadata for the counts of one Silver table; the dbt model
+    ``dagster_event_logs`` reads it back by these labels."""
+    metadata: dict[str, MetadataValue] = {
+        label: MetadataValue.int(int(counts.get(key, 0)))
+        for key, label in _SILVER_ROW_COUNT_LABELS.items()
+    }
+    written = sum(int(counts.get(key, 0)) for key in ("I", "U", "D"))
+    metadata["silver_rows_written"] = MetadataValue.int(written)
+    return metadata
+
+
+def stream_with_silver_row_counts(invocation: DbtCliInvocation) -> Iterator[DbtEvent]:
+    """The Dagster events of ``invocation.stream()``, with the counts each Silver table
+    logged attached to its materialization.  The post-hook's log line comes before the
+    model's result event, so the counts are known when the event is built."""
+    counts: dict[str, Mapping[str, int]] = {}
+    for raw in invocation.stream_raw_events():
+        info = raw.raw_event.get("info", {})
+        msg = info.get("msg", "")
+        if info.get("name") == "JinjaLogInfo" and msg.startswith(SILVER_ROW_COUNTS_PREFIX):
+            unique_id = raw.raw_event.get("data", {}).get("node_info", {}).get("unique_id")
+            if unique_id:
+                counts[unique_id] = json.loads(msg.removeprefix(SILVER_ROW_COUNTS_PREFIX))
+        for event in raw.to_default_asset_events(
+            manifest=invocation.manifest,
+            dagster_dbt_translator=invocation.dagster_dbt_translator,
+            context=invocation.context,
+            target_path=invocation.target_path,
+            project=invocation.project,
+        ):
+            if isinstance(event, (Output, AssetMaterialization)):
+                unique_id = getattr(event.metadata.get("unique_id"), "value", None)
+                if unique_id in counts:
+                    event = event.with_metadata(
+                        {**event.metadata, **silver_row_count_metadata(counts[unique_id])}
+                    )
+            yield event
 
 
 # ---------------------------------------------------------------------------
@@ -273,11 +344,14 @@ def dbt_silver_assets(
     reading from the Bronze views and writing to incremental Silver tables.
 
     The run config (:class:`DbtSilverConfig`) turns the delete guard off or
-    skips late Bronze files for one run.
+    skips late Bronze files for one run.  Each Silver table's materialization
+    carries the rows the run inserted, updated and deleted and the Bronze files
+    it processed (:func:`stream_with_silver_row_counts`).
     """
     args = ["build", "--full-refresh"] if config.full_refresh else ["build"]
     args += silver_vars(config.delete_guard, config.skip_late_files)
-    yield from dbt.cli(args + ["--log-path", _DBT_LOG_PATH], context=context).stream()
+    invocation = dbt.cli(args + ["--log-path", _DBT_LOG_PATH], context=context)
+    yield from stream_with_silver_row_counts(invocation)
 
 
 # ---------------------------------------------------------------------------

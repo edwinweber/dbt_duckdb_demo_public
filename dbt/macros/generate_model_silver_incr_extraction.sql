@@ -10,7 +10,7 @@
     gets a D.  A full file that is new together with other files stops the run; several plain files
     are processed in one run.  A first build starts from an empty state and writes no deletes.
     A run stops when the full file would delete too many keys (silver_delete_guard). -#}
-{{ config(full_refresh=false, post_hook=["{{ silver_bookmark_post_hook() }}", "{{ silver_files_post_hook() }}"]) }}
+{{ config(full_refresh=false, post_hook=["{{ silver_bookmark_post_hook() }}", "{{ silver_files_post_hook() }}", "{{ silver_row_counts_post_hook() }}"]) }}
 {%- set files = silver_files(file_name, data_source_env_var) -%}
 {%- set run_started = "CAST('" ~ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] ~ "' AS DATETIME)" -%}
 {%- set ns = namespace(full_files=[]) -%}

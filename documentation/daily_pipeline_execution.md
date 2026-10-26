@@ -98,8 +98,11 @@ Dagster runs `dbt build` (models **and** their tests) through
     key, hashing every business column (SHA-256): new key → `I`, changed hash →
     `U`, a key that comes back after a `D` → `I`, and for full-extract tables a
     key missing from a new snapshot → `D`;
-  - the post-hooks move the bookmark to the newest file of the run and log the
-    files as processed in `<model>_files`;
+  - the post-hooks move the bookmark to the newest file of the run, log the
+    files as processed in `<model>_files` and log the rows the run wrote; the
+    Silver table's materialization in Dagster shows them as `silver_rows_inserted`,
+    `silver_rows_updated`, `silver_rows_deleted`, `silver_rows_written` and
+    `silver_files_processed`;
   - a `NOT EXISTS (pk, LKHS_date_valid_from)` guard makes reruns idempotent;
   - the run stops when a file would delete too many keys (the delete guard) or
     when a late file is found (runbook §7);
@@ -146,9 +149,21 @@ Dagster's SQLite run storage (`$DAGSTER_HOME/history/runs.db` and
 | --- | --- |
 | `dagster_pipeline_runs`, `dagster_event_logs` | staging: runs, `ASSET_MATERIALIZATION` events |
 | `dagster_job`, `dagster_asset` | dimensions: one row per job / per asset key |
-| `dagster_run` | fact: one row per run, with rows processed and assets materialized |
-| `dagster_asset_materialization` | fact: one row per materialization, with step timing |
+| `dagster_run` | fact: one row per run, with rows processed, assets materialized and the Silver row counts summed |
+| `dagster_asset_materialization` | fact: one row per materialization, with step timing, rows processed and the Silver row counts |
 | `dagster_step_failures_raw`, `dagster_step_failure` | fact: one row per failed asset per run — read directly from `$DAGSTER_HOME/history/runs/*.db` via `sqlite_scan` |
+| `silver_load_history` | fact: one row per Silver table and dbt run, with the `I`, `U` and `D` rows and the Bronze files processed — counted from Silver itself and its `_files` logs, so it reaches back to the first load and covers runs outside Dagster |
+
+`rows_processed` is the row count a step reports, read by label in
+`dagster_event_logs`: `records_written` for an extraction, `rows_written` for an
+export, `silver_rows_written` for a Silver table. Bronze, Gold and the `_cv` views
+report none (NULL).
+
+`silver_load_history` is the place for load reports such as delete spikes: it
+does not depend on Dagster's history. A run that the delete guard stopped wrote
+nothing, so it is not in the view; it is in `dagster_step_failure`, with the
+message `… would delete N of M live keys`. All of this is observability: the
+row-count post-hook and the view only read Silver.
 
 ---
 

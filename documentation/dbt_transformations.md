@@ -18,7 +18,7 @@ behind the design see [design_decisions.md](design_decisions.md).
 | **Bronze** (`main_bronze`) | view | one view per entity, plus 3 utility views (`bronze_dates`, `bronze_dates_holidays`, `bronze_source_systems`) | the extraction files, read with `read_json_auto()` |
 | **Silver** (`main_silver`) | incremental table + view | one CDC table + one `_cv` view per entity | Bronze |
 | **Gold** (`main_gold`) | view | handcrafted dimensions/facts + generated `_cv` views | Silver `_cv` views and tables |
-| **data_engineering** | views (2 tables) | Dagster run history as a small star schema | Dagster's SQLite run storage, read with `sqlite_scan()` |
+| **data_engineering** | views (2 tables) | observability: Dagster run history as a small star schema, and the Silver load history | Dagster's SQLite run storage, read with `sqlite_scan()`; the Silver tables and their `_files` logs (read only) |
 
 - **Generated vs handwritten.** All Bronze and Silver model files and the Gold
   `_cv` views are written by `python -m ddd_python.ddd_dbt.generate_dbt_models`
@@ -207,6 +207,21 @@ are logged as `pending` at compile time and become `processed` in the post-hook
 table built before the log existed gets one on its next run, with the files then
 in the folder up to the bookmark as `seeded`. The log is the audit trail of what
 Silver has read, and it is how late files are found.
+
+**Row counts (observability only).** dbt-duckdb reports no number of rows
+affected, so the last post-hook, `silver_row_counts_post_hook`, counts them
+itself; it only reads and writes nothing to the database: the run's rows by
+`LKHS_cdc_operation` (all have `LKHS_date_inserted` = the run's start) and the
+files the run marked processed. It logs one line,
+`silver_row_counts {"I": 0, "U": 1, "D": 1, "files": 1}`, which is also in the dbt
+log. `dbt_silver_assets` attaches the counts to the table's Dagster
+materialization (`silver_rows_inserted`, `silver_rows_updated`,
+`silver_rows_deleted`, `silver_rows_written`, `silver_files_processed`), and the
+`data_engineering` models read them from there. The text before the JSON is
+needed: dagster-dbt treats a log line that is only JSON as column metadata and
+does not pass it on. The view `data_engineering.silver_load_history` counts the
+same from Silver itself, for every run since the first load
+([daily_pipeline_execution.md](daily_pipeline_execution.md#step-4--observability-layer)).
 
 **Files and validity.** `LKHS_date_valid_from` is the `YYYYMMDD_HHMMSS`
 timestamp in the file name (`parse_filename_ts`), so files must be named in
@@ -719,6 +734,8 @@ All macros live in [`dbt/macros/`](../dbt/macros/).
 | `generate_model_silver_incr_extraction(…same…)` | incremental Silver models | compares a key's first new version with its latest Silver version and later ones with the version before them: I/U; deletes from a `_full` file that is the only new file, and stops the run when it is not (§3.3–3.4); `full_refresh=false` |
 | `silver_files(file_name, data_source_env_var)` | both Silver macros | at compile time: reads the bookmark, stops on late files, lists the newer Bronze files, notes the newest as pending and logs the files (§3.1) |
 | `silver_bookmark_post_hook()`, `silver_files_post_hook()` | both Silver macros (post-hooks) | after a successful run: move the pending file to the bookmark, mark the pending files processed |
+| `silver_load_history(silver_tables)` | `data_engineering.silver_load_history` (generated) | per Silver table and dbt run: the `I`, `U` and `D` rows by `LKHS_date_inserted` and the files the run marked processed in `<table>_files` |
+| `silver_row_counts_post_hook()` | both Silver macros (last post-hook) | logs the run's `I`, `U` and `D` rows and processed files as `silver_row_counts {…}`; renders no SQL (§3.1, *Row counts*) |
 | `silver_bronze_column_types(bronze_table_name)`, `silver_column_types()` | the two macros below | the Bronze view's columns and types as the files are now (`DESCRIBE`), and the Silver table's types by column name |
 | `silver_bronze_columns(bronze_table_name, key_source_columns=none)` | both Silver macros | select list over the Bronze view that casts the columns Silver already has to Silver's type, and for a key of several columns builds `LKHS_primary_key_1_column` again from the cast key columns (normal runs) |
 | `silver_state_columns(bronze_table_name)` | both Silver macros | select list over the Silver table with the Bronze view's columns (missing ones as NULL), to hash Silver's latest version |

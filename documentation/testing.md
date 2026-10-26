@@ -86,6 +86,7 @@ A typical Silver-CDC test:
 | `test_serialize_trace.py` | **What:** `_serialize_trace`, which turns a dlt trace object into a JSON-safe dict. **How:** feeds `None` and mocked trace objects and checks the serialised shape (timestamps, steps, failed jobs). **Why:** trace logging must never crash the pipeline. |
 | `test_json_default.py` | **What:** the custom JSON `default` serializer. **How:** round-trips `datetime`/`date`/`time` and other edge-case types. **Why:** extraction writes NDJSON; non-serialisable types would abort a run. |
 | `test_sensors.py` | **What:** the run-status sensors' helpers. **How:** stubs `requests.post` and the Dagster instance; asserts ntfy.sh headers/payload, step counting and that alert or log failures never raise. **Why:** a sensor that crashes hides the very failure it should report. |
+| `test_silver_row_counts.py` | **What:** `stream_with_silver_row_counts` and `silver_row_count_metadata` in `dbt_assets.py`. **How:** a fake dbt invocation streams the post-hook's `silver_row_counts {…}` line and result events; the counts must land on the materialization of the model that logged them and on no other, and a pure-JSON log line (dagster-dbt's column metadata) is ignored. **Why:** keeps the Dagster side covered in the default run; the real path runs in `test_dbt_silver.py`. |
 | `test_dbt_quack.py` | **What:** the `dbt-quack` wrapper (`dbt_quack.py`). **How:** stubs the patch function and dbt's runner; asserts that the patches are applied only with `QUACK_SERVER_HOST` (with a warning without it), that a dbt failure gives a non-zero exit code, and that `QUACK_SKIP_PATCHES` is parsed. **Why:** in Docker every dbt run goes through these patches. |
 | `test_duckdb_quack_server.py` | **What:** the quack server start-up (`duckdb_quack_server.py`). **How:** unit tests with a mocked DuckDB connection, no server started; assert the token check and its SQL escaping, the DuckLake attach (and the errors for missing catalog or data path) and the signal handling. **Why:** every container depends on this one process. |
 | `test_dbt_build.py` | **What:** the dbt JSON-log check in `dbt_build_with_unique_logfile`. **How:** writes NDJSON log fixtures and asserts that `fail`/`error` nodes raise. **Why:** dbt can exit 0 with failing tests; the run must still fail so the failure sensor fires. |
@@ -105,7 +106,8 @@ A typical Silver-CDC test:
 | `test_pipeline_execution.py` | **What:** `execute_pipeline` and `run_extraction_pool`. **How:** real temp directories and file I/O; asserts one NDJSON log record per run (success and failure) and that the pool attempts every task before raising. **Why:** the log record is the audit trail when extraction fails. |
 | `test_full_extract_naming.py` | **What:** which Bronze files get the `_full` suffix. **How:** builds the tasks of both extraction CLIs and runs the Dagster extraction assets with a stubbed pipeline; asserts only incremental entities extracted from `1900-01-01` or earlier are named `_full`. **Why:** Silver deletes a key of an incremental entity only when it is missing from a `_full` file. |
 | `test_dlt_file_naming.py` | **What:** the Bronze file name dlt writes. **How:** runs a real dlt filesystem load into `tmp_path`. **Why:** dlt ≥ 1.30 changed how it appends extensions; a wrong name breaks the `*.json*` globs in Bronze and Silver. |
-| `test_dbt_silver.py` | **What:** the Silver layer with the real macros: both Silver macros, their hooks and the `_cv` views. **How:** runs `dbt` (dbt-core) on copies of the CI sample and checks every case of [dbt_transformations.md §3.10](dbt_transformations.md#310-all-cases-at-a-glance) and the building blocks of §3.1: the hash (column order, NULL token, delimiter), file-name variants, the `_last_file` bookmark and the `_files` log (also converted from an older version), `LKHS_` columns, insert/update/delete histories including keys deleted and back twice, the comparison with Silver's state, deletes of incremental entities from a `_full` file processed on its own (and the error when it is not), ignored full refreshes, first builds, normal runs, several files in one run (same result as one run per file), the delete guard and its switch, late files that stop the run until they are skipped, column types Bronze infers differently, archived Bronze files, added and dropped source fields, a key twice in one file, and primary keys of several columns, including the migration of an existing table to one (no source has one, so the tests give `stemme` and `periode` one on a copy of the dbt project with their models regenerated). The lifecycles also assert the Silver invariants (no duplicate versions, file name matches `LKHS_date_valid_from`, `D` rows carry the deleted version, `_cv` holds the newest version). DuckDB and DuckLake mode; DDD and Rfam entities. Skipped unless `DBT_INTEGRATION_TESTS=1` and `dbt` is on `PATH`; about 20 minutes. **Why:** the Silver logic is the core of the project, and a mirror of the SQL cannot show that the macros themselves are right. |
+| `test_dbt_silver.py` | **What:** the Silver layer with the real macros: both Silver macros, their hooks and the `_cv` views. **How:** runs `dbt` (dbt-core) on copies of the CI sample and checks every case of [dbt_transformations.md §3.10](dbt_transformations.md#310-all-cases-at-a-glance) and the building blocks of §3.1: the hash (column order, NULL token, delimiter), file-name variants, the `_last_file` bookmark and the `_files` log (also converted from an older version), `LKHS_` columns, insert/update/delete histories including keys deleted and back twice, the comparison with Silver's state, deletes of incremental entities from a `_full` file processed on its own (and the error when it is not), ignored full refreshes, first builds, normal runs, the row counts the last post-hook logs and Dagster attaches to the materialization, several files in one run (same result as one run per file), the delete guard and its switch, late files that stop the run until they are skipped, column types Bronze infers differently, archived Bronze files, added and dropped source fields, a key twice in one file, and primary keys of several columns, including the migration of an existing table to one (no source has one, so the tests give `stemme` and `periode` one on a copy of the dbt project with their models regenerated). The lifecycles also assert the Silver invariants (no duplicate versions, file name matches `LKHS_date_valid_from`, `D` rows carry the deleted version, `_cv` holds the newest version). DuckDB and DuckLake mode; DDD and Rfam entities. Skipped unless `DBT_INTEGRATION_TESTS=1` and `dbt` is on `PATH`; about 20 minutes. **Why:** the Silver logic is the core of the project, and a mirror of the SQL cannot show that the macros themselves are right. |
+| `test_dbt_data_engineering.py` | **What:** the `data_engineering` models over Dagster events. **How:** materializes an extraction, a Silver table, a Gold view and an export asset in a temporary Dagster instance with the storage layout of the Docker entrypoint, builds the models with dbt and checks `rows_processed` and the Silver row counts in `dagster_event_logs`, `dagster_asset_materialization` and `dagster_run`; a dbt model's `Execution Duration` must not count as rows. Also builds all 25 Silver tables on the sample and checks `silver_load_history` over a first build, a run with a change and a delete and a run whose file changes nothing, per table against the table's row count, in DuckDB and DuckLake mode. Skipped unless `DBT_INTEGRATION_TESTS=1` and `dbt` is on `PATH`; about 90 seconds. **Why:** CI's sample build excludes these models, because they need a Dagster history. |
 | `test_integration_s3_pipeline.py` | **What:** the S3 code paths end to end. **How:** Bronze → Silver → Delta round-trip against a live S3-compatible server; skipped unless `S3_TEST_ENDPOINT` is set (CI runs it against RustFS). **Why:** mocks cannot check that path style, secrets and URIs line up. |
 | `test_mark_full_extracts.py` | **What:** which Bronze files are full extractions and the rename that marks them. **How:** temporary Bronze directories with files of chosen sizes and run-log records; asserts the log decides first (a large partial extraction is not full), size decides only without a log record, and the rename never overwrites. |
 | `test_archive_bronze.py` | **What:** the Bronze archive script and `bronze_archive_job`. **How:** temporary Bronze directories and an in-memory Silver bookmark table; asserts that everything processed goes except the newest processed file and files younger than `--keep-days`, that late files (not in the `_files` log) stay, that archive, restore and re-archive are checksum-verified and never overwrite different content, and that the Dagster asset passes its config on. |
@@ -143,9 +145,10 @@ These are left out of scope on purpose:
   validated by running the pipeline.
 - **A full `dbt build`.** The integration tests mirror the macro SQL rather than
   invoking dbt, so a mismatch between a macro and its mirror is caught by the CI
-  `dbt build` on the committed sample and by the dbt-layer tests below. The one
-  exception is `test_dbt_silver.py`, which runs dbt for the Silver layer, only
-  when `DBT_INTEGRATION_TESTS=1`.
+  `dbt build` on the committed sample and by the dbt-layer tests below. The
+  exceptions are `test_dbt_silver.py` and `test_dbt_data_engineering.py`, which
+  run dbt for the Silver layer and the `data_engineering` models, only when
+  `DBT_INTEGRATION_TESTS=1`.
 
 ---
 
@@ -157,16 +160,16 @@ files next to the models (`dbt/models/*/__*.yml`) plus one custom singular test.
 
 ### 2.1 Generic tests
 
-Defined declaratively in YAML. Counts across the project (all 314 data tests,
+Defined declaratively in YAML. Counts across the project (all 322 data tests,
 including the `data_engineering` layer; `dbt ls --resource-type test`):
 
 | Test type | Count | Purpose |
 | --- | --- | --- |
-| `not_null` | 181 | Required columns (primary keys, `LKHS_` tracking columns, key business fields) are never null. |
-| `unique` | 51 | Keys that must be unique (e.g. surrogate keys in Gold dimensions, PKs in `_cv` views). |
-| `accepted_values` | 52 | Enumerations stay within their allowed set — notably `LKHS_cdc_operation ∈ {I, U, D}`. |
-| `relationships` | 22 | Foreign keys in Gold and the observability facts resolve to their dimension. |
-| `dbt_utils.unique_combination_of_columns` | 6 | Composite grains, e.g. `(id, LKHS_date_valid_from)` on Silver tables. |
+| `not_null` | 184 | Required columns (primary keys, `LKHS_` tracking columns, key business fields) are never null. |
+| `unique` | 52 | Keys that must be unique (e.g. surrogate keys in Gold dimensions, PKs in `_cv` views). |
+| `accepted_values` | 53 | Enumerations stay within their allowed set — notably `LKHS_cdc_operation ∈ {I, U, D}`. |
+| `relationships` | 24 | Foreign keys in Gold and the observability facts resolve to their dimension. |
+| `dbt_utils.unique_combination_of_columns` | 7 | Composite grains, e.g. `(id, LKHS_date_valid_from)` on Silver tables. |
 | `dbt_utils.expression_is_true` | 1 | Row-level business rules (vote counts). |
 
 ### 2.2 Custom singular test
@@ -218,8 +221,8 @@ pytest tests/test_integration_silver_cdc.py    # one module
 pytest -k "incremental"                        # keyword filter
 pytest -k "cv"                                  # only current-version view tests
 
-# real dbt runs of the Silver layer (dbt on PATH, about 20 minutes)
-DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py
+# real dbt runs of the Silver layer and the data_engineering models (dbt on PATH, about 20 minutes)
+DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py tests/test_dbt_data_engineering.py
 ```
 
 Tests are collected from `tests/` (configured via `[tool.pytest.ini_options]` in
@@ -237,7 +240,7 @@ Every push and pull request to `main` runs `.github/workflows/ci.yml`:
 | `pytest (S3-compatible)` | The S3 code paths against a real S3-compatible server (RustFS). |
 | `ruff + mypy` | Lint, formatting and type checks. |
 | `dbt parse` | Every SQL/YAML file parses on all three storage targets (`local`, `local_ducklake`, `local_ducklake_s3`). |
-| `dbt build (sample data)` | A real Bronze → Silver → Gold `dbt build` including **all dbt tests** on a committed 1.6 MB sample ([`tests/fixtures/bronze_sample`](../tests/fixtures/bronze_sample)), followed by a non-empty check on key tables (`scripts/ci_check_sample_build.py`) and the real-dbt tests of the Silver layer (`test_dbt_silver.py`). |
+| `dbt build (sample data)` | A real Bronze → Silver → Gold `dbt build` including **all dbt tests** on a committed 1.6 MB sample ([`tests/fixtures/bronze_sample`](../tests/fixtures/bronze_sample)), followed by a non-empty check on key tables (`scripts/ci_check_sample_build.py`) and the real-dbt tests of the Silver layer and the `data_engineering` models (`test_dbt_silver.py`, `test_dbt_data_engineering.py`). |
 | `docker build` | The pipeline image builds and the `dbt` binary and Dagster definitions load inside it. |
 | `publish dbt docs` | On `main` only, and only when repo variable `ENABLE_GITHUB_PAGES_PUBLISH=true`: the dbt docs site is generated from the sample build and published to GitHub Pages. |
 

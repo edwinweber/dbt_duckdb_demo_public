@@ -8,7 +8,7 @@
       key in the previous snapshot, not in this   -> D, as of this file
     A first build starts from an empty state and processes all files the same way.  A normal run
     stops when a new file would delete too many keys (silver_delete_guard). -#}
-{{ config(full_refresh=false, post_hook=["{{ silver_bookmark_post_hook() }}", "{{ silver_files_post_hook() }}"]) }}
+{{ config(full_refresh=false, post_hook=["{{ silver_bookmark_post_hook() }}", "{{ silver_files_post_hook() }}", "{{ silver_row_counts_post_hook() }}"]) }}
 {%- set files = silver_files(file_name, data_source_env_var) -%}
 {%- set run_started = "CAST('" ~ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] ~ "' AS DATETIME)" -%}
 WITH CTE_FILES AS (

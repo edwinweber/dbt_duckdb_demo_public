@@ -62,7 +62,7 @@ cleanup is a manual job.
 │   ├── models/bronze/           views over the raw files (+ sources, utility views)
 │   ├── models/silver/           CDC tables + _cv views
 │   ├── models/gold/             star-schema views
-│   ├── models/data_engineering/ Dagster run history (read from Dagster's SQLite files)
+│   ├── models/data_engineering/ observability: Dagster run history (Dagster's SQLite files), Silver load history
 │   ├── macros/                  model factories, hash, Silver CDC and bookkeeping
 │   ├── seeds/                   Danish public holidays, source-system registry
 │   └── tests/                   singular test: Silver SCD2 grain
@@ -197,8 +197,9 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
 ### `ddd_dbt/`
 
 - **generate_dbt_models.py** — writes the Bronze and Silver model files (plus
-  the Silver `_cv` views), the Gold `_cv` views and the Silver grain test from the
-  configuration; picks the incremental or full-extract macro per entity.
+  the Silver `_cv` views), the Gold `_cv` views, the Silver grain test and the
+  `data_engineering` view `silver_load_history` from the configuration; picks the
+  incremental or full-extract macro per entity.
 - **dbt_build_with_unique_logfile.py** — runs `dbt build` with `DBT_EXECUTABLE`
   (optionally `--models_to_select`; `--no_silver_delete_guard` and
   `--skip_late_files` for one run) with a JSON log to `DBT_LOGS_DIRECTORY`, and
@@ -225,7 +226,10 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
   exponential back-off, `date_to_load_from` overridable in the Launchpad.
 - **dbt_assets.py** — dagster-dbt multi-assets for seeds, Bronze, Silver
   (run config `delete_guard`, `skip_late_files`, `full_refresh`), Gold and
-  data_engineering; dbt sources map to the extraction assets.
+  data_engineering; dbt sources map to the extraction assets. Each Silver table's
+  materialization carries the rows the run inserted, updated and deleted and the
+  Bronze files it processed (`stream_with_silver_row_counts`, from the log line of
+  the post-hook `silver_row_counts_post_hook`).
 - **export_assets.py** — one asset per Silver and Gold table, ordered by the
   no-op barriers `barrier_dbt_gold_complete` → Silver exports →
   `barrier_all_silver_exported` → Gold exports → `barrier_all_gold_exported`.
@@ -281,7 +285,7 @@ Details, macros and the CDC logic: [dbt_transformations.md](dbt_transformations.
   they live in the same database as the model (DuckDB forbids writing two
   databases in one transaction).
 - **Model counts:** 28 Bronze (18 + 7 entities, plus 3 utility views), 50
-  Silver, 19 Gold, 8 data_engineering; 2 seeds; 314 data tests.
+  Silver, 19 Gold, 9 data_engineering; 2 seeds; 322 data tests.
 
 ### `LKHS_` columns
 

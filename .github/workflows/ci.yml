@@ -253,7 +253,7 @@ jobs:
       # (dbt_transformations.md §3.10), in DuckDB and DuckLake mode, on copies of
       # the sample (a few minutes).
       - name: Silver logic (real dbt runs)
-        run: pytest tests/test_dbt_silver.py -v
+        run: pytest tests/test_dbt_silver.py tests/test_dbt_data_engineering.py -v
         env:
           DBT_INTEGRATION_TESTS: "1"
 

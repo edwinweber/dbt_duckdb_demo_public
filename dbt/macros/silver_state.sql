@@ -98,6 +98,29 @@ SET    LKHS_status        = 'processed'
 WHERE  LKHS_status = 'pending'
 {%- endmacro -%}
 
+{#- Last post-hook of every Silver model: logs the rows the run wrote per operation and the Bronze
+    files it processed, as one line 'silver_row_counts {"I": .., "U": .., "D": .., "files": ..}'.
+    Every row of a run has LKHS_date_inserted = the run's start, and the files post-hook has just
+    marked the run's files processed with the same time.  dbt_assets.py attaches the counts to the
+    model's Dagster materialization.  The text before the JSON is needed: dagster-dbt takes a log
+    line that is only JSON for column metadata and drops it.  Renders no SQL, so dbt runs nothing. -#}
+{%- macro silver_row_counts_post_hook() -%}
+{%- if execute -%}
+{%- set run_started = "CAST('" ~ run_started_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] ~ "' AS DATETIME)" -%}
+{%- set query -%}
+SELECT COUNT(*) FILTER (WHERE LKHS_cdc_operation = 'I')
+,      COUNT(*) FILTER (WHERE LKHS_cdc_operation = 'U')
+,      COUNT(*) FILTER (WHERE LKHS_cdc_operation = 'D')
+,      (SELECT COUNT(*) FROM {{ this.database }}.{{ this.schema }}.{{ this.name }}_files
+        WHERE  LKHS_status = 'processed' AND LKHS_date_inserted = {{ run_started }})
+FROM   {{ this }}
+WHERE  LKHS_date_inserted = {{ run_started }}
+{%- endset -%}
+{%- set row = run_query(query).rows[0] -%}
+{%- do log('silver_row_counts ' ~ tojson({'I': row[0] | int, 'U': row[1] | int, 'D': row[2] | int, 'files': row[3] | int}), info=True) -%}
+{%- endif -%}
+{%- endmacro -%}
+
 {#- Column names and types of the Bronze view, in Bronze order, as the view reads its files now.
     DESCRIBE binds the view again; information_schema would still list a column that only the
     archived files had, and the run would fail on it. -#}
