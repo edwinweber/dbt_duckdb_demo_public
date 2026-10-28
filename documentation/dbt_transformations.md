@@ -664,7 +664,8 @@ the building blocks of §3.1, for both macros:
 | Full-extract lifecycle (`sagskategori`, and `periode` keyed on `id` + `kode`): new, unchanged, changed, missing, missing twice in a row, back unchanged and changed, two delete cycles; one run per file, four files in one normal run, a first build with all files, an ignored full refresh; DuckDB and DuckLake | `test_full_extract_*` |
 | Incremental lifecycle (`stemme`, Rfam `family`, and `stemme` keyed on `afstemningid` + `aktoerid`): the same with deletes from `_full` files, each processed on its own, a repeated run and an ignored full refresh; DuckDB and DuckLake | `test_incremental_*` |
 | Incremental deletes: a first build writes none, a plain file never deletes, the file name and content of a delete, a key back before the next `_full` file, several plain files in one run with returning keys, a `_full` file new together with another file stops the run, a `_full` file marked by mistake | `test_a_first_build_writes_no_deletes`, `test_a_plain_file_never_deletes_even_when_it_is_complete`, `test_new_delete_has_the_full_file_and_the_deleted_content`, `test_a_key_that_is_back_before_the_next_full_file_is_not_deleted`, `test_several_plain_files_in_one_run`, `test_a_full_file_with_other_files_to_process_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
-| Delete guard (§3.1): a truncated snapshot on its own and after a good file in the same run, the guard turned off | `test_a_truncated_snapshot_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard` |
+| Delete guard (§3.1): a truncated snapshot on its own and after a good file in the same run, a file without any live key in a table below `silver_delete_guard_min_rows`, an empty file, the guard turned off; full-extract entities and `_full` files | `test_a_truncated_snapshot_stops_the_run`, `test_a_full_file_marked_by_mistake_is_stopped_by_the_delete_guard`, `test_a_file_without_any_live_key_stops_the_run`, `test_an_empty_file_stops_the_run` |
+| A missing or empty bookmark stops the run; the restored bookmark lets it go on | `test_a_missing_or_empty_bookmark_stops_the_run` |
 | Late files (§3.7): the run stops, then skips them with `silver_skip_late_files` | `test_a_late_file_stops_the_run_until_it_is_skipped` |
 | A Silver table from an older version: old `_last_file` columns converted, the log seeded | `test_a_silver_table_from_an_older_version_is_migrated` |
 | Column types (§3.1): a type Bronze infers differently after archiving, a value that does not fit | `test_a_type_bronze_infers_differently_after_archiving_gives_no_false_updates`, `test_a_value_that_does_not_fit_silvers_type_stops_the_run` |
@@ -680,8 +681,8 @@ hash of the version it deletes; a `U` differs from the version before it; no
 starts with `I`; `LKHS_source_system_code` is correct; `_cv` holds exactly the
 newest version of every key. The full-extract lifecycle also checks that one
 run per file, several files in one run and a first build give identical tables.
-Run them with `DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py` (about
-25–30 minutes); CI runs them in the `dbt build (sample data)` job.
+Run them with `DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py` (15–30
+minutes, depending on the machine); CI runs them in the `dbt build (sample data)` job.
 
 **History.** Until this design, Silver was derived from all Bronze files on
 every run: each version was compared with the key's previous version in Bronze,

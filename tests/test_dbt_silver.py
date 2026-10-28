@@ -1006,6 +1006,35 @@ def test_a_silver_table_from_an_older_version_is_migrated(project):
     assert p.histories({rows[0]["id"]: "k"}) == {"k": "I1 U3"}
 
 
+@pytest.mark.parametrize("how", ["emptied", "dropped"])
+def test_a_missing_or_empty_bookmark_stops_the_run(project, how):
+    """Without the bookmark a normal run would compare every Bronze file with Silver again, so
+    it stops with an error and writes nothing.  Once the bookmark is restored the run goes on
+    from it."""
+    p = project("sagskategori")
+    rows = p.base_rows()
+    p.build()
+    p.write(2, [p.change(rows[0]), *rows[1:]])
+    bookmark = f"test.main_silver.{p.model}_last_file"
+    con = duckdb.connect(str(p.root / "test.duckdb"))
+    con.execute(f"DELETE FROM {bookmark}" if how == "emptied" else f"DROP TABLE {bookmark}")
+    con.close()
+    before = p.snapshot()
+    p.run_fails(f"the bookmark {p.model}_last_file is missing or empty")
+    assert p.snapshot() == before
+    con = duckdb.connect(str(p.root / "test.duckdb"))
+    if how == "dropped":
+        con.execute(
+            f"CREATE TABLE {bookmark} (LKHS_filename VARCHAR, LKHS_filename_pending VARCHAR, "
+            "LKHS_date_inserted TIMESTAMP)"
+        )
+    con.execute(f"INSERT INTO {bookmark} (LKHS_filename) VALUES (?)", [p.file_name(1)])
+    con.close()
+    p.run()
+    assert p.histories({rows[0]["id"]: "k"}) == {"k": "I1 U2"}
+    assert not _violations(p)
+
+
 # ═════════════════════════════════════════════════════════════════════════════════
 # The delete guard
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -1030,6 +1059,43 @@ def test_a_truncated_snapshot_stops_the_run(project, together):
     expected = {"D": len(rows) - 5, "U": 1} if together else {"D": len(rows) - 5}  # key 0 is back
     assert p.operations_on(3) == expected
     assert not _violations(p)
+
+
+@pytest.mark.parametrize(
+    "entity,full", [("sagskategori", False), ("stemme", True)], ids=["full-extract", "_full file"]
+)
+def test_a_file_without_any_live_key_stops_the_run(project, entity, full):
+    """The guard's other branch: a file that would delete every live key stops the run, also
+    when the table has fewer keys than silver_delete_guard_min_rows (here five).  When the
+    deletes are real, one run with the guard turned off writes them."""
+    p = project(entity)
+    rows = p.base_rows()
+    p.write(1, rows[:5])
+    p.build()
+    p.write(2, [rows[5]], full=full)  # one new key, none of the five live ones
+    before = p.snapshot()
+    p.run_fails(f"{p.file_name(2, full=full)} would delete 5 of 5 live keys")
+    assert p.snapshot() == before
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(1),)]
+    p.run(dbt_vars="{silver_delete_guard: false}")
+    assert p.operations_on(2) == {"D": 5, "I": 1}
+    assert not _violations(p)
+
+
+@pytest.mark.parametrize(
+    "entity,full", [("sagskategori", False), ("stemme", True)], ids=["full-extract", "_full file"]
+)
+def test_an_empty_file_stops_the_run(project, entity, full):
+    """An empty extraction file (a failed export that still wrote its file) would delete every
+    live key: the run stops and writes nothing, and the bookmark stays where it was."""
+    p = project(entity)
+    rows = p.base_rows()
+    p.build()
+    p.write(2, [], full=full)
+    before = p.snapshot()
+    p.run_fails(f"{p.file_name(2, full=full)} would delete {len(rows)} of {len(rows)} live keys")
+    assert p.snapshot() == before
+    assert p.sql("SELECT LKHS_filename FROM {lf}") == [(p.file_name(1),)]
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
