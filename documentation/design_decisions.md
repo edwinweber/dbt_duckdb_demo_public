@@ -295,26 +295,49 @@ durability mechanism.
 **Decision.** The project uses `dbt-core` + `dbt-duckdb` (Python packages,
 pinned as ranges), replacing the earlier `dbt-oss 2.0.8`.
 
-**Why dbt-oss was removed.** `dbt-oss` 2.0.8 ships its own DuckDB, version
-1.5.4, built into its Rust binary. When the project moved to DuckDB 2.0, that
-bundled DuckDB 1.5 could neither open the DuckDB 2.0 database files nor talk to
-the quack server (the protocol changed between the versions), and dbt-oss offers
-no way to use another DuckDB version without rebuilding the binary. `dbt-duckdb`
-uses the Python `duckdb` package, so dbt always runs the DuckDB version the
-project pins.
+**Why dbt-oss was removed.** `dbt-oss` 2.0.8 is a Rust engine packaged as a
+Python wheel. It does not use the Python `duckdb` package: on first use it
+downloads its own DuckDB library from the dbt Labs CDN into
+`~/.cache/com.getdbt/adbc/`, pinned to DuckDB 1.5.4. When the project moved to
+DuckDB 2.0, that DuckDB 1.5 could neither open the DuckDB 2.0 database files nor
+talk to the quack server (the protocol changed between the versions). The
+DuckDB version is fixed in the dbt-oss release and cannot be configured.
+`dbt-duckdb` uses the Python `duckdb` package, so dbt always runs the DuckDB
+version the project pins.
 
-**Alternatives.** The proprietary `dbt` distribution (same Python packages as
-`dbt-core` under a different license); `dbt-oss` 2.x rebuilt against DuckDB 2.x
-(not publicly available).
+**Re-checked on 2026-10-28** (dbt-oss 2.0.8, still the latest release; DuckDB
+1.5.4 is also still pinned on the `main` branch of `dbt-labs/dbt`):
+
+- Replacing the cached library with the DuckDB 2.0.0 `libduckdb.so` makes
+  dbt-oss run on DuckDB 2.0; the CI build and the Silver tests pass. This is an
+  unsupported workaround: the file keeps the name of the 1.5.4 driver, and a
+  dbt-oss release with a new driver version downloads its own library again.
+- The quack target still cannot work. dbt-oss runs its connection set-up
+  statements once and has no per-connection SQL, so it cannot run `CONNECT` on
+  each connection as `dbt_quack.py` does; without `CONNECT` the server-side
+  `ducklake_catalog` is not visible to the client. dbt-oss also ignores the
+  `options:` of `attach:` entries (for example the DuckLake `data_path`) without
+  an error.
+
+**Alternatives.**
+
+- The `dbt` package (`pip install dbt`, 2.x): dbt Labs' proprietary dbt Fusion
+  engine, downloaded from the dbt Labs CDN and with licence checks. It is built
+  on the same Rust engine as dbt-oss and has the same DuckDB handling: on
+  2026-10-28 (`dbt` 2.0.9) it also used the DuckDB 1.5.4 library and also could
+  not run `CONNECT` per connection. It is not dbt-core.
+- `dbt-oss` with a DuckDB 2.x driver and a way to run SQL on each new
+  connection; neither exists yet.
 
 **Gained.** Compatible with DuckDB ≥ 2.0 and the quack server. The adapter
-(`dbt-duckdb`) can be patched via `dbt_quack.py` to connect via quack RPC
-instead of opening the file directly, which is how Docker mode achieves the
-single-writer guarantee. The toolchain remains fully open source (Apache 2.0 /
-MIT).
+(`dbt-duckdb`) is Python code, so `dbt_quack.py` can patch it to run `CONNECT`
+on every cursor and to treat `ducklake_catalog` as DuckLake. That is how dbt runs
+as a quack client in Docker mode, which keeps the single-writer guarantee. The
+toolchain remains fully open source (Apache 2.0 / MIT).
 
-**Given up.** The single executable convenience of dbt-oss. The `dbt` binary is
-now the dbt-core CLI entry point.
+**Given up.** The Rust engine of dbt-oss and its install as a single package
+with almost no Python dependencies. The `dbt` command is now the dbt-core CLI
+entry point.
 
 ---
 
