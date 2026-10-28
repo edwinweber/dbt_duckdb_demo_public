@@ -181,7 +181,7 @@ Repairs go through the backups:
   the source really deleted those rows, run Silver once with the guard off:
   `--vars '{silver_delete_guard: false}'`, `--no_silver_delete_guard`, or
   `delete_guard: false` in the Launchpad.
-- **A conversion error in a Silver model** (`Could not convert …`): the source
+- **A conversion error in a Silver model** (`Conversion Error: Failed to cast value …`): the source
   sends a value that does not fit the type of the Silver column, a real type
   change. Change the column with `ALTER TABLE … ALTER COLUMN … TYPE …` and run
   again. A dbt warning "Bronze column types differ from Silver" on its own needs

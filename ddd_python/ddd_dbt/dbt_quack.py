@@ -7,7 +7,7 @@ Patches are active only when ``QUACK_SERVER_HOST`` is set; without it the
 script falls through to a plain ``dbt`` invocation, which is the correct
 behaviour in CI where the profile selects the direct-file ``local`` target.
 
-Three patches (all required as of duckdb 2.0.0 + quack, dbt-duckdb 1.11.0):
+Three patches (all required as of duckdb 2.0.0 + quack, dbt-duckdb 1.11.1):
 
 1. CONNECT on every cursor (patch name: ``connect``).
    A cursor opened by dbt-duckdb's ``Environment.initialize_cursor`` inherits

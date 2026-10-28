@@ -53,6 +53,19 @@ removing files under `/data` on the host does.
 docker compose build
 ```
 
+This builds three images, each with only what its containers use:
+
+| Image | Dockerfile | Services | Contents |
+| --- | --- | --- | --- |
+| `ddd-duckdb-server` | `docker/Dockerfile.duckdb_server` (target `duckdb_server`) | `duckdb_server` | `python:3.13-slim`, `duckdb`, `numpy`, `python-dotenv`, the `ddd_python` source |
+| `ddd-backup` | `docker/Dockerfile.duckdb_server` (target `backup`) | `backup` | the same base, plus the Docker CLI, `rsync` and `openssh-client` |
+| `ddd-dagster` | `docker/Dockerfile.dagster` | `dagster`, `run` | `python:3.13-slim` with the `[dagster]` install (dlt, dbt, Dagster, deltalake, pyarrow) and the parsed dbt project; no system packages |
+
+`ddd-duckdb-server` and `ddd-backup` share their base layers. The lean images
+take their package versions from `pyproject.toml` (`docker/pick_requirements.py`).
+None of the images contains the DuckDB CLI; on the host, `duckdb/init_duckdb.sh`
+and `scripts/duckdb_connect.sh` use a locally installed one.
+
 ## One-time token setup
 
 `QUACK_SERVER_TOKEN` authenticates all connections to the quack RPC server.
@@ -171,11 +184,12 @@ The Bronze read paths default to the container mount
 `DANISH_DEMOCRACY_DATA_SOURCE_DOCKER` and `RFAM_DATA_SOURCE_DOCKER` in `.env` to
 the `s3://` URIs.
 
-With `STORAGE_TARGET=onelake`, the entrypoint (`docker/docker-entrypoint.sh`)
-installs the DuckDB `httpfs`, `azure` and `delta` extensions and creates the
-persistent Azure service-principal secret on start, and `duckdb_server` creates
-the secrets on its own connection before it starts serving; no separate step is
-needed.
+With `STORAGE_TARGET=onelake`, the entrypoint of the Dagster image
+(`docker/docker-entrypoint.sh`, for `dagster` and `run`) installs the DuckDB
+`httpfs`, `azure` and `delta` extensions and creates the persistent Azure
+service-principal secret on start, through the Python `duckdb` package and
+`init_secrets_on_connection`. `duckdb_server` creates the secrets on its own
+connection before it starts serving; no separate step is needed.
 
 ## RustFS for local S3
 
@@ -191,7 +205,7 @@ example `.env` are in
 
 ## Backup and restore
 
-The `backup` service runs the backup and restore modules inside the pipeline
+The `backup` service runs the backup and restore modules in the `ddd-backup`
 image; the host needs only Docker. Targets: `dagster`, `metabase`, `duckdb`, plus
 `ducklake` when `SILVER_STORAGE_FORMAT=ducklake` (archived before `duckdb`, which
 holds the catalog). Each target stops the containers that hold its files and

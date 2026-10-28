@@ -30,13 +30,18 @@ x-path-overrides: &path-overrides
   QUACK_SERVER_HOST: duckdb_server
 
 x-common: &common
-  build:
-    context: .
-    dockerfile: docker/Dockerfile
-  image: danish-democracy-data:latest
   env_file: .env
   environment:
     <<: *path-overrides
+
+# Three lean images: ddd-duckdb-server and ddd-backup (two targets of
+# docker/Dockerfile.duckdb_server, sharing their base layers) and ddd-dagster
+# (docker/Dockerfile.dagster, for the services dagster and run).
+x-dagster-image: &dagster-image
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.dagster
+  image: ddd-dagster:latest
 
 x-logging: &logging
   driver: json-file
@@ -52,6 +57,11 @@ services:
   # CONNECT danish_democracy_data automatically.
   duckdb_server:
     <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.duckdb_server
+      target: duckdb_server
+    image: ddd-duckdb-server:latest
     container_name: ddd-duckdb-server
     command: ["python", "-m", "ddd_python.ddd_dlt.duckdb_quack_server"]
     environment:
@@ -103,7 +113,7 @@ services:
   #   docker compose run --rm run python -m ddd_python.ddd_dlt.export_silver
   #   docker compose run --rm run python -m ddd_python.ddd_dlt.export_gold
   run:
-    <<: *common
+    <<: [*common, *dagster-image]
     container_name: ddd-run
     command: ["python", "-m"]
     environment:
@@ -130,6 +140,11 @@ services:
   # HOST_SSH_DIR is mounted read-only for rsync/SSH uploads to Hetzner StorageBox.
   backup:
     <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.duckdb_server
+      target: backup
+    image: ddd-backup:latest
     container_name: ddd-backup
     # Default command: back up all targets. Override the whole python invocation
     # when passing --targets, e.g. via `docker compose run --rm backup python -m ...`
@@ -165,7 +180,7 @@ services:
   #   config:
   #    source_system_code: DDD
   dagster:
-    <<: *common
+    <<: [*common, *dagster-image]
     container_name: ddd-dagster
     command: ["dagster", "dev", "-w", "workspace.yaml", "-h", "0.0.0.0", "-p", "3000"]
     environment:
@@ -191,7 +206,9 @@ services:
           memory: 6g
     logging: *logging
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      # Python, not curl: the image has no system packages beyond the slim base.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:3000', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3

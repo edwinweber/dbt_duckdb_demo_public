@@ -681,7 +681,7 @@ starts with `I`; `LKHS_source_system_code` is correct; `_cv` holds exactly the
 newest version of every key. The full-extract lifecycle also checks that one
 run per file, several files in one run and a first build give identical tables.
 Run them with `DBT_INTEGRATION_TESTS=1 pytest tests/test_dbt_silver.py` (about
-20 minutes); CI runs them in the `dbt build (sample data)` job.
+25–30 minutes); CI runs them in the `dbt build (sample data)` job.
 
 **History.** Until this design, Silver was derived from all Bronze files on
 every run: each version was compared with the key's previous version in Bronze,
@@ -822,12 +822,19 @@ WITH CTE_FILES AS (                     -- the new files, in order
     LEFT JOIN  CTE_PREVIOUS prev ON prev.LKHS_filename = chain.LKHS_filename_compared_with AND prev.id = cur.id
     WHERE      LKHS_cdc_operation IN ('I','U')
 )
-,CTE_DELETES AS (                       -- in a new file, not in the next one
-    SELECT cur.* EXCLUDE (LKHS_filename), chain.LKHS_filename_next AS LKHS_filename
+,CTE_VERSIONS AS (                      -- the versions a delete can close: this run's I/U, Silver's live ones
+    SELECT * EXCLUDE (LKHS_filename, LKHS_date_inserted, LKHS_cdc_operation) FROM CTE_CHANGES
+    UNION ALL BY NAME
+    SELECT * EXCLUDE (LKHS_filename, LKHS_date_inserted, LKHS_cdc_operation) FROM CTE_SILVER_LATEST
+    WHERE  LKHS_cdc_operation != 'D'
+)
+,CTE_DELETES AS (                       -- in a new file, not in the next one; content of the version it closes
+    SELECT ver.* EXCLUDE (LKHS_date_valid_from), chain.LKHS_filename_next AS LKHS_filename
     ,      chain.LKHS_date_valid_from_next AS LKHS_date_valid_from
     ,      CAST('2026-03-16 06:43:00.302' AS DATETIME) AS LKHS_date_inserted, 'D' AS LKHS_cdc_operation
     FROM       CTE_BRONZE cur
     INNER JOIN CTE_CHAIN chain ON chain.LKHS_filename = cur.LKHS_filename
+    ASOF JOIN  CTE_VERSIONS ver ON ver.id = cur.id AND ver.LKHS_date_valid_from <= chain.LKHS_date_valid_from
     WHERE      chain.LKHS_filename_next IS NOT NULL
     AND        NOT EXISTS (SELECT 1 FROM CTE_BRONZE nxt
                            WHERE nxt.LKHS_filename = chain.LKHS_filename_next AND nxt.id = cur.id)
@@ -886,7 +893,8 @@ WHERE  LKHS_status = 'pending';
 <details>
 <summary><strong>Incremental entity — <code>silver_ddd_aktoer</code></strong></summary>
 
-`CTE_FILES`, `CTE_BRONZE`, `CTE_SILVER_LATEST` and the post-hook are as above.
+`CTE_BRONZE`, `CTE_SILVER_LATEST` and the post-hook are as above; `CTE_FILES`
+has only the file name and its timestamp (no `LAG`/`LEAD` chain).
 The delete branch is only generated when the only new file is a `_full` file (here
 `aktoer_20261101_020000_full.json`); a `_full` file among other new files stops
 the run at compile time, before the model's query runs.

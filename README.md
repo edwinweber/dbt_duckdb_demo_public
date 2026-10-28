@@ -24,8 +24,8 @@ trade-off is simplicity and cost; the patterns still apply on a larger platform.
 | What does it do? | Pulls 18 Danish Parliament entities and 7 Rfam tables, keeps every version in Silver (SCD Type 2), models a star schema in Gold, and optionally publishes Delta Lake tables. |
 | Where is the main SQL? | Hash-based CDC in [`dbt/macros/`](dbt/macros/) ([explained](documentation/dbt_transformations.md)); star schema in [`dbt/models/gold/`](dbt/models/gold/). |
 | Where is the main Python? | One pipeline engine behind both the CLI and Dagster: [`dlt_pipeline_execution_functions.py`](ddd_python/ddd_dlt/dlt_pipeline_execution_functions.py); asset factories in [`ddd_dagster/`](ddd_python/ddd_dagster/). |
-| Can I see it run without credentials? | CI runs a real `dbt build` (105 models, 2 seeds, 314 data tests) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
-| How is it verified? | About 475 pytest tests with an 80% coverage floor (96 of them real dbt runs of every documented Silver case), ruff and mypy, `dbt parse` on all three storage targets, S3 tests against a real S3-compatible server, and a Docker build with a smoke test. |
+| Can I see it run without credentials? | CI runs a real `dbt build` (97 models, 2 seeds, 263 data tests; the `data_engineering` models need a Dagster history and are left out) on a committed 1.6 MB sample in [`tests/fixtures/bronze_sample`](tests/fixtures/bronze_sample); the resulting lineage is published as [dbt docs](https://edwinweber.github.io/dbt_duckdb_demo/). |
+| How is it verified? | About 490 pytest tests with an 80% coverage floor (101 of them real dbt runs of every documented Silver case), ruff and mypy, `dbt parse` on all three storage targets, S3 tests against a real S3-compatible server, and Docker builds of the three images with smoke tests. |
 | Why these trade-offs? | [design_decisions.md](documentation/design_decisions.md) lists the alternatives and what was given up. |
 
 ## Quick start (Docker)
@@ -126,11 +126,11 @@ availability. More in [design_decisions.md](documentation/design_decisions.md#th
 | --- | --- |
 | Language | Python ≥ 3.13 |
 | Extraction | dlt ≥ 1.31 |
-| Transformation | dbt-core ≥ 1.12.6 + dbt-duckdb ≥ 1.11.0 + dbt-utils 1.4.1 |
+| Transformation | dbt-core ≥ 1.12.6 + dbt-duckdb ≥ 1.11.1 + dbt-utils 1.4.1 |
 | Query engine | DuckDB ≥ 2.0.0 |
 | Single-writer server | `duckdb_quack_server.py` (Docker); all containers connect via quack RPC |
 | Silver storage | DuckDB tables or DuckLake |
-| Orchestration | Dagster ≥ 1.13.26 |
+| Orchestration | Dagster ≥ 1.13.27 |
 | Export | `deltalake` + PyArrow → local, S3 or Microsoft Fabric OneLake |
 | BI | Metabase (connects via quack); Power BI via OneLake |
 | Alerting | ntfy.sh push notifications (optional) |
@@ -200,8 +200,9 @@ The strategy is in [documentation/testing.md](documentation/testing.md).
 - **Deletes need a complete snapshot.** An incremental extract cannot show a
   deletion, so incremental entities record deletes only from a full extraction
   (`..._full.json`); a partial file marked as full records false deletes.
-- **The DuckDB delta writer has an Azure/OneLake regression,** so the export
-  reads with DuckDB (`delta_scan`) and writes with `deltalake` + PyArrow.
+- **DuckDB's Delta writer can only append,** without replacing a table or adding
+  a column, so the export reads with DuckDB (`delta_scan`) and writes with
+  `deltalake` + PyArrow.
 - **DuckLake keeps very small tables inline in the catalog.** Not every table
   appears as a Parquet file on disk; this is expected.
 - **Lazy configuration allows offline work.** Code generation and tests import

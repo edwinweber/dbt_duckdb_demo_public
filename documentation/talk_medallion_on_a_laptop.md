@@ -227,7 +227,7 @@ python -m ddd_python.ddd_dbt.generate_dbt_models
 
 <!--
 With 50+ Silver models, writing them by hand would be error-prone and
-inconsistent. The generator and 16 dbt macros keep the CDC logic in one place.
+inconsistent. The generator and 18 dbt macros keep the CDC logic in one place.
 The configuration tests catch a key added to one list but not to another.
 -->
 
@@ -314,13 +314,14 @@ DuckDB  ──►  Metabase            (BI, through the DuckDB server)
 ```
 
 - Silver → Delta (incremental append), Gold → Delta (full overwrite); the target is **local, S3 or OneLake**, set by one environment variable.
-- The dedup read runs inside DuckDB with `delta_scan()`; the **write** uses the `deltalake` library. DuckDB 2.0 can write Delta, but its writer has an Azure/OneLake regression, so the write stays on `deltalake` for now.
+- The dedup read runs inside DuckDB with `delta_scan()`; the **write** uses the `deltalake` library. DuckDB 2.0 can write Delta, but only by appending (no overwrite, no new columns), so the write stays on `deltalake` for now.
 - A local-only setup does not need the export. It is for Power BI, Spark, Databricks or other Delta readers.
 
 <!--
 The medallion is complete at Gold in DuckDB; Metabase reports from there. The
 export is for interoperability, with Delta as the common format. Moving the
-write into DuckDB waits for a DuckDB Delta writer that works with OneLake.
+write into DuckDB waits for a DuckDB Delta writer that can replace tables and add
+columns.
 -->
 
 ---

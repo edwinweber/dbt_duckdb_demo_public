@@ -184,8 +184,8 @@ file; `ducklake` stores it as Parquet files plus a DuckLake catalog, attached as
 `ducklake_catalog`. Bronze and Gold are unaffected.
 
 **Alternatives.** Only DuckDB (the history is locked in DuckDB's binary format);
-only DuckLake (more moving parts for every user); Delta Lake for Silver (needs a
-writer DuckDB does not have, see ADR-7).
+only DuckLake (more moving parts for every user); Delta Lake for Silver (DuckDB's
+Delta writer can only append, see ADR-7).
 
 **Gained.** An open, inspectable format and snapshot time travel when wanted,
 with the simpler native format as the default. With `RAW_STORAGE_TARGET=s3` the
@@ -215,10 +215,14 @@ the Silver table against `delta_scan('<target>')` on (primary key,
 `deltalake.write_deltalake`. Gold is a full overwrite and does not read the
 target.
 
-**Context.** DuckDB ≥ 2.0 can write Delta directly via its delta extension,
-but there is an Azure/OneLake regression in the DuckDB delta writer; the
-`deltalake` library write path works correctly for all three export destinations
-(local, S3, OneLake). The split read/write approach is therefore kept.
+**Context.** DuckDB 2.0's delta extension can write Delta, but only by appending:
+`ATTACH '<path>' AS t (TYPE delta)`, then `CREATE TABLE` and `INSERT`. It cannot
+replace a table, delete rows or add a column, so it can do neither Gold's full
+overwrite nor the schema merge (`schema_mode="merge"`) both exports use for new
+columns. The `deltalake` library does all of this for the three export
+destinations (local, S3, OneLake), so the split read/write approach is kept.
+Checked on 2026-10-28 with DuckDB 2.0.0; the earlier OneLake problems of the
+delta extension (duckdb-delta #307 and #317) are fixed upstream.
 
 **Alternatives.** Read the target with `DeltaTable(...).to_pyarrow_table()`
 (loads the whole target into memory every run); Parquet then convert (extra I/O).
@@ -226,8 +230,8 @@ but there is an Azure/OneLake regression in the DuckDB delta writer; the
 **Gained.** Only the join keys of the target are read, with projection pushdown;
 the write path is a mature library.
 
-**Given up.** Two libraries in one code path. Revisit once the Azure regression
-in the DuckDB delta writer is fixed.
+**Given up.** Two libraries in one code path. Revisit once DuckDB's Delta writer
+can replace tables and add columns; then both exports can move to it together.
 
 ---
 
@@ -356,8 +360,9 @@ write connection removes the stop/start cycle entirely.
 
 **Rationale.**
 - `duckdb_server` container: mounts `/data/duckdb`, `/data/ducklake`,
-  `/data/dagster` and `/data/local` (read-only, for the Bronze files); all other
-  services connect via `QUACK_SERVER_HOST=duckdb_server`.
+  `/data/dagster`, `/data/local` (read-only, for the Bronze files) and the dbt
+  seed CSVs (read-only, at the dbt container's path); all other services connect
+  via `QUACK_SERVER_HOST=duckdb_server`.
 - With `QUACK_SERVER_HOST` set, `profiles.yml` selects the `quack` target (an
   in-memory DuckDB that attaches the server), and `dbt_quack.py` patches
   `dbt-duckdb`'s `Environment.initialize_cursor` so every cursor runs `CONNECT`
@@ -429,7 +434,8 @@ pruning (loses history that cannot be recreated).
   5.5 GB, and a Silver run without new files in 51 instead of 72 seconds.
 - The common pattern: an SCD Type 2 table merged with new data, as most warehouse
   pipelines do, instead of re-reading all raw history every day.
-- No extraction is lost. The archive keeps every processed file, gzip-compressed,
+- No extraction is lost. The archive keeps every processed file (gzip-compressed
+  by default in `bronze_archive_job`, with `--compress` on the command line),
   checked against its SHA-256 and listed in a manifest, so Silver can still be
   replayed from the original files. Reproducibility moves from a property of
   every run to an operation that can be carried out when needed.
@@ -479,8 +485,10 @@ Versions are pinned as ranges in [`pyproject.toml`](../pyproject.toml).
 CLI; `dbt-duckdb` provides the DuckDB adapter. `dagster-dbt` stays in CLI mode
 (`DbtCliResource`). Why `dbt-core` and not the earlier `dbt-oss`: ADR-11.
 
-**Capped on purpose:** `grpcio-health-checking<1.82` in the `[dagster]` extra,
-because newer versions need `protobuf>=7` while Dagster caps `protobuf<7`.
+**Held back by upstream caps:** Dagster caps `protobuf<7` and
+`grpcio-health-checking<1.82` (newer versions need `protobuf>=7`), and dbt-core
+and its libraries also cap `protobuf<7`. The project needs no pin of its own for
+them.
 
 ---
 
@@ -538,7 +546,7 @@ Deliberate limits of a single-node reference project:
 Improvements worth making, roughly in order of value:
 
 1. **Request-level retries for the OData loop.** Retries are per Dagster asset
-   (two attempts, exponential back-off), so a failure on page 47 of 50 restarts
+   (two retries, exponential back-off), so a failure on page 47 of 50 restarts
    the whole entity.
 2. **Close the lookback gap.** Let an incremental extraction reach back to its
    entity's newest Bronze file when that is older than the window, and schedule

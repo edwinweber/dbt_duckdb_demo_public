@@ -192,8 +192,8 @@ TARGET_NAMES: tuple[str, ...] = tuple(t.name for t in BACKUP_TARGETS)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Image used for privileged restore extraction; must provide ``python3``.
-# The project image is used so no additional pull is required.
-RESTORE_DOCKER_IMAGE = "danish-democracy-data:latest"
+# The backup image is used, so restore needs no additional pull.
+RESTORE_DOCKER_IMAGE = "ddd-backup:latest"
 
 
 def _is_container_running(container_name: str) -> bool:

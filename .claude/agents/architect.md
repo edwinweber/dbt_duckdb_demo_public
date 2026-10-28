@@ -24,7 +24,7 @@ You are the architectural advisor for **Danish Democracy Data (dbt_duckdb_demo)*
 
 **Silver is the state** (ADR-13): a run reads only the Bronze files newer than the bookmark; processed Bronze files are archived on demand; repairs go through backups or a replay.
 
-**Key pinned versions:** DuckDB ≥2.0.0,<3; dbt-core ≥1.12.6,<1.13 + dbt-duckdb ≥1.11.0 (dbt-oss is no longer used: it ships DuckDB 1.5); Dagster ≥1.13; dlt ≥1.31; Python ≥3.13. Delta writes stay on `deltalake` + PyArrow — the DuckDB delta writer has an Azure/OneLake regression. In Docker, `duckdb_server` owns the file; all others connect via quack RPC (`QUACK_SERVER_HOST`).
+**Key pinned versions:** DuckDB ≥2.0.0,<3; dbt-core ≥1.12.6,<1.13 + dbt-duckdb ≥1.11.1 (dbt-oss is no longer used: it ships DuckDB 1.5); Dagster ≥1.13; dlt ≥1.31; Python ≥3.13. Delta writes stay on `deltalake` + PyArrow — DuckDB 2.0's Delta writer can only append (no overwrite, no new columns). In Docker, `duckdb_server` owns the file; all others connect via quack RPC (`QUACK_SERVER_HOST`).
 
 **DuckLake constraint:** the helper tables `_last_file` and `_files` must be fully qualified with `{{ this.database }}` — DuckDB forbids one transaction writing to two databases.
 

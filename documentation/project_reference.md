@@ -21,17 +21,17 @@ open-source stack.
 | Layer | Technology |
 | --- | --- |
 | Language | Python ≥ 3.13 |
-| Orchestration | Dagster ≥ 1.13.26 (software-defined assets) |
-| Extraction | dlt ≥ 1.31.0; `requests` for OData, SQLAlchemy ≥ 2.1.5 + PyMySQL for Rfam |
-| Transformation | dbt-core ≥ 1.12.6, < 1.13 + dbt-duckdb ≥ 1.11.0 + dbt-utils 1.4.1; `dbt-quack` wrapper for Docker quack mode |
+| Orchestration | Dagster ≥ 1.13.27 (software-defined assets) |
+| Extraction | dlt ≥ 1.31.0; `requests` for OData, SQLAlchemy ≥ 2.1.6 + PyMySQL for Rfam |
+| Transformation | dbt-core ≥ 1.12.6, < 1.13 + dbt-duckdb ≥ 1.11.1 + dbt-utils 1.4.1; `dbt-quack` wrapper for Docker quack mode |
 | Query engine | DuckDB ≥ 2.0.0, < 3 |
 | Single-writer server | `duckdb_quack_server.py` — sole read-write DuckDB owner in Docker; all other containers connect via quack RPC |
 | Bronze files, DuckLake data | local filesystem (default) or S3-compatible storage (RustFS, AWS S3) |
 | Silver storage | DuckDB tables (default) or DuckLake (Parquet + catalog) |
-| Delta export | DuckDB `delta_scan` for the dedup read; `deltalake` ≥ 1.6.6 + PyArrow ≥ 25 for the write; to local, S3 or OneLake |
+| Delta export | DuckDB `delta_scan` for the dedup read; `deltalake` ≥ 1.6.6 + PyArrow ≥ 26 for the write; to local, S3 or OneLake |
 | BI | Metabase (connects via quack client); Power BI via OneLake |
-| Container | Docker + Docker Compose; non-root user `app` (UID 1000) |
-| Testing | pytest ≥ 9.1.1, ruff, mypy |
+| Container | Docker + Docker Compose; three lean `python:3.13-slim` images (`ddd-duckdb-server`, `ddd-dagster`, `ddd-backup`); non-root user `app` (UID 1000) |
+| Testing | pytest ≥ 9.2.0, ruff, mypy |
 
 The reasons for each choice are in [design_decisions.md](design_decisions.md).
 
@@ -67,7 +67,7 @@ cleanup is a manual job.
 │   ├── seeds/                   Danish public holidays, source-system registry
 │   └── tests/                   singular test: Silver SCD2 grain
 ├── tests/                       pytest suite; fixtures/bronze_sample = CI data sample
-├── docker/                      Dockerfiles (app, Metabase), entrypoints, Metabase init SQL, DOCKER_USAGE.md
+├── docker/                      Dockerfiles (Dagster, DuckDB server + backup, Metabase), entrypoints, Metabase init SQL, DOCKER_USAGE.md
 ├── scripts/                     deploy, backup cron, host setup, CI sample,
 │                                public-repo sync, upgrade check, DuckDB 2.0 upgrade,
 │                                DuckDB shell
@@ -80,9 +80,9 @@ cleanup is a manual job.
 └── .env.example                 environment variable template
 ```
 
-Git-ignored: `/data/`, `.env`, `*.duckdb`, `dbt/target/`, `dbt/logs/`,
-`dlt/pipelines_dir/`, `.dagster/`, `__pycache__/`, `.venv/`, `*.egg-info/`,
-`.pytest_cache/`.
+Git-ignored (among others): `data/`, `.env`, `*.duckdb`, `dbt/target/`,
+`dbt/dbt_packages/`, `dbt/logs/`, `dlt/pipelines_dir/`, the Dagster state under
+`.dagster/`, `__pycache__/`, `.venv/`, `*.egg-info/`, `.pytest_cache/`, `sandbox/`.
 
 ## Data sources
 
@@ -179,8 +179,8 @@ A guided tour with examples is in [python_code_explained.md](python_code_explain
   tasks were attempted.
 - **dlt_run_extraction_pipelines_danish_parliament_data.py**,
   **dlt_run_extraction_pipelines_rfam.py** — CLIs
-  (`--date_to_load_from`, `--file_names_to_retrieve …`) that build the tasks
-  and call `run_extraction_pool`.
+  (`--date_to_load_from`, and `--file_names_to_retrieve …` or
+  `--table_names_to_retrieve …`) that build the tasks and call `run_extraction_pool`.
 - **export_silver.py** — Silver → Delta, incremental append: anti-join of the
   Silver table against `delta_scan('<target>')` on (pk, `LKHS_date_valid_from`),
   write with `write_deltalake`; first export overwrites. Reads Silver from
@@ -457,8 +457,9 @@ and the docstring of `ddd_utils/backup_platform.py`. The Docker Compose settings
 
 - **Docker:** `duckdb_server` creates the persistent secrets at start
   (`init_secrets_on_connection`), and with `STORAGE_TARGET=onelake`
-  `docker/docker-entrypoint.sh` also installs httpfs/azure/delta and creates the
-  persistent `azure_sp` secret.
+  `docker/docker-entrypoint.sh` (Dagster image: `dagster`, `run`) also installs
+  httpfs/azure/delta and creates the persistent `azure_sp` secret with the same
+  function.
 - **Host shell:** `duckdb/init_duckdb.sh` loads `.env` and runs
   `duckdb/init_duckdb.sql` (same, plus `azure_transport_option_type = 'curl'`).
 - **Python:** `python -m ddd_python.ddd_dbt.init_duckdb` does the same and also

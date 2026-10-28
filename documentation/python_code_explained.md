@@ -380,7 +380,7 @@ Centralises the "local vs S3 vs OneLake" path logic so no call site has to repea
   * Local: returns path under `LOCAL_STORAGE_PATH/Files/{Layer}/{table}/` and
     creates the directory as a side effect (`os.makedirs(..., exist_ok=True)`).
     `storage_options` is empty dict.
-  * S3: returns `s3://S3_BUCKET_DELTA/Files/{Layer}/{table}/` URI and
+  * S3: returns `s3://S3_BUCKET_DELTA/[S3_PREFIX_DELTA/]Files/{Layer}/{table}/` URI and
     `storage_options` dict containing `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
     `AWS_REGION`. If `S3_ENDPOINT` is set (RustFS), also includes
     `AWS_ENDPOINT_URL` (full URL with protocol), `AWS_S3_ADDRESSING_STYLE`, and
@@ -507,7 +507,6 @@ timestamped file name (`build_bronze_file_name`) instead of its default naming.
 **Module-level setup** at the top of the file configures dlt:
 
 ```python
-os.makedirs(get_variables_from_env.DLT_PIPELINES_DIR, exist_ok=True)
 os.environ.setdefault(
     "NORMALIZE__DATA_WRITER__DISABLE_COMPRESSION", "true"
 )  # plain .jsonl, not .jsonl.gz
@@ -515,7 +514,9 @@ os.environ.setdefault("DESTINATION__FILESYSTEM__ENABLE_DATASET_NAME_NORMALIZATIO
 ```
 
 These configure dlt's behaviour so the output files are plain NDJSON that the dbt
-Bronze `read_json_auto()` views can glob.
+Bronze `read_json_auto()` views can glob. The dlt working directory
+(`DLT_PIPELINES_DIR`) is created on the first `execute_pipeline` call
+(`_ensure_pipelines_dir`), not at import.
 
 **Logging and secret scrubbing.** `execute_pipeline` wraps every run in
 `try/except/finally`: it measures wall-clock time, and in the `finally` block writes
@@ -618,15 +619,15 @@ query = (
 )
 ```
 
-**Read/write split.** DuckDB's `delta` extension can read and write at ≥2.0, but
-the DuckDB delta writer has an Azure/OneLake regression. So the *existence check*
-stays on
+**Read/write split.** DuckDB 2.0's `delta` extension can read Delta, but it
+writes only by appending: it cannot replace a table (Gold's overwrite) or add a
+column (`schema_mode="merge"`). So the *existence check* stays on
 `deltalake.DeltaTable.is_deltatable` and the *write* stays on
 `deltalake.write_deltalake`; only the dedup read moved into DuckDB. A
 `_prepare_delta_read` helper `LOAD`s the extension (and, for OneLake, the Azure
 stack + the persistent `azure_sp` secret) on the connection before `delta_scan`
-runs. Moving the write into DuckDB waits for a writer-capable DuckDB version
-without its Azure/OneLake regression (ADR-7 in
+runs. Moving the write into DuckDB waits for a writer that can replace tables
+and add columns (ADR-7 in
 [design_decisions.md](design_decisions.md#adr-7-delta-export-reads-with-duckdb-writes-with-deltalake)).
 
 **Storage-format aware (DuckDB vs DuckLake).** The connection comes from the
@@ -674,11 +675,12 @@ The process behind the `duckdb_server` container (ADR-12 in
 read-write, sets `memory_limit` from `QUACK_SERVER_MEMORY_LIMIT` (default `12GB`),
 loads the extensions, attaches the DuckLake catalog in `ducklake` mode, creates
 the persistent secrets (`init_secrets_on_connection`, §6.3), registers the SQL
-function `ducklake_sweep_current_temp` (§7.7), and then serves the database over
-quack RPC on `QUACK_SERVER_PORT` (default 9494). `QUACK_SERVER_TOKEN` is required
-(at least 4 characters). `SIGTERM`/`SIGINT` stop the server cleanly. Every other
-container (Dagster, dbt, Metabase, the `run` service) connects as a client and
-mounts no database files.
+function `ducklake_sweep_current_temp` (§7.7; only when the DuckLake data is
+local), and then serves the database over quack RPC on `QUACK_SERVER_PORT`
+(default 9494). `QUACK_SERVER_TOKEN` is required (at least 4 characters).
+`SIGTERM`/`SIGINT` stop the server cleanly. Dagster, dbt, Metabase and the `run`
+service connect as clients and mount no database files; only the `backup`
+service mounts them, and it stops the server before it copies them.
 
 ---
 
@@ -752,8 +754,10 @@ run (as `--vars`, built by `silver_vars`).
 
 [ddd_python/ddd_dbt/init_duckdb.py](../ddd_python/ddd_dbt/init_duckdb.py)
 
-The Python counterpart of the shell initialisation (`docker/docker-entrypoint.sh`
-and `duckdb/init_duckdb.sh`), run with `python -m ddd_python.ddd_dbt.init_duckdb`.
+The Python counterpart of the shell initialisation (`duckdb/init_duckdb.sh`), run
+with `python -m ddd_python.ddd_dbt.init_duckdb`. Its `init_secrets_on_connection`
+is also called by `duckdb_server` and, with `STORAGE_TARGET=onelake`, by the
+Dagster image's entrypoint (`docker/docker-entrypoint.sh`).
 It opens the database, installs/loads the `httpfs`, `azure`, and `delta`
 extensions, sets the Azure transport option, and creates persistent **secrets**
 for cloud storage.
@@ -772,8 +776,9 @@ Three functions:
 * **`init_secrets_on_connection(con)`** creates the Azure service-principal
   secret when `STORAGE_TARGET=onelake` and calls `init_s3_secret`, on a connection
   that is already open. The quack server (§5.6) calls it before it starts serving,
-  so its clients inherit the secrets; the Silver export calls it before
-  `delta_scan` reads a OneLake target.
+  so its clients inherit the secrets; as a quack client (Docker) the Silver export
+  calls it before `delta_scan` reads a OneLake or S3 target, because `delta_scan`
+  then runs in the export's own process.
 
 * **`init_duckdb()`** is the main entry point for a setup without the quack
   server. It creates the database file if needed, installs/loads extensions, sets
@@ -948,10 +953,11 @@ In Docker mode dbt connects to the quack server (`dbt_quack.py` patches the
 Docker, dbt opens the file directly (the quack patch is skipped).
 
 The Data Engineering asset set is an observability layer: dbt models that read
-Dagster's *own* SQLite run history via DuckDB's `sqlite_scan()`. The
-`dagster_step_failures_raw` model globs `$DAGSTER_HOME/history/runs/*.db` with
-`sqlite_scan` — Dagster writes one SQLite file per run and DuckDB can glob them
-— so no step-failure export from the sensor is needed.
+Dagster's *own* SQLite run history via DuckDB's `sqlite_scan()`. Dagster writes
+one SQLite file per run; the `dagster_step_failures_raw` model lists
+`$DAGSTER_HOME/history/runs/*.db` with `glob()` at run time and reads each file
+with its own `sqlite_scan()` (it takes one file per call), combined with
+`UNION ALL` — so no step-failure export from the sensor is needed.
 
 ### 7.6 `jobs.py` — grouping assets into runnable jobs
 

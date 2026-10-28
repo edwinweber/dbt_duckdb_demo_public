@@ -30,7 +30,7 @@ Medallion architecture with three layers, plus an observability layer:
    changing the entity lists:
 
    ```bash
-   DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models
+   DBT_PROJECT_DIRECTORY=dbt DBT_MODELS_DIRECTORY=dbt/models python -m ddd_python.ddd_dbt.generate_dbt_models
    ```
 
 2. Install dbt packages:

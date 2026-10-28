@@ -1,0 +1,93 @@
+# Pipeline image: Dagster (webserver + daemon) and the one-off `run` service
+# (extraction, dbt, Delta export). DuckDB itself runs in the duckdb_server image
+# (docker/Dockerfile.duckdb_server); this image is a quack client of it.
+#
+# Two stages: the build stage installs the dependencies into a venv and parses
+# the dbt project; the runtime stage copies only the venv and the files the
+# containers use. Every dependency ships as a wheel, so no compiler is needed and
+# the runtime image has no system packages beyond the slim base.
+
+FROM python:3.13-slim AS build
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/opt/venv/bin:$PATH
+
+RUN python -m venv /opt/venv
+
+WORKDIR /app
+
+# Install dependencies first (layer cached until pyproject.toml changes)
+COPY pyproject.toml ./
+RUN mkdir -p ddd_python && touch ddd_python/__init__.py && \
+    pip install ".[dagster]"
+
+# Copy project source and register the package (the dbt-quack console script)
+COPY . .
+RUN pip install --no-deps ".[dagster]" && \
+    pip uninstall -y pip
+
+# Generate dbt manifest.json (required by dagster-dbt at import time)
+ARG DBT_PARSE_DB=/tmp/dbt_parse.duckdb
+RUN DUCKDB_DATABASE_LOCATION=${DBT_PARSE_DB} \
+    STORAGE_TARGET=local \
+    DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
+    RFAM_DATA_SOURCE=/data/local/Files/Bronze/RFAM \
+    sh -c 'cd dbt && dbt deps && \
+        for attempt in 1 2 3; do \
+            dbt parse && exit 0; \
+            echo "dbt parse failed (attempt $attempt of 3)"; \
+        done; exit 1' && \
+    rm -rf ${DBT_PARSE_DB} dbt/logs
+# The retry covers an intermittent dbt-core 1.12 parse error ("'should_store_failures' is
+# undefined") that appears in about 1 of 40 clean parses and disappears on the next run.
+
+
+FROM python:3.13-slim
+
+LABEL maintainer="Edwin" \
+      version="1.0.0" \
+      description="Danish Democracy Data — Dagster, dlt and dbt (quack client of duckdb_server)"
+
+# UID/GID 1000 matches the host-side ownership (docker/DOCKER_USAGE.md, one-time host setup).
+RUN groupadd --gid 1000 app && \
+    useradd --uid 1000 --gid 1000 --create-home --home-dir /home/app --shell /bin/bash app
+
+COPY --from=build /opt/venv /opt/venv
+
+WORKDIR /app
+
+# Dagster imports ddd_python from /app (workspace.yaml) and finds the dbt project
+# next to it; dbt writes target/ and logs/ there, so /app belongs to app.
+COPY --from=build --chown=app:app /app/ddd_python ./ddd_python
+COPY --from=build --chown=app:app /app/dbt ./dbt
+COPY --from=build --chown=app:app /app/workspace.yaml ./
+COPY --from=build --chown=app:app --chmod=755 /app/docker/docker-entrypoint.sh ./docker/
+
+# Mount points, created here so Docker does not create them as root.
+RUN mkdir -p /data/dlt_pipelines /data/dbt_logs /data/dagster /data/local && \
+    chown app:app /data/dlt_pipelines /data/dbt_logs /data/dagster /data/local
+
+# Default environment variables pointing to persistent volume paths
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    STORAGE_TARGET=local \
+    LOCAL_STORAGE_PATH=/data/local \
+    DANISH_DEMOCRACY_DATA_SOURCE=/data/local/Files/Bronze/DDD \
+    RFAM_DATA_SOURCE=/data/local/Files/Bronze/RFAM \
+    DLT_PIPELINES_DIR=/data/dlt_pipelines \
+    DUCKDB_DATABASE_LOCATION=/data/duckdb/danish_democracy_data.duckdb \
+    DUCKDB_DATABASE=danish_democracy_data \
+    DBT_PROJECT_DIRECTORY=/app/dbt \
+    DBT_MODELS_DIRECTORY=/app/dbt/models \
+    DBT_LOGS_DIRECTORY=/data/dbt_logs \
+    DAGSTER_HOME=/data/dagster \
+    DANISH_DEMOCRACY_BASE_URL=https://oda.ft.dk/api \
+    HOME=/home/app
+
+# Drop to non-root for all runtime commands.
+USER app
+
+# Entrypoint wrapper: local directories, or the DuckDB Azure secret for OneLake
+ENTRYPOINT ["docker/docker-entrypoint.sh"]
+CMD ["python", "-m"]

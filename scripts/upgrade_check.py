@@ -9,7 +9,7 @@ The script:
   3. Compares resolved versions against what is currently installed.
   4. Warns about known inter-package coupling constraints that pip's resolver
      cannot enforce on its own (dagster ↔ dagster-dbt, dbt-core cap from
-     dagster-dbt, DuckDB Azure-regression note).
+     dagster-dbt, DuckDB Delta writer note).
   5. Optionally runs pytest against the resolved environment.
   6. Optionally patches pyproject.toml with updated floor constraints and
      reinstalls the real venv.
@@ -36,7 +36,7 @@ import urllib.request
 from pathlib import Path
 
 # ── Repo root ─────────────────────────────────────────────────────────────────
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO / "pyproject.toml"
 
 # ── Current constraints from pyproject.toml (keep in sync manually) ───────────
@@ -46,26 +46,29 @@ CURRENT_CONSTRAINTS: dict[str, str] = {
     "dlt": ">=1.31.0,<2",
     "requests": ">=2.34.2",
     "python-dotenv": ">=1.2.4",
-    "azure-identity": ">=1.26.0",
+    "azure-identity": ">=1.27.0",
     "azure-storage-file-datalake": ">=12.26.0",
     "duckdb": ">=2.0.0,<3",
+    "numpy": ">=2.5.4",
     "deltalake": ">=1.6.6",
-    "pyarrow": ">=25.0.0",
-    "sqlalchemy": ">=2.1.5",
+    "pyarrow": ">=26.0.0",
+    "sqlalchemy": ">=2.1.6",
     "pymysql": ">=1.2.3",
     # dbt: core capped at <1.13 (dagster-dbt 0.29.x limit); dbt-duckdb for the adapter
     "dbt-core": ">=1.12.6,<1.13",
-    "dbt-duckdb": ">=1.11.0,<2",
+    "dbt-duckdb": ">=1.11.1,<2",
     # Dagster extras
-    "dagster": ">=1.13.26,<2",
-    "dagster-webserver": ">=1.13.26,<2",
-    "dagster-dbt": ">=0.29.26,<1",
+    "dagster": ">=1.13.27,<2",
+    "dagster-webserver": ">=1.13.27,<2",
+    "dagster-dbt": ">=0.29.27,<1",
     # Dev extras
-    "pytest": ">=9.1.1",
-    "ruff": ">=0.17.0",
+    "pytest": ">=9.2.0",
+    "pytest-cov": ">=7.1.0",
+    "ruff": ">=0.17.3",
     "mypy": ">=2.4.0",
     "types-requests": ">=0",
-    "pandas": ">=3.0.6",
+    "pandas": ">=3.1.0",
+    "boto3": ">=1.43",
 }
 
 # ── Relaxed constraints: drop upper caps so pip can go as high as possible ───
@@ -76,23 +79,26 @@ RELAXED_CONSTRAINTS: list[str] = [
     "dlt>=1.31.0",
     "requests>=2.34.2",
     "python-dotenv>=1.2.4",
-    "azure-identity>=1.26.0",
+    "azure-identity>=1.27.0",
     "azure-storage-file-datalake>=12.26.0",
     "duckdb>=2.0.0",
+    "numpy>=2.5.4",
     "deltalake>=1.6.6",
-    "pyarrow>=25.0.0",
-    "sqlalchemy>=2.1.5",
+    "pyarrow>=26.0.0",
+    "sqlalchemy>=2.1.6",
     "pymysql>=1.2.3",
     "dbt-core>=1.12.6",
-    "dbt-duckdb>=1.11.0",
-    "dagster>=1.13.26",
-    "dagster-webserver>=1.13.26",
-    "dagster-dbt>=0.29.26",
-    "pytest>=9.1.1",
-    "ruff>=0.17.1",
+    "dbt-duckdb>=1.11.1",
+    "dagster>=1.13.27",
+    "dagster-webserver>=1.13.27",
+    "dagster-dbt>=0.29.27",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
     "mypy>=2.4.0",
     "types-requests",
-    "pandas>=3.0.6",
+    "pandas>=3.1.0",
+    "boto3>=1.43",
 ]
 
 # ── Known coupling constraints (informational — not enforced by pip alone) ────
@@ -105,8 +111,8 @@ COUPLING_NOTES = [
     ),
     (
         "dbt-core cap at <1.13",
-        "dagster-dbt 0.29.x hard-requires dbt-core <1.13. Do not remove this cap "
-        "until dagster-dbt is upgraded.",
+        "dagster-dbt 0.29.x supports dbt-core up to 1.12 (its dbt-core extra caps "
+        "<1.13). Do not remove this cap until dagster-dbt supports a newer dbt-core.",
     ),
     (
         "dbt-duckdb ↔ duckdb server",
@@ -116,10 +122,10 @@ COUPLING_NOTES = [
     ),
     (
         "duckdb Delta writer vs deltalake library",
-        "DuckDB's built-in Delta writer has an Azure/OneLake regression in newer "
-        "versions. Exports use the 'deltalake' Python library (not DuckDB's writer), "
-        "so that regression does not block a duckdb bump — but verify with a real "
-        "OneLake run before shipping to production.",
+        "DuckDB 2.0's Delta writer can only append (no overwrite, no new columns). "
+        "Exports use the 'deltalake' Python library for the write and DuckDB only "
+        "for the delta_scan read, so a duckdb bump does not depend on the writer — "
+        "but verify the read with a real OneLake run before shipping to production.",
     ),
 ]
 

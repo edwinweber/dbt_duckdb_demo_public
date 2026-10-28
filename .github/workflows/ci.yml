@@ -299,18 +299,47 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build pipeline image
+      # One cache scope per image, so the three builds do not overwrite each other's cache.
+      - name: Build Dagster image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: docker/Dockerfile.dagster
           push: false
           load: true
-          tags: danish-democracy-data:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ddd-dagster:ci
+          cache-from: type=gha,scope=dagster
+          cache-to: type=gha,mode=max,scope=dagster
 
-      - name: Smoke-test the image (dbt + package import)
+      - name: Build DuckDB server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.duckdb_server
+          target: duckdb_server
+          push: false
+          load: true
+          tags: ddd-duckdb-server:ci
+          cache-from: type=gha,scope=duckdb_server
+          cache-to: type=gha,mode=max,scope=duckdb_server
+
+      - name: Build backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.duckdb_server
+          target: backup
+          push: false
+          load: true
+          tags: ddd-backup:ci
+          cache-from: type=gha,scope=backup
+          cache-to: type=gha,mode=max,scope=backup
+
+      - name: Smoke-test the images
         run: |
-          docker run --rm --entrypoint dbt danish-democracy-data:ci --version
-          docker run --rm --entrypoint python danish-democracy-data:ci -c "import ddd_python.ddd_dagster.definitions"
+          docker run --rm --entrypoint dbt ddd-dagster:ci --version
+          docker run --rm --entrypoint dbt-quack ddd-dagster:ci --version
+          docker run --rm --entrypoint python ddd-dagster:ci -c "import ddd_python.ddd_dagster.definitions"
+          docker run --rm ddd-duckdb-server:ci python -c "import numpy, ddd_python.ddd_dlt.duckdb_quack_server"
+          docker run --rm ddd-backup:ci python -c "import ddd_python.ddd_utils.backup_platform, ddd_python.ddd_utils.restore_platform"
+          docker run --rm ddd-backup:ci sh -c "docker --version && rsync --version | head -1 && ssh -V"

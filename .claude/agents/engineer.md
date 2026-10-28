@@ -33,8 +33,8 @@ dbt/
   models/bronze/                 ← 28 views: 25 read_json_auto views (generated) + 3 utility views
   models/silver/                 ← 50 models: 25 incremental CDC tables + 25 _cv views (generated)
   models/gold/                   ← 19 views: 11 hand-written star-schema models + 8 generated _cv views
-  macros/                        ← 14 Jinja macros (model factories, hash, Silver CDC and bookkeeping)
-tests/                           ← about 430 pytest tests across 32 modules
+  macros/                        ← 18 Jinja macros (model factories, hash, Silver CDC and bookkeeping)
+tests/                           ← about 490 pytest tests across 35 modules
 ```
 
 ## Non-negotiable constraints
@@ -56,7 +56,7 @@ tests/                           ← about 430 pytest tests across 32 modules
 - DuckLake is independent of `STORAGE_TARGET` (which only controls Delta Lake export destination).
 
 **DuckDB version pinned ≥2.0.0, <3:**
-- Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path to the DuckDB delta writer — there is an Azure/OneLake regression in it.
+- Silver export uses `delta_scan` for dedup reads + `deltalake` + PyArrow for writes. Do not suggest moving the write path to the DuckDB delta writer — in DuckDB 2.0 it can only append (no overwrite, no new columns), and the user decided to keep the exports as they are.
 - In Docker, `duckdb_server` is the sole read-write owner; all other containers connect via quack RPC. `QUACK_SERVER_HOST` triggers the quack code path in `path_utils.py` and `dbt_quack.py`.
 
 **Security:**

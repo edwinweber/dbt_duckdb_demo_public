@@ -1,0 +1,71 @@
+# Lean images for the DuckDB quack server and the backup runner.
+#
+#   target duckdb_server — the sole read-write DuckDB owner (ddd-duckdb-server)
+#   target backup        — backup and restore of the platform databases (ddd-backup)
+#
+# Both run a few modules of ddd_python that need only duckdb and python-dotenv
+# (the server also numpy, for its Python UDF), so neither image installs the
+# pipeline dependencies (dbt, dlt, Dagster, deltalake, pyarrow). The version
+# ranges are read from pyproject.toml. The two targets share the base layers.
+# Neither target has a shell entrypoint: the server creates its DuckDB secrets
+# itself, and the backup does not use DuckDB secrets.
+
+FROM python:3.13-slim AS base
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONUNBUFFERED=1
+
+# UID/GID 1000 matches the host-side ownership (docker/DOCKER_USAGE.md, one-time host setup).
+RUN groupadd --gid 1000 app && \
+    useradd --uid 1000 --gid 1000 --create-home --home-dir /home/app --shell /bin/bash app
+
+WORKDIR /app
+
+COPY pyproject.toml docker/pick_requirements.py /tmp/
+RUN python /tmp/pick_requirements.py /tmp/pyproject.toml duckdb python-dotenv > /tmp/requirements.txt && \
+    pip install -r /tmp/requirements.txt && \
+    rm /tmp/pyproject.toml /tmp/pick_requirements.py /tmp/requirements.txt
+
+# Source only: the modules run with `python -m` from /app, nothing is installed.
+COPY ddd_python ./ddd_python
+
+ENV DUCKDB_DATABASE_LOCATION=/data/duckdb/danish_democracy_data.duckdb \
+    DUCKDB_DATABASE=danish_democracy_data \
+    LOCAL_STORAGE_PATH=/data/local \
+    DAGSTER_HOME=/data/dagster \
+    HOME=/home/app
+
+
+# ── DuckDB quack server ──────────────────────────────────────────────────────
+FROM base AS duckdb_server
+
+COPY pyproject.toml docker/pick_requirements.py /tmp/
+RUN python /tmp/pick_requirements.py /tmp/pyproject.toml numpy > /tmp/requirements.txt && \
+    pip install -r /tmp/requirements.txt && \
+    rm /tmp/pyproject.toml /tmp/pick_requirements.py /tmp/requirements.txt
+
+# Mount points, created here so Docker does not create them as root. DuckDB
+# extensions are installed at start into /home/app/.duckdb.
+RUN mkdir -p /data/duckdb /data/ducklake /data/local /data/dagster /app/dbt/seeds && \
+    chown app:app /data/duckdb /data/ducklake /data/local /data/dagster
+
+USER app
+CMD ["python", "-m", "ddd_python.ddd_dlt.duckdb_quack_server"]
+
+
+# ── Backup and restore ───────────────────────────────────────────────────────
+FROM base AS backup
+
+# docker: stop/start the containers that hold the files (via the mounted socket);
+# rsync + ssh: optional upload to the Hetzner StorageBox.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends docker-cli rsync openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /data/duckdb /data/ducklake /data/dagster /data/metabase/data /data_backup && \
+    chown app:app /data/duckdb /data/ducklake /data/dagster /data/metabase/data /data_backup
+
+USER app
+CMD ["python", "-m", "ddd_python.ddd_utils.backup_platform"]

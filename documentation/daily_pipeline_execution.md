@@ -154,7 +154,7 @@ Dagster's SQLite run storage (`$DAGSTER_HOME/history/runs.db` and
 | `dagster_job`, `dagster_asset` | dimensions: one row per job / per asset key |
 | `dagster_run` | fact: one row per run, with rows processed, assets materialized and the Silver row counts summed |
 | `dagster_asset_materialization` | fact: one row per materialization, with step timing, rows processed and the Silver row counts |
-| `dagster_step_failures_raw`, `dagster_step_failure` | fact: one row per failed asset per run — read directly from `$DAGSTER_HOME/history/runs/*.db` via `sqlite_scan` |
+| `dagster_step_failures_raw`, `dagster_step_failure` | fact: one row per failed asset per run — read directly from the per-run files `$DAGSTER_HOME/history/runs/*.db` (listed with `glob()`, one `sqlite_scan` per file) |
 | `silver_load_history` | fact: one row per Silver table and dbt run, with the `I`, `U` and `D` rows and the Bronze files processed — counted from Silver itself and its `_files` logs, so it reaches back to the first load and covers runs outside Dagster |
 
 `rows_processed` is the row count a step reports, read by label in
